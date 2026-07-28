@@ -27,34 +27,32 @@ export function TokenSelector({
   const { data: pairs, loading: hookLoading } = usePairs();
   const loading = propLoading ?? hookLoading;
 
-  // Extract unique assets from all pairs
+  // Extract unique assets from indexed pairs only (no synthetic XLM when
+  // staging has no native markets — avoids quoting dead XLM→USDC defaults).
   const assets: AssetOption[] = useMemo(() => {
     if (!pairs) return [];
 
     const assetMap = new Map<string, AssetOption>();
-    
-    // Add native XLM if not present
-    assetMap.set('native', {
-      code: 'XLM',
-      asset: 'native',
-      displayName: 'Stellar Lumens',
-    });
 
     pairs.forEach((pair) => {
-      // Base asset
       if (!assetMap.has(pair.base_asset)) {
         assetMap.set(pair.base_asset, {
-          code: pair.base,
+          code: pair.base === 'native' ? 'XLM' : pair.base,
           asset: pair.base_asset,
-          issuer: pair.base_asset.includes(':') ? pair.base_asset.split(':')[1] : undefined,
+          issuer: pair.base_asset.includes(':')
+            ? pair.base_asset.split(':')[1]
+            : undefined,
+          displayName: pair.base === 'native' ? 'Stellar Lumens' : undefined,
         });
       }
-      // Counter asset
       if (!assetMap.has(pair.counter_asset)) {
         assetMap.set(pair.counter_asset, {
-          code: pair.counter,
+          code: pair.counter === 'native' ? 'XLM' : pair.counter,
           asset: pair.counter_asset,
-          issuer: pair.counter_asset.includes(':') ? pair.counter_asset.split(':')[1] : undefined,
+          issuer: pair.counter_asset.includes(':')
+            ? pair.counter_asset.split(':')[1]
+            : undefined,
+          displayName: pair.counter === 'native' ? 'Stellar Lumens' : undefined,
         });
       }
     });
@@ -66,7 +64,13 @@ export function TokenSelector({
     return assets.find((a) => a.asset === selectedAsset);
   }, [assets, selectedAsset]);
 
-  const displayCode = selectedAssetOption?.code || (selectedAsset === 'native' ? 'XLM' : 'Select');
+  const displayCode =
+    selectedAssetOption?.code ||
+    (selectedAsset === 'native'
+      ? 'XLM'
+      : selectedAsset.includes(':')
+        ? selectedAsset.split(':')[0]
+        : 'Select');
   
   // Simple icon generator based on code
   const renderIcon = (code: string) => {

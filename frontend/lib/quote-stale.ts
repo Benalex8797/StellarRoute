@@ -23,8 +23,12 @@ export const QUOTE_MANUAL_REFRESH_COOLDOWN_MS = 2000;
 
 /**
  * Returns true when a successful quote is older than `staleAfterMs` relative to `nowMs`.
- * If `expiresAtMs` is provided (server-side expiration), it takes precedence over `staleAfterMs`.
- * If there is no successful quote yet (`lastSuccessTimeMs == null`), returns false.
+ * If `expiresAtMs` is provided **and is still in the future relative to when we
+ * received the quote**, it takes precedence over `staleAfterMs`.
+ *
+ * Cached API responses can arrive with an already-past `expires_at`; treating
+ * those as immediately stale bricks the swap CTA ("Session restored" forever).
+ * In that case fall back to the client receive-time window.
  */
 export function isQuoteStale(
   lastSuccessTimeMs: number | null,
@@ -34,8 +38,11 @@ export function isQuoteStale(
 ): boolean {
   if (lastSuccessTimeMs == null) return false;
 
-  // Server-side expiration metadata takes precedence to ensure sync with backend cache
-  if (expiresAtMs != null) {
+  if (
+    expiresAtMs != null &&
+    Number.isFinite(expiresAtMs) &&
+    expiresAtMs > lastSuccessTimeMs
+  ) {
     return nowMs >= expiresAtMs;
   }
 

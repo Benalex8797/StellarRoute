@@ -486,10 +486,15 @@ impl<T: Send + Sync + 'static> SingleFlight<T> {
                     let inflight_map = self.inflight_map.clone();
                     let key = self.key.clone();
                     let inflight = Arc::clone(&self.inflight);
+                    // Always remove this leader's entry once done. Leaving completed
+                    // results in the map turns single-flight into an infinite cache
+                    // (swap UI then serves forever-expired quotes for the same key).
                     tokio::spawn(async move {
-                        if inflight.abandoned.load(AtomicOrdering::Acquire) {
-                            let mut mg = inflight_map.lock().await;
-                            mg.remove(&key);
+                        let mut mg = inflight_map.lock().await;
+                        if let Some(current) = mg.get(&key) {
+                            if Arc::ptr_eq(current, &inflight) {
+                                mg.remove(&key);
+                            }
                         }
                     });
                 }
@@ -597,10 +602,15 @@ impl<T: Send + Sync + 'static> SingleFlight<T> {
                     let inflight_map = self.inflight_map.clone();
                     let key = self.key.clone();
                     let inflight = Arc::clone(&self.inflight);
+                    // Always remove this leader's entry once done. Leaving completed
+                    // results in the map turns single-flight into an infinite cache
+                    // (swap UI then serves forever-expired quotes for the same key).
                     tokio::spawn(async move {
-                        if inflight.abandoned.load(AtomicOrdering::Acquire) {
-                            let mut mg = inflight_map.lock().await;
-                            mg.remove(&key);
+                        let mut mg = inflight_map.lock().await;
+                        if let Some(current) = mg.get(&key) {
+                            if Arc::ptr_eq(current, &inflight) {
+                                mg.remove(&key);
+                            }
                         }
                     });
                 }
@@ -826,6 +836,40 @@ mod tests {
         for res in results {
             assert_eq!(*res, 42);
         }
+    }
+
+    #[tokio::test]
+    async fn test_single_flight_does_not_cache_completed_results() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let sf = Arc::new(SingleFlight::<u64>::new());
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = sf
+            .execute("sequential", || {
+                let counter_ref = counter.clone();
+                async move {
+                    counter_ref.fetch_add(1, Ordering::Relaxed);
+                    Arc::new(1u64)
+                }
+            })
+            .await;
+        assert_eq!(*first, 1);
+
+        // Allow LeaderGuard cleanup task to remove the completed entry.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let second = sf
+            .execute("sequential", || {
+                let counter_ref = counter.clone();
+                async move {
+                    counter_ref.fetch_add(1, Ordering::Relaxed);
+                    Arc::new(2u64)
+                }
+            })
+            .await;
+        assert_eq!(*second, 2);
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

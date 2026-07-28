@@ -27,11 +27,13 @@ import { useExpertSettings } from '@/hooks/useExpertSettings';
 import { useWalletBalance } from '@/hooks/useWalletBalance';
 import {
   DEFAULT_DEADLINE,
+  DEFAULT_FROM_TOKEN,
   DEFAULT_SLIPPAGE,
+  DEFAULT_TO_TOKEN,
   SESSION_RECOVERY_THRESHOLD_MS,
   type TradeFormSnapshot,
 } from '@/hooks/useTradeFormStorage';
-import { useBatchQuote } from '@/hooks/useApi';
+import { useBatchQuote, usePairs, useRoutes } from '@/hooks/useApi';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
 import type { QuoteRequestItem } from '@/lib/api/client';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
@@ -48,7 +50,6 @@ import { buildPathPaymentXdr } from '@/lib/wallet/xdr-builder';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useSwapI18n } from '@/lib/swap-i18n';
-import { useRoutes } from '@/hooks/useApi';
 import { emitRouteEvent, emitSwapFunnelEvent, getPriceImpactTier } from '@/lib/telemetry';
 import { SwapWarningCenter, type SwapWarning } from './SwapWarningCenter';
 import { quoteExportToCsv, type QuoteExportPayload } from '@/lib/quote-export';
@@ -103,6 +104,7 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     setFromToken,
     toToken,
     setToToken,
+    setTokenPair,
     fromAmount,
     setFromAmount,
     toAmount,
@@ -122,6 +124,26 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     snapshotCurrent,
     reset,
   } = useSwapState();
+
+  const { data: indexedPairs } = usePairs();
+
+  // Staging often only has BTC/EXT liquidity. Reset stale localStorage pairs
+  // (e.g. XLM→USDC) that cannot quote against the indexed market set.
+  useEffect(() => {
+    if (!indexedPairs?.length) return;
+    const assets = new Set(
+      indexedPairs.flatMap((pair) => [pair.base_asset, pair.counter_asset])
+    );
+    if (assets.has(fromToken) && assets.has(toToken)) return;
+
+    if (assets.has(DEFAULT_FROM_TOKEN) && assets.has(DEFAULT_TO_TOKEN)) {
+      setTokenPair(DEFAULT_FROM_TOKEN, DEFAULT_TO_TOKEN);
+      return;
+    }
+
+    const first = indexedPairs[0];
+    setTokenPair(first.base_asset, first.counter_asset);
+  }, [indexedPairs, fromToken, toToken, setTokenPair]);
 
   const [selectedRoute, setSelectedRoute] = useState<AlternativeRoute | null>(
     null
@@ -315,18 +337,23 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     isConnected,
     walletId,
     network: walletAppNetwork,
+    walletNetwork,
     networkMismatch,
     capabilities,
     connect,
     setTransactionPending,
   } = useWallet();
 
+  // Horizon lookup must follow the wallet's network (where funds live), not
+  // only the app toggle — otherwise balances show Unavailable / zero.
+  const balanceHorizonNetwork = walletNetwork ?? walletAppNetwork;
+
   // Fetch real wallet balance for the selected from-asset
   const balanceState = useWalletBalance({
     address: walletAddress,
     asset: fromToken,
     isConnected,
-    network: walletAppNetwork,
+    network: balanceHorizonNetwork,
   });
 
   // --- Issue #506: Memo State Management ---
@@ -374,6 +401,27 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
       quote.lastQuotedAtMs < recoveryRequestedAt ||
       quote.loading ||
       quote.isStale);
+
+  // Clear session-recovery gate once a usable quote lands (prevents sticky
+  // "Session restored — fetching a fresh quote" + disabled CTA).
+  useEffect(() => {
+    if (recoveryRequestedAt === null) return;
+    if (
+      quote.lastQuotedAtMs !== null &&
+      quote.lastQuotedAtMs >= recoveryRequestedAt &&
+      !quote.loading &&
+      !quote.error &&
+      !quote.isStale
+    ) {
+      setRecoveryRequestedAt(null);
+    }
+  }, [
+    recoveryRequestedAt,
+    quote.lastQuotedAtMs,
+    quote.loading,
+    quote.error,
+    quote.isStale,
+  ]);
 
   // --- Issue #745: Swap Warning Center Logic ---
   const [warnings, setWarnings] = useState<SwapWarning[]>([]);
@@ -583,7 +631,10 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     if (!fromAmount || parseFloat(fromAmount) === 0) return 'no_amount';
     if (quote.error) return 'error';
     if (requiresFreshQuote) return 'refreshing_quote';
-    if (parseFloat(fromAmount) > parseFloat(fromBalance))
+    if (
+      !balanceState.error &&
+      parseFloat(fromAmount) > parseFloat(fromBalance)
+    )
       return 'insufficient_balance';
     if (quote.priceImpact > 10) return 'high_impact_warning';
     if (quote.loading) return 'refreshing_quote';
@@ -602,6 +653,7 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     quote.priceImpact,
     requiresFreshQuote,
     memoError,
+    balanceState.error,
   ]);
 
   const displayButtonState = storyPresentation?.buttonState ?? buttonState;
@@ -1028,10 +1080,18 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
                   onChange={setFromAmount}
                   onMax={handleMax}
                   onPresetSelect={handlePresetSelect}
-                  balance={`${fromBalance} ${fromSymbol}`}
+                  balance={
+                    isConnected
+                      ? `${fromBalance} ${fromSymbol}`
+                      : undefined
+                  }
+                  balanceValue={
+                    isConnected && !balanceState.error ? fromBalance : null
+                  }
                   balanceLoading={balanceState.loading}
                   balanceError={!!balanceState.error}
                   showPresets={isConnected}
+                  assetId={fromToken}
                   className="flex-1"
                 />
                 <TokenSelector

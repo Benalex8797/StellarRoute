@@ -42,8 +42,9 @@ export interface QuoteResult {
  * pushed quotes as the primary data source. HTTP polling via useQuoteRefresh
  * remains active throughout and acts as the automatic fallback:
  *
- *   - WS connected & has data  →  stream data wins, isRecovering from WS error
+ *   - WS connected & has data  →  stream data wins
  *   - WS disconnected / no env →  polling data is used transparently
+ *   - isRecovering tracks HTTP retry only (WS outages do not sticky-reconnect)
  *
  * Callers can check `wsConnected` to know which path is active.
  */
@@ -73,23 +74,23 @@ export function useQuote({ fromToken, toToken, amount, type = 'sell' }: UseQuote
     },
   );
 
-  // ── WebSocket stream (active only when env is configured) ─────────────────
+  // ── WebSocket stream (opt-in via NEXT_PUBLIC_QUOTE_WS=true) ────────────────
   const {
     data: wsData,
     isConnected: wsConnected,
     error: wsError,
-    wsAvailable,
   } = useQuoteStream(fromToken, toToken, amount);
 
-  // When the WS is configured but not connected, treat it as recovering so the
-  // status indicator reflects the reconnect state.
-  const isRecovering = pollingIsRecovering || (wsAvailable && !wsConnected);
+  // Prefer WS data when the socket is healthy, otherwise fall back to polling.
+  // Do NOT treat "WS configured but disconnected" as recovering — Cloudflare
+  // quick tunnels / hosts without WS would otherwise stick on "Reconnecting".
+  const isRecovering = pollingIsRecovering;
 
   // Prefer WS data when the socket is healthy, otherwise fall back to polling.
   const data = wsConnected && wsData ? wsData : pollingData;
 
-  // Surface a WS error only when polling has no error of its own.
-  const error = pollingError ?? (wsAvailable && wsError ? wsError : null);
+  // Only surface WS errors when polling has no data path of its own and WS is up.
+  const error = pollingError ?? (wsConnected && wsError ? wsError : null);
 
   const result = useMemo(() => {
     if (!data) {

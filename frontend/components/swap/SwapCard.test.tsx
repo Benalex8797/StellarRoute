@@ -13,6 +13,18 @@ import { submitToHorizon } from '@/lib/wallet/submit';
 import { WalletProvider } from '@/components/providers/wallet-provider';
 import { SettingsProvider } from '@/components/providers/settings-provider';
 
+const BTC_ISSUER = 'GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS';
+
+const defaultHorizonBalances = [
+  { balance: '50.0000000', asset_type: 'native' as const },
+  {
+    balance: '50.0000000',
+    asset_type: 'credit_alphanum4' as const,
+    asset_code: 'BTC',
+    asset_issuer: BTC_ISSUER,
+  },
+];
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: vi.fn(),
@@ -54,6 +66,28 @@ vi.mock('@/hooks/useApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/useApi')>();
   return {
     ...actual,
+    usePairs: () => ({
+      data: [
+        {
+          base: 'XLM',
+          base_asset: 'native',
+          counter: 'USDC',
+          counter_asset:
+            'USDC:GATEMHCCKCY67ZUCKTROYN24ZYT5GK4EQZ65JJLDHKHRUZI3EUEKMTCH',
+        },
+        {
+          base: 'BTC',
+          base_asset:
+            'BTC:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS',
+          counter: 'EXT',
+          counter_asset:
+            'EXT:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS',
+        },
+      ],
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    }),
     useQuoteStream: () => ({
       data: undefined,
       isConnected: false,
@@ -122,6 +156,7 @@ vi.mock('@/components/providers/wallet-provider', () => {
         isConnected: connected,
         walletId: connected ? 'freighter' : null,
         network: 'testnet',
+        walletNetwork: 'testnet',
         networkMismatch: false,
         connect,
         disconnect,
@@ -262,12 +297,7 @@ describe('SwapCard network resilience and states', () => {
           ok: true,
           json: () =>
             Promise.resolve({
-              balances: [
-                {
-                  balance: '50.0000000',
-                  asset_type: 'native',
-                },
-              ],
+              balances: defaultHorizonBalances,
             }),
         });
       }
@@ -498,12 +528,7 @@ describe('SwapCard Wallet Balance Integration (#644/#705)', () => {
           ok: true,
           json: () =>
             Promise.resolve({
-              balances: [
-                {
-                  balance: '50.0000000',
-                  asset_type: 'native',
-                },
-              ],
+              balances: defaultHorizonBalances,
             }),
         });
       }
@@ -547,7 +572,7 @@ describe('SwapCard Wallet Balance Integration (#644/#705)', () => {
               ok: true,
               json: () =>
                 Promise.resolve({
-                  balances: [{ balance: '50.0000000', asset_type: 'native' }],
+                  balances: defaultHorizonBalances,
                 }),
             });
           }, 100)
@@ -684,6 +709,15 @@ describe('SwapCard Wallet Balance Integration (#644/#705)', () => {
   });
 
   it('MAX button sets amount to spendable balance for native XLM', async () => {
+    const originalUseSwapState = useSwapStateModule.useSwapState;
+    vi.spyOn(useSwapStateModule, 'useSwapState').mockImplementation(() => {
+      const state = originalUseSwapState();
+      return {
+        ...state,
+        fromToken: 'native',
+      };
+    });
+
     global.fetch = vi.fn((url: string) => {
       if (url.includes('/accounts/')) {
         return Promise.resolve({
@@ -759,7 +793,7 @@ describe('SwapCard Wallet Balance Integration (#644/#705)', () => {
                       asset_issuer: 'GABC',
                     },
                   ]
-                : [{ balance: '50.0000000', asset_type: 'native' }],
+                : defaultHorizonBalances,
             }),
         });
       }
@@ -802,7 +836,7 @@ describe('SwapCard Wallet Balance Integration (#644/#705)', () => {
           ok: true,
           json: () =>
             Promise.resolve({
-              balances: [{ balance: '50.0000000', asset_type: 'native' }],
+              balances: defaultHorizonBalances,
             }),
         });
       }
@@ -833,7 +867,7 @@ describe('SwapCard Wallet Balance Integration (#644/#705)', () => {
           json: () =>
             Promise.resolve({
               balances: [
-                { balance: '50.0000000', asset_type: 'native' },
+                ...defaultHorizonBalances,
                 {
                   balance: '1000.0000000',
                   asset_type: 'credit_alphanum12',
@@ -865,7 +899,7 @@ describe('SwapCard Wallet Balance Integration (#644/#705)', () => {
     });
     await user.click(connectButton);
 
-    // Should display native XLM balance initially
+    // Should display default pay-asset balance initially
     await waitFor(() => {
       expect(screen.getByText(/50\.0000000/)).toBeInTheDocument();
     });
@@ -881,7 +915,7 @@ describe('SwapCard Freighter signing wiring (#735)', () => {
           json: () =>
             Promise.resolve({
               sequence: '12345',
-              balances: [{ balance: '50.0000000', asset_type: 'native' }],
+              balances: defaultHorizonBalances,
             }),
         });
       }
@@ -889,6 +923,7 @@ describe('SwapCard Freighter signing wiring (#735)', () => {
     }) as Mock;
 
   beforeEach(() => {
+    localStorage.clear();
     vi.mocked(buildPathPaymentXdr).mockResolvedValue('AAAAtest_unsigned_xdr');
     vi.mocked(signTransactionWithWallet).mockResolvedValue('AAAAtest_signed_xdr');
     vi.mocked(submitToHorizon).mockResolvedValue({ hash: 'test_submit_hash' });

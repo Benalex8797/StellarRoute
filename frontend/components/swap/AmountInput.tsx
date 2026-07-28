@@ -23,6 +23,8 @@ interface AmountInputProps {
   className?: string;
   label?: string;
   balance?: string;
+  /** Numeric balance string used for exceed checks (no symbol suffix). */
+  balanceValue?: string | null;
   balanceLoading?: boolean;
   balanceError?: boolean;
   showMax?: boolean;
@@ -59,6 +61,7 @@ export function AmountInput({
   className,
   label,
   balance,
+  balanceValue,
   balanceLoading = false,
   balanceError = false,
   showMax = true,
@@ -130,12 +133,15 @@ export function AmountInput({
     [onChange, maxDecimals]
   );
 
+  const comparableBalance = balanceValue ?? null;
   const exceedsBalance =
-    balance &&
+    !balanceError &&
+    comparableBalance !== null &&
+    comparableBalance !== undefined &&
     internalValue &&
     !Number.isNaN(parseFloat(internalValue)) &&
-    !Number.isNaN(parseFloat(balance)) &&
-    parseFloat(internalValue) > parseFloat(balance);
+    !Number.isNaN(parseFloat(comparableBalance)) &&
+    parseFloat(internalValue) > parseFloat(comparableBalance);
 
   return (
     <div className={cn('flex flex-col gap-1.5 w-full', className)}>
@@ -211,10 +217,14 @@ export function AmountInput({
 
       {showPresets && onPresetSelect && (
         <AmountPresets
-          balance={balance || null}
+          balance={
+            balanceError
+              ? null
+              : (balanceValue ?? (balance ? balance.split(/\s+/)[0] : null))
+          }
           decimals={maxDecimals}
           onSelect={onPresetSelect}
-          disabled={disabled || readOnly}
+          disabled={disabled || readOnly || balanceError}
           className="mt-2"
         />
       )}

@@ -134,7 +134,8 @@ export function useQuoteRefresh(
 
   const debouncedAmount = useDebounced(amount, debounceMs);
   const [tick, setTick] = useState(0);
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
+  // Default on so quotes stay fresh; otherwise the stale banner sticks after ~5s.
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [state, setState] = useState<UseApiState<PriceQuote>>({
     data: undefined,
     loading: false,
