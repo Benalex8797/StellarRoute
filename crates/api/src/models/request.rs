@@ -262,9 +262,9 @@ pub struct AssetPath {
 
 impl AssetPath {
     /// Parse asset identifier from path segment
-    /// Format: "native" or "CODE" or "CODE:ISSUER"
+    /// Format: "native" / "XLM" or "CODE" or "CODE:ISSUER"
     pub fn parse(s: &str) -> std::result::Result<Self, String> {
-        if s == "native" {
+        if s.eq_ignore_ascii_case("native") || s.eq_ignore_ascii_case("XLM") {
             return Ok(Self {
                 asset_code: "native".to_string(),
                 asset_issuer: None,
@@ -326,6 +326,15 @@ mod tests {
         let asset = AssetPath::parse("native").unwrap();
         assert_eq!(asset.asset_code, "native");
         assert_eq!(asset.asset_issuer, None);
+    }
+
+    #[test]
+    fn test_parse_xlm_as_native() {
+        let asset = AssetPath::parse("XLM").unwrap();
+        assert_eq!(asset.asset_code, "native");
+        assert_eq!(asset.asset_issuer, None);
+        let lower = AssetPath::parse("xlm").unwrap();
+        assert_eq!(lower.asset_code, "native");
     }
 
     #[test]

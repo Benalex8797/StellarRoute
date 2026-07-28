@@ -67,8 +67,8 @@ Required production environment:
 STELLARROUTE_ENV=production
 
 # Explicit allowlist of browser origins — no wildcard CORS in production.
-# Include the deployed frontend's Vercel production origin:
-CORS_ALLOWED_ORIGINS=https://stellarroute.vercel.app,https://app.stellarroute.io
+# Include the custom domain and Vercel production origin:
+CORS_ALLOWED_ORIGINS=https://www.stellarroute.app,https://stellarroute.app,https://stellarroute-frontend.vercel.app
 
 # API key(s) for integrators; REQUIRE_AUTH defaults to true in production.
 API_KEYS=<comma-separated integrator keys>
@@ -646,19 +646,25 @@ curl "https://friendbot.stellar.org/?addr=$(soroban keys address deployer)"
 
 ---
 
-## Hosting Blueprint (Issue #1035)
+## Hosting Blueprint (Issue #1035 / Wave 0)
 
 The following sections document the concrete hosting blueprint that satisfies
-M5 (Live hosting). A single-region Render deployment and a Docker Compose
-production overlay are both provided.
+M5 (Live hosting). **Preferred free path:** Oracle Always Free + Cloudflare
+Tunnel (see [`oracle-always-free.md`](./oracle-always-free.md)). A Render
+Blueprint and Docker Compose production overlay are also provided.
 
 ### Files
 
 | File | Purpose |
 |---|---|
-| `render.yaml` | Render Blueprint — managed Postgres, Redis, API web service, indexer worker |
+| [`oracle-always-free.md`](./oracle-always-free.md) | **Wave 0 (free):** Oracle ARM VM + compose + Cloudflare Tunnel runbook |
+| [`vercel-frontend.md`](./vercel-frontend.md) | Vercel frontend env + production checklist |
+| `render.yaml` | Render Blueprint — managed Postgres, Redis, API web service, indexer worker (paid / optional) |
 | `deploy/docker-compose.prod.yml` | Compose production overlay (hardened, no host ports for DB/Redis) |
+| `deploy/env.prod.example` | Template for `.env.prod` (never commit `.env.prod`) |
 | `deploy/secrets.checklist.md` | Operator checklist — work through before first deploy |
+| `scripts/staging-smoke.sh` | Public staging smoke: `/health`, `/health/deps`, quote |
+| `scripts/oracle/bootstrap-vm.sh` | Install Docker on Ubuntu Always Free VMs |
 
 ### Dry-run / validate commands
 
@@ -685,11 +691,16 @@ to the blueprint, add a row here.
 |---|---|---|---|
 | `DATABASE_URL` | API, Indexer | Auto-wired from `stellarroute-postgres` | Primary PostgreSQL connection string |
 | `REDIS_URL` | API | Auto-wired from `stellarroute-redis` | Redis connection string for quote cache + rate limiting |
-| `API_PORT` | API | Set to `3000` in blueprint | HTTP listen port |
+| `API_PORT` / `PORT` | API | Render: `3000`; Compose prod: `PORT=8080` | HTTP listen port |
+| `API_HOST_PORT` | Compose only | `.env.prod` | Host port published for Cloudflare Tunnel (default `8080`) |
 | `RUST_LOG` | API, Indexer | Set to `info,warn` in blueprint | Log level directive |
-| `SOROBAN_RPC_URL` | API (optional), Indexer (**required**) | Secret — set in Render dashboard | Soroban RPC endpoint (e.g. `https://soroban-rpc.testnet.stellar.org`) |
-| `STELLAR_HORIZON_URL` | Indexer (**required**) | Secret — set in Render dashboard | Stellar Horizon endpoint |
-| `ROUTER_CONTRACT_ADDRESS` | Indexer (**required**) | Secret — set in Render dashboard | Deployed router contract ID |
+| `SOROBAN_RPC_URL` | API (optional), Indexer (**required**) | Secret — set in Render dashboard / `.env.prod` | Soroban RPC endpoint |
+| `STELLAR_HORIZON_URL` | Indexer (**required**) | Secret | Stellar Horizon endpoint |
+| `ROUTER_CONTRACT_ADDRESS` | Indexer (**required**) | Secret | Deployed router contract ID |
+| `STELLARROUTE_ENV` | API (public staging) | `.env.prod` → `production` | Enables CORS/auth production posture |
+| `CORS_ALLOWED_ORIGINS` | API (public staging) | `.env.prod` | Browser origins (`https://www.stellarroute.app`, apex, Vercel) |
+| `PUBLIC_GET_ROUTES` | API (public staging) | `.env.prod` | Unauthenticated GET prefixes for the UI |
+| `ADMIN_AUTH_TOKEN` | API (public staging) | `.env.prod` | Required when `STELLARROUTE_ENV=production` |
 | `ENABLE_ADMIN_ROUTES` | API | Hardcoded `false` in blueprint | Enable/disable admin kill-switch routes (see §Security) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | API, Indexer | Optional secret | OTLP collector URL; unset disables trace export |
 | `POSTGRES_USER` | Compose only | `.env.prod` | PostgreSQL superuser (not used in Render managed DB) |
@@ -725,6 +736,15 @@ The blueprint also:
 
 ### Deploying to staging (no tribal knowledge required)
 
+**Preferred (free) — Oracle Always Free:** follow
+[`oracle-always-free.md`](./oracle-always-free.md), then:
+
+```bash
+STAGING_API_BASE_URL=https://api.<your-domain> ./scripts/staging-smoke.sh
+```
+
+**Render (paid):**
+
 1. Fork/clone the repo.
 2. Work through `deploy/secrets.checklist.md`.
 3. Connect the repo to Render → **Blueprints → New Blueprint** → select `render.yaml`.
@@ -734,4 +754,15 @@ The blueprint also:
    ```bash
    curl -sf https://<your-render-url>/health && echo "liveness OK"
    curl -sf https://<your-render-url>/health/deps && echo "readiness OK"
+   STAGING_API_BASE_URL=https://<your-render-url> ./scripts/staging-smoke.sh
    ```
+
+### Staging smoke (issue #1037)
+
+`scripts/staging-smoke.sh` checks `/health`, `/health/deps`, and one
+`/api/v1/quote/:base/:quote` against `STAGING_API_BASE_URL`. Latency budgets
+default to 2s / 3s / 5s (override with `HEALTH_BUDGET_MS`, `DEPS_BUDGET_MS`,
+`QUOTE_BUDGET_MS`). GitHub Actions workflow: `.github/workflows/staging-smoke.yml`
+(requires repo variable/secret `STAGING_API_BASE_URL`).
+
+Frontend hosting: [`vercel-frontend.md`](./vercel-frontend.md).

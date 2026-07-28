@@ -248,17 +248,24 @@ Deploy scripts also accept CLI flags (`--network`, `--identity`, `--dry-run`) ra
 
 ## Frontend
 
-Next.js public variables (prefixed with `NEXT_PUBLIC_` so they are exposed to the browser). See also [frontend/src/FEATURE_FLAGS.md](../../frontend/src/FEATURE_FLAGS.md).
+Next.js public variables (prefixed with `NEXT_PUBLIC_` so they are exposed to the browser). See also [frontend/docs/FEATURE_FLAGS.md](../../frontend/docs/FEATURE_FLAGS.md), [docs/deployment/vercel-frontend.md](../deployment/vercel-frontend.md), and `frontend/lib/env-guard.ts`.
 
 | Variable | Type | Default | Required | Service(s) | Description |
 |----------|------|---------|----------|------------|-------------|
-| `NEXT_PUBLIC_API_URL` | string (URL) | `http://localhost:8080/api/v1` | Optional | Frontend | Base URL for REST API requests |
+| `NEXT_PUBLIC_API_URL` | string (URL) | `http://localhost:8080/api/v1` (dev only) | **Required in production** | Frontend | Shared API base URL (origin or `…/api/v1`) |
+| `NEXT_PUBLIC_API_URL_TESTNET` | string (URL) | — | Recommended for testnet staging | Frontend | Per-network API URL; preferred when `NEXT_PUBLIC_STELLAR_NETWORK=testnet` |
+| `NEXT_PUBLIC_API_URL_MAINNET` | string (URL) | — | Required for mainnet UI | Frontend | Per-network API URL for mainnet |
+| `NEXT_PUBLIC_STELLAR_NETWORK` | `testnet` \| `mainnet` | `testnet` | Recommended | Frontend | App network for wallets, badges, and env-guard resolution |
+| `NEXT_PUBLIC_STELLAR_HORIZON_URL` | string (URL) | network default | Optional | Frontend | Override Horizon endpoint |
+| `STELLARROUTE_ENV` | string | — | Optional | Frontend | Set `production` to enforce the same API URL guard outside Vercel |
 | `NEXT_PUBLIC_FEATURE_ROUTES_BETA` | boolean | `false` | Optional | Frontend | Enable routes beta via `lib/feature-flags.ts` (`true`/`1`/`yes`/`on`) |
 | `NEXT_PUBLIC_FLAGS_URL` | string (URL) | — | Optional | Frontend | Remote JSON feature-flag config URL (highest priority) |
 | `NEXT_PUBLIC_FLAG_ROUTES_BETA` | boolean | `false` | Optional | Frontend | Enable routes beta via `useFeatureFlag` hook |
 | `NEXT_PUBLIC_FLAG_SWAP_UI_V2` | boolean | `false` | Optional | Frontend | Enable swap UI v2 experiment |
 | `NEXT_PUBLIC_FLAG_TRANSACTION_HISTORY` | boolean | `false` | Optional | Frontend | Enable transaction history tab |
 | `NEXT_PUBLIC_FLAG_ADVANCED_SLIPPAGE` | boolean | `false` | Optional | Frontend | Enable advanced slippage controls |
+
+**Production guard:** when `VERCEL_ENV=production` or `STELLARROUTE_ENV=production`, `next build` fails if the critical API URL is missing or points at localhost.
 
 ### Frontend / CI (testing only)
 

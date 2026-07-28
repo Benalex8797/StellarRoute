@@ -83,6 +83,9 @@ impl SdexIndexer {
                     info!("Indexed {} offers", count);
                     crate::metrics::record_offers_indexed("sdex", count as u64);
                     crate::metrics::record_throttle_success("sdex");
+                    if let Err(e) = self.record_poll_heartbeat().await {
+                        warn!("Failed to record SDEX poll heartbeat: {}", e);
+                    }
                 }
                 Err(IndexerError::RateLimitExceeded { retry_after }) => {
                     // Cursor is NOT advanced on rate-limit — we retry the same page.
@@ -104,6 +107,26 @@ impl SdexIndexer {
             // Poll every 5 seconds
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
+    }
+
+    /// Record the Horizon tip so API lag monitors treat a fresh poll as caught up.
+    ///
+    /// Orderbook polling rewrites current offers whose `last_modified_ledger` may
+    /// be millions of ledgers old; without this heartbeat `/health` stays 503.
+    async fn record_poll_heartbeat(&self) -> Result<()> {
+        let ledger = self.horizon.get_latest_ledger().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO ingestion_state (key, value, updated_at)
+            VALUES ('sdex_last_horizon_ledger', $1, now())
+            ON CONFLICT (key)
+            DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+            "#,
+        )
+        .bind(ledger.to_string())
+        .execute(self.db.pool())
+        .await?;
+        Ok(())
     }
 
     /// Start streaming mode indexing

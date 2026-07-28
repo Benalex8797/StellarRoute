@@ -2,7 +2,7 @@
 
 **Issue:** #1021  
 **Audience:** Non-developer traders  
-**App path:** [/guide](https://stellarroute.vercel.app/guide) (also available in the swap help drawer via `?`)  
+**App path:** [/guide](https://www.stellarroute.app/guide) (also available in the swap help drawer via `?`)  
 **Related:** [Empty states spec](./design/empty-states-spec.md), [Swap E2E flow](./swap-e2e-flow.md), [Risk disclosure](./risk-disclosure.md)
 
 This short guide walks you through your **first live swap**: connect a wallet, set trustlines, pick a pair, set slippage, and confirm.

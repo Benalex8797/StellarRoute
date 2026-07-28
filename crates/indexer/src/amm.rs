@@ -90,7 +90,31 @@ impl AmmAggregator {
 
         let current_ledger = self.soroban.get_latest_ledger().await?;
         let cursor_str = self.load_discovery_cursor().await?;
-        let start_ledger: u64 = cursor_str.parse().unwrap_or(0);
+        let mut start_ledger: u64 = cursor_str.parse().unwrap_or(0);
+
+        // Public Soroban RPC only retains a limited ledger window. A fresh cursor
+        // (0) or a cursor older than retention causes getEvents to fail with
+        // -32602 invalid parameters — which previously aborted the whole cycle
+        // before registry pools were processed or the cursor advanced.
+        const MAX_EVENT_LOOKBACK: u64 = 10_000;
+        if start_ledger == 0 {
+            info!(
+                current_ledger,
+                "Fresh AMM discovery cursor; bootstrapping from registry (skip historical getEvents)"
+            );
+            start_ledger = current_ledger;
+        } else {
+            let min_start = current_ledger.saturating_sub(MAX_EVENT_LOOKBACK);
+            if start_ledger < min_start {
+                warn!(
+                    start_ledger,
+                    min_start,
+                    current_ledger,
+                    "AMM discovery cursor older than RPC retention lookback; clamping"
+                );
+                start_ledger = min_start;
+            }
+        }
 
         if start_ledger >= current_ledger {
             debug!(
@@ -100,9 +124,21 @@ impl AmmAggregator {
         } else {
             // Discover new pools since last check via contract events. If none are
             // discovered, fall back to the operator-managed registry or env var list.
-            let mut new_pools = self
+            let mut new_pools = match self
                 .discover_new_pools(start_ledger, current_ledger)
-                .await?;
+                .await
+            {
+                Ok(pools) => pools,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        start_ledger,
+                        current_ledger,
+                        "AMM pool discovery getEvents failed; continuing with registry fallback"
+                    );
+                    Vec::new()
+                }
+            };
 
             if new_pools.is_empty() {
                 let registry = self.get_registry_pools().await?;
@@ -120,11 +156,17 @@ impl AmmAggregator {
                 self.process_pool_batch(&new_pools).await?;
             }
 
-            let indexed_swaps = self
+            match self
                 .index_swap_activity(start_ledger, current_ledger)
-                .await?;
-            if indexed_swaps > 0 {
-                info!("Indexed {} contract swap activity events", indexed_swaps);
+                .await
+            {
+                Ok(indexed_swaps) if indexed_swaps > 0 => {
+                    info!("Indexed {} contract swap activity events", indexed_swaps);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(error = %e, "AMM swap activity getEvents failed; continuing");
+                }
             }
         }
 

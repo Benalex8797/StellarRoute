@@ -77,7 +77,12 @@ impl StellarRoute {
         storage::set_last_ttl_extension(&e, e.ledger().sequence());
 
         events::initialized(&e, admin, fee_rate);
-        extend_instance_ttl(&e);
+        // Do not call extend_instance_ttl here: on public networks the
+        // auto-footprint from simulation often omits the contract-code key that
+        // instance TTL extension touches, which traps submit with
+        // "contract data key outside of the footprint". Fresh instance writes
+        // already receive the network minimum TTL; operators extend via
+        // scripts/extend-ttl.sh after deploy.
         Ok(())
     }
 

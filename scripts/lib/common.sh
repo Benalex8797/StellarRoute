@@ -9,7 +9,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONFIG_DIR="${REPO_ROOT}/config"
 CONTRACTS_DIR="${REPO_ROOT}/crates/contracts"
-WASM_TARGET_DIR="${CONTRACTS_DIR}/target/wasm32-unknown-unknown/release"
+# Workspace builds write wasm under the repo-root target/ (not crates/contracts/target/).
+WASM_TARGET_DIR="${REPO_ROOT}/target/wasm32-unknown-unknown/release"
 WASM_FILE="${WASM_TARGET_DIR}/stellarroute_contracts.wasm"
 LOG_DIR="${REPO_ROOT}/logs"
 NETWORK=""
@@ -184,9 +185,23 @@ run_cmd() {
 
 configure_network() {
     log_info "Configuring network: ${NETWORK}"
-    run_cmd soroban_cmd network add "${NETWORK}" \
-        --rpc-url "$(get_rpc_url)" \
-        --network-passphrase "$(get_network_passphrase)" 2>/dev/null || true
+    local rpc_url passphrase
+    rpc_url="$(get_rpc_url)"
+    passphrase="$(get_network_passphrase)"
+    export STELLAR_NETWORK_PASSPHRASE="${passphrase}"
+    export STELLAR_RPC_URL="${rpc_url}"
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_info "[DRY-RUN] would configure network ${NETWORK} (${rpc_url})"
+        return 0
+    fi
+    # Prefer adding/updating the named network; fall back to env vars above.
+    soroban_cmd network add "${NETWORK}" \
+        --rpc-url "${rpc_url}" \
+        --network-passphrase "${passphrase}" 2>/dev/null \
+      || soroban_cmd network add "${NETWORK}" \
+        --rpc-url "${rpc_url}" \
+        --network-passphrase "${passphrase}" \
+      || log_warn "Could not add network via CLI; using STELLAR_NETWORK_PASSPHRASE / STELLAR_RPC_URL"
 }
 
 invoke_contract() {
@@ -197,6 +212,8 @@ invoke_contract() {
         --id "${contract_id}" \
         --source "${IDENTITY}" \
         --network "${NETWORK}" \
+        --network-passphrase "$(get_network_passphrase)" \
+        --rpc-url "$(get_rpc_url)" \
         -- "${fn_name}" "$@"
 }
 
@@ -204,8 +221,21 @@ invoke_contract() {
 
 build_wasm() {
     log_info "Building contracts to WASM..."
+    # Soroban rejects wasm with newer MVP features (e.g. reference-types) enabled
+    # by recent Rust toolchains. Keep the guest binary on the classic feature set.
+    local prev_rustflags="${RUSTFLAGS:-}"
+    export RUSTFLAGS="${prev_rustflags} -C target-feature=-reference-types,-multivalue,-bulk-memory,-mutable-globals,-sign-ext,-simd128"
     cargo build --manifest-path "${CONTRACTS_DIR}/Cargo.toml" \
         --target wasm32-unknown-unknown --release
+    if [[ -n "${prev_rustflags}" ]]; then
+        export RUSTFLAGS="${prev_rustflags}"
+    else
+        unset RUSTFLAGS
+    fi
+    if [[ ! -f "${WASM_FILE}" ]]; then
+        log_error "Expected WASM at ${WASM_FILE} after build, but file is missing"
+        exit 1
+    fi
     log_ok "WASM build complete: ${WASM_FILE}"
 }
 
@@ -219,7 +249,13 @@ trap_with_context() {
 optimize_wasm() {
     log_info "Optimizing WASM..."
     soroban_cmd contract optimize --wasm "${WASM_FILE}"
-    log_ok "WASM optimized"
+    local optimized="${WASM_FILE%.wasm}.optimized.wasm"
+    if [[ -f "${optimized}" ]]; then
+        WASM_FILE="${optimized}"
+        log_ok "WASM optimized: ${WASM_FILE}"
+    else
+        log_ok "WASM optimized (in-place)"
+    fi
 }
 
 local_wasm_hash() {
