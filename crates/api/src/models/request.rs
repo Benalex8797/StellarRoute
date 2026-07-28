@@ -274,7 +274,8 @@ impl AssetPath {
         let parts: Vec<&str> = s.split(':').collect();
         match parts.len() {
             1 => {
-                let code = parts[0].to_uppercase();
+                // Preserve case — Stellar asset codes are case-sensitive (e.g. USDy ≠ USDY).
+                let code = parts[0].to_string();
                 if code.is_empty() {
                     return Err(format!("Asset code cannot be empty: {}", s));
                 }
@@ -284,7 +285,7 @@ impl AssetPath {
                 })
             }
             2 => {
-                let code = parts[0].to_uppercase();
+                let code = parts[0].to_string();
                 let issuer = parts[1];
                 if code.is_empty() || issuer.is_empty() {
                     return Err(format!("Asset code and issuer cannot be empty: {}", s));
@@ -382,6 +383,15 @@ mod tests {
             asset.asset_issuer.as_deref(),
             Some("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
         );
+    }
+
+    #[test]
+    fn test_parse_preserves_asset_code_case() {
+        let asset = AssetPath::parse(
+            "USDy:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS",
+        )
+        .unwrap();
+        assert_eq!(asset.asset_code, "USDy");
     }
 
     #[test]

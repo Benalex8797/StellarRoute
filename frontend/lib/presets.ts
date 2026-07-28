@@ -7,6 +7,12 @@ export interface SwapPreset {
 
 export const DEFAULT_SWAP_PRESETS: SwapPreset[] = [
   {
+    id: "btc-ext",
+    label: "BTC / EXT",
+    baseAsset: "BTC:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS",
+    quoteAsset: "EXT:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS",
+  },
+  {
     id: "xlm-usdc",
     label: "XLM / USDC",
     baseAsset: "native",
@@ -22,12 +28,6 @@ export const DEFAULT_SWAP_PRESETS: SwapPreset[] = [
     id: "usdc-xlm",
     label: "USDC / XLM",
     baseAsset: "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-    quoteAsset: "native",
-  },
-  {
-    id: "aqua-xlm",
-    label: "AQUA / XLM",
-    baseAsset: "AQUA:GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA",
     quoteAsset: "native",
   },
 ];

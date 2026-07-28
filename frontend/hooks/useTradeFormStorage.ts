@@ -7,9 +7,11 @@ export const STORAGE_KEY = "stellar-route-trade-form";
 export const DEFAULT_AMOUNT = "";
 export const DEFAULT_SLIPPAGE = 0.5;
 export const DEFAULT_DEADLINE = 30;
-export const DEFAULT_FROM_TOKEN = "native";
+/** Staging default pair present in Wave 0 indexed SDEX offers (quotes successfully). */
+export const DEFAULT_FROM_TOKEN =
+  "BTC:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS";
 export const DEFAULT_TO_TOKEN =
-  "USDC:GA5ZSEJYB37JRC5AVCIAZDL2Y343IFRMA2EO3HJWV2XG7H5V5CQRUP7W";
+  "EXT:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS";
 export const DEFAULT_SIDE: QuoteType = "sell";
 export const SESSION_RECOVERY_THRESHOLD_MS = 60_000;
 

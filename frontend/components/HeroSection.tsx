@@ -9,9 +9,9 @@ import { useReducedMotion } from '@/hooks/useReducedMotion';
 
 export function HeroSection() {
   const featuredPair = {
-    from: 'native',
-    to: 'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-    amount: '100',
+    from: 'BTC:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS',
+    to: 'EXT:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS',
+    amount: '1',
   };
 
   const prefersReducedMotion = useReducedMotion();
@@ -90,7 +90,7 @@ export function HeroSection() {
               className="h-12 min-h-11 rounded-lg px-7 text-base font-semibold"
             >
               <Link href={swapUrl}>
-                Start with XLM → USDC
+                Start with BTC → EXT
                 <ArrowRight className="ml-2 h-5 w-5" />
               </Link>
             </Button>

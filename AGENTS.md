@@ -144,12 +144,14 @@ Focus here first when debugging behavior across crates.
 - For large PR queues, prefer parallel per-PR workers over a single serial queue.
 - When closing multiple related issues, prefer one PR that closes them together.
 - Do not edit attached plan files during implementation.
+- Prefer free always-on Wave 0 staging (Oracle Always Free + Cloudflare Tunnel) over paid Render when cost matters; a public HTTPS API is required for Freighter/Vercel (localhost alone is not enough).
 
 ## Learned Workspace Facts
 - Canonical GitHub repo is `StellarRoute/StellarRoute`; local path is `/Users/daniel/Desktop/2026/StellarRoute`.
 - Project participates in the Drips/Stellar Wave contributor program; issues commonly use Wave/`help wanted`/complexity labels.
-- Frontend target deploy path includes Vercel; wiring the app to testnet API/indexer is an explicit product goal.
+- Frontend production is on Vercel (`stellarroute.app`); GitHub-linked auto-deploy from `main` with root directory `frontend`; wiring to a public testnet API/indexer is an explicit product goal.
 - Browser wallet support is Freighter, xBull, Albedo, and LOBSTR; Freighter detection should use `isConnected()`, not `isAllowed`.
+- Wave 0 public testnet API path is Oracle Always Free ARM VM + `deploy/docker-compose.prod.yml` + Cloudflare Tunnel; runbook is `docs/deployment/oracle-always-free.md` (paid Render blueprint remains optional later).
 - Related sibling work under `~/Desktop/2026/` (separate from this repo) includes StellarHydra, WaveFlow, route-visualizer, and swap-agrregrator — do not commit StellarRoute changes into those trees by mistake.
 - Frontend Vitest in CI is split by path (app/components/hooks/lib); flaky or heavy suites have been a recurring main-branch blocker.
 - `gh` is the expected interface for GitHub issues, PRs, labels, and CI log inspection on this repo.

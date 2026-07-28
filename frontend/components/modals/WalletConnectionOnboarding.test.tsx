@@ -97,4 +97,65 @@ describe('WalletConnectionOnboarding', () => {
     expect(onRefreshWallets).toHaveBeenCalled();
     expect(onConnect).toHaveBeenCalledWith('lobstr');
   });
+
+  it('allows cancel while waiting for wallet approval', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    let resolveConnect: (() => void) | undefined;
+    const onConnect = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveConnect = resolve;
+        }),
+    );
+
+    render(
+      <WalletConnectionOnboarding
+        open
+        onOpenChange={onOpenChange}
+        availableWallets={[{ id: 'freighter', label: 'Freighter', installed: true }]}
+        isLoading={false}
+        error={null}
+        onConnect={onConnect}
+        appNetwork="testnet"
+        walletNetwork={null}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+    await user.click(screen.getByRole('button', { name: /testnet/i }));
+    await user.click(screen.getByRole('button', { name: /freighter/i }));
+
+    expect(screen.getByRole('heading', { name: /connecting freighter/i })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(screen.getByRole('heading', { name: /select your wallet/i })).toBeInTheDocument();
+
+    resolveConnect?.();
+  });
+
+  it('closes the modal from the connecting step', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    const onConnect = vi.fn(() => new Promise<void>(() => {}));
+
+    render(
+      <WalletConnectionOnboarding
+        open
+        onOpenChange={onOpenChange}
+        availableWallets={[{ id: 'freighter', label: 'Freighter', installed: true }]}
+        isLoading={false}
+        error={null}
+        onConnect={onConnect}
+        appNetwork="testnet"
+        walletNetwork={null}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+    await user.click(screen.getByRole('button', { name: /testnet/i }));
+    await user.click(screen.getByRole('button', { name: /freighter/i }));
+
+    await user.click(screen.getByTestId('wallet-connect-dismiss'));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
 });

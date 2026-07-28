@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -20,6 +20,7 @@ import {
 } from '@/lib/network-policy';
 import { AlertCircle, CheckCircle, Loader2, AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 
+const CONNECT_TIMEOUT_MS = 90_000;
 export type OnboardingStep =
   | 'welcome'
   | 'select-network'
@@ -70,6 +71,8 @@ export function WalletConnectionOnboarding({
   });
   const [connectionError, setConnectionError] = useState<string | null>(error);
   const [isRefreshingWallets, setIsRefreshingWallets] = useState(false);
+  const connectAttemptRef = useRef(0);
+  const dismissedRef = useRef(false);
 
   useEffect(() => {
     const normalizedApp = normalizeAppNetwork(appNetwork);
@@ -79,7 +82,7 @@ export function WalletConnectionOnboarding({
   }, [appNetwork, allowedNetworks]);
 
   useEffect(() => {
-    if (step !== 'connecting' || !walletNetwork) {
+    if (step !== 'connecting' || !walletNetwork || dismissedRef.current) {
       return;
     }
 
@@ -87,6 +90,26 @@ export function WalletConnectionOnboarding({
       normalizeAppNetwork(walletNetwork) !== normalizeAppNetwork(selectedNetwork);
     setStep(mismatch ? 'network-mismatch' : 'success');
   }, [step, walletNetwork, selectedNetwork]);
+
+  // If Freighter/extension never responds, leave the spinner and show an error.
+  useEffect(() => {
+    if (step !== 'connecting') {
+      return;
+    }
+
+    const attempt = connectAttemptRef.current;
+    const timer = window.setTimeout(() => {
+      if (dismissedRef.current || connectAttemptRef.current !== attempt) {
+        return;
+      }
+      setConnectionError(
+        'Wallet did not respond in time. Open Freighter (or your extension), approve the request, or cancel and try again.'
+      );
+      setStep('error');
+    }, CONNECT_TIMEOUT_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [step, selectedWallet]);
 
   // Re-detect extensions when the picker is open — they often inject after page load.
   useEffect(() => {
@@ -158,6 +181,9 @@ export function WalletConnectionOnboarding({
   };
 
   const handleWalletSelect = async (wallet: AvailableWallet) => {
+    dismissedRef.current = false;
+    const attempt = ++connectAttemptRef.current;
+
     // Always attempt connect — detection can lag behind a freshly installed extension.
     if (onRefreshWallets) {
       setIsRefreshingWallets(true);
@@ -168,6 +194,10 @@ export function WalletConnectionOnboarding({
       }
     }
 
+    if (dismissedRef.current || connectAttemptRef.current !== attempt) {
+      return;
+    }
+
     onNetworkSelection?.(selectedNetwork);
     setSelectedWallet(wallet.id);
     setConnectionError(null);
@@ -175,7 +205,11 @@ export function WalletConnectionOnboarding({
 
     try {
       await onConnect(wallet.id);
+      // Success UI is advanced via walletNetwork effect once the provider updates.
     } catch (err) {
+      if (dismissedRef.current || connectAttemptRef.current !== attempt) {
+        return;
+      }
       const errorMessage =
         err instanceof Error ? err.message : 'Connection failed. Please try again.';
       setConnectionError(errorMessage);
@@ -194,7 +228,6 @@ export function WalletConnectionOnboarding({
   const handleRetry = () => {
     if (selectedWallet) {
       setConnectionError(null);
-      setStep('connecting');
       const wallet = availableWallets.find((w) => w.id === selectedWallet);
       if (wallet) {
         void handleWalletSelect(wallet);
@@ -210,16 +243,24 @@ export function WalletConnectionOnboarding({
     setConnectionError(null);
   };
 
-  const handleClose = () => {
-    if (['welcome', 'success', 'error'].includes(step)) {
-      onOpenChange(false);
-      resetFlow();
+  const dismissModal = () => {
+    dismissedRef.current = true;
+    connectAttemptRef.current += 1;
+    onOpenChange(false);
+    resetFlow();
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      dismissModal();
     }
   };
 
-  const handleNetworkMismatchClose = () => {
-    onOpenChange(false);
-    resetFlow();
+  const handleCancelConnecting = () => {
+    dismissedRef.current = true;
+    connectAttemptRef.current += 1;
+    setStep('select-wallet');
+    setConnectionError(null);
   };
 
   const handleManualRefresh = async () => {
@@ -233,7 +274,7 @@ export function WalletConnectionOnboarding({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         data-testid="wallet-connect-dialog"
         className="flex w-[min(100%,90vw)] max-h-[min(90dvh,90vh)] flex-col gap-0 overflow-hidden p-4 sm:p-6 sm:max-w-[425px] md:max-w-[600px] pb-[max(1rem,env(safe-area-inset-bottom))]"
@@ -293,7 +334,7 @@ export function WalletConnectionOnboarding({
               </Alert>
 
               <div className="flex gap-2 pt-4">
-                <Button variant="outline" onClick={handleClose} className="flex-1">
+                <Button variant="outline" onClick={dismissModal} className="flex-1">
                   Cancel
                 </Button>
                 <Button onClick={handleContinueFromWelcome} className="flex-1">
@@ -462,6 +503,27 @@ export function WalletConnectionOnboarding({
               <Loader2 className="h-12 w-12 animate-spin text-primary" />
               <div className="text-center space-y-2">
                 <p className="font-medium">Waiting for approval...</p>
+                <p className="text-sm text-muted-foreground max-w-sm">
+                  Check the Freighter extension popup (puzzle icon in your browser
+                  toolbar). If nothing appears, unlock Freighter and try again.
+                </p>
+              </div>
+              <div className="flex w-full gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleCancelConnecting}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={dismissModal}
+                  className="flex-1"
+                  data-testid="wallet-connect-dismiss"
+                >
+                  Close dialog
+                </Button>
               </div>
             </div>
           </>
@@ -483,7 +545,7 @@ export function WalletConnectionOnboarding({
                   You&apos;re ready to start trading on StellarRoute
                 </p>
               </div>
-              <Button onClick={handleClose} className="w-full">
+              <Button onClick={dismissModal} className="w-full">
                 Start Trading
               </Button>
             </div>
@@ -572,7 +634,7 @@ export function WalletConnectionOnboarding({
                     Use wallet network
                   </Button>
                 )}
-                <Button onClick={handleNetworkMismatchClose} className="flex-1">
+                <Button onClick={dismissModal} className="flex-1">
                   Close
                 </Button>
               </div>

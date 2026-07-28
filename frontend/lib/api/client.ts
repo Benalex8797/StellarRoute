@@ -153,6 +153,15 @@ function unwrapEnvelope<T>(body: unknown): T {
   return body as T;
 }
 
+function isHealthPayload(value: unknown): value is { status: string } {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    'status' in value &&
+    typeof (value as { status: unknown }).status === 'string'
+  );
+}
+
 function mapBatchQuoteResponse(data: BackendBatchQuoteData): BatchQuoteResponse {
   const quotes: PriceQuote[] = [];
 
@@ -308,8 +317,8 @@ export class StellarRouteClient {
   // -------------------------------------------------------------------------
 
   /** GET /health — overall service health check */
-  getHealth(opts?: FetchOptions): Promise<HealthStatus> {
-    return this.request<HealthStatus>('/health', opts);
+  async getHealth(opts?: FetchOptions): Promise<HealthStatus> {
+    return this.requestHealth<HealthStatus>('/health', opts);
   }
 
   /** GET /metrics/cache — quote cache hit/miss metrics */
@@ -323,8 +332,69 @@ export class StellarRouteClient {
   }
 
   /** GET /health/deps — external dependency health check */
-  getDepsHealth(opts?: FetchOptions): Promise<DepsHealthStatus> {
-    return this.request<DepsHealthStatus>('/health/deps', opts);
+  async getDepsHealth(opts?: FetchOptions): Promise<DepsHealthStatus> {
+    return this.requestHealth<DepsHealthStatus>('/health/deps', opts);
+  }
+
+  /**
+   * Health endpoints return an ApiResponse envelope and may use HTTP 503 when
+   * degraded/unhealthy while still including a useful status payload.
+   */
+  private async requestHealth<T extends { status: string }>(
+    path: string,
+    opts: FetchOptions = {},
+  ): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+    if (opts.signal?.aborted) {
+      controller.abort();
+    } else {
+      opts.signal?.addEventListener('abort', () => controller.abort());
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+
+      const payload = unwrapEnvelope<unknown>(body);
+      if (isHealthPayload(payload)) {
+        return payload as T;
+      }
+
+      if (!response.ok) {
+        const errorBody = parseErrorBody(body);
+        throw new StellarRouteApiError(
+          response.status,
+          errorBody.error ?? 'unknown_error',
+          errorBody.message ?? `HTTP ${response.status}`,
+          errorBody.details,
+        );
+      }
+
+      throw new StellarRouteApiError(
+        response.status,
+        'unknown_error',
+        'Invalid health response payload',
+      );
+    } catch (err) {
+      if (err instanceof StellarRouteApiError) throw err;
+      const message = err instanceof Error ? err.message : 'Network error';
+      throw new StellarRouteApiError(0, 'network_error' as ApiErrorCode, message);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** GET /api/v1/pairs — list all trading pairs */
