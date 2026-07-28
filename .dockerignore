@@ -19,12 +19,14 @@ frontend/.next
 sdk-js/node_modules
 **/node_modules
 
+# Local / IDE / OS noise
 **/.DS_Store
 **/*.swp
 **/*~
 .vscode
 .idea
 
+# Large unrelated trees for API/indexer builds
 audit
 docs
 examples

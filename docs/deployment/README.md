@@ -80,75 +80,54 @@ or if auth ends up disabled (`REQUIRE_AUTH=false`) without the explicit
 `ALLOW_INSECURE_PUBLIC_API=1` break-glass override — that override should
 never be set in a real production deployment.
 
-## Container images (API + Indexer)
+## API Docker Image (`Dockerfile.api`)
 
-### Build locally
+Multi-stage production image for `stellarroute-api`. Build from the repository root
+(Docker only — no host Rust toolchain required):
 
 ```bash
 docker build -f Dockerfile.api -t stellarroute-api:local .
-docker build -f Dockerfile.indexer -t stellarroute-indexer:local .
 ```
 
-### Registry (GHCR)
+### Bind address
 
-On every push to `main` (and on `v*` tags), GitHub Actions builds both images and
-publishes them to GitHub Container Registry using `GITHUB_TOKEN` (OIDC / short-lived
-credentials — **no** long-lived registry passwords):
+| Env | Behavior |
+|-----|----------|
+| `PORT` set | Listen on `API_HOST` or **`0.0.0.0`**, port = `PORT` (PaaS default) |
+| `PORT` unset | Listen on `API_HOST` or `127.0.0.1`, port = `API_PORT` or `3000` |
 
-| Image | Repository |
-|-------|------------|
-| API | `ghcr.io/<owner>/stellarroute-api` |
-| Indexer | `ghcr.io/<owner>/stellarroute-indexer` |
+The image sets `ENV PORT=8080` so containers bind on all interfaces by default.
+Compose may instead set `API_HOST=0.0.0.0` + `API_PORT` without `PORT` — both work.
 
-Tags:
+### Health probes
 
-- Git SHA (short) on every publish
-- `latest` on `main`
-- Semver (`1.2.3`, `1.2`) when pushing a `v*` tag
+- **`GET /health`** — readiness: requires a reachable Postgres (`DATABASE_URL`). Redis is optional (degraded OK). There is **no** pure process-liveness endpoint that works without the database.
+- **`GET /health/deps`** — deeper readiness (DB + Horizon + Soroban RPC when configured).
 
-PRs that touch Dockerfiles or the API/indexer crate graph run a **build-only**
-job (no push) via `.github/workflows/docker-images.yml`.
-
-### Pull and run examples
-
-```bash
-OWNER=stellarroute   # or your fork owner (lowercase)
-SHA=<git-sha>
-
-# API — requires reachable DATABASE_URL; PORT binds 0.0.0.0
-docker pull ghcr.io/${OWNER}/stellarroute-api:latest
-docker run --rm -p 8080:8080 \
-  -e PORT=8080 \
-  -e DATABASE_URL='postgresql://stellarroute:stellarroute_dev@host.docker.internal:5432/stellarroute' \
-  ghcr.io/${OWNER}/stellarroute-api:latest
-
-# Pin a specific SHA
-docker pull ghcr.io/${OWNER}/stellarroute-api:${SHA}
-
-# Indexer — required env vars
-docker pull ghcr.io/${OWNER}/stellarroute-indexer:latest
-docker run --rm \
-  -e DATABASE_URL='postgresql://stellarroute:stellarroute_dev@host.docker.internal:5432/stellarroute' \
-  -e STELLAR_HORIZON_URL='https://horizon-testnet.stellar.org' \
-  -e SOROBAN_RPC_URL='https://soroban-testnet.stellar.org' \
-  -e ROUTER_CONTRACT_ADDRESS='C...' \
-  ghcr.io/${OWNER}/stellarroute-indexer:latest
-```
-
-### Health / env notes
-
-- **API** `GET /health` is readiness (needs Postgres). Process exits if `DATABASE_URL` is unreachable.
-- **API** `GET /health/deps` probes DB + Horizon + Soroban when configured.
-- **Indexer** has no HTTP health endpoint; missing required env vars causes a non-zero exit.
-- Indexer required: `DATABASE_URL`, `STELLAR_HORIZON_URL`, `SOROBAN_RPC_URL`, `ROUTER_CONTRACT_ADDRESS`.
-- Images run as non-root UID 10001; do not bake `.env` into layers.
-
-Compose:
+The API process **exits at startup** if `DATABASE_URL` is missing or Postgres is unreachable, so `docker run -e DATABASE_URL=postgres://invalid …` will never answer HTTP. Use compose Postgres (or any real DB) when verifying:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
-docker compose -f docker-compose.yml -f docker-compose.app.yml --profile indexer up -d
+curl -sf "http://127.0.0.1:${API_PORT:-3000}/health"
 ```
+
+Image runs as non-root UID **10001**. Secrets are injected via env / orchestrator — `.env` is never copied into the image.
+
+### Required / optional environment
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `DATABASE_URL` | **Yes** | Postgres URL; connect must succeed or the process exits |
+| `PORT` | Recommended in containers | Prefer over `API_PORT` on PaaS |
+| `API_HOST` / `API_PORT` | Optional | Compose-style bind when `PORT` unset |
+| `REDIS_URL` | Optional | Cache / rate limits |
+| `STELLARROUTE_ENV` | Prod | Set `production` for CORS/auth hardening |
+| `CORS_ALLOWED_ORIGINS` | Prod | Required when production |
+| `API_KEYS` / `REQUIRE_AUTH` / `PUBLIC_GET_ROUTES` | Prod | See [environment-variables.md](../development/environment-variables.md) |
+| `ADMIN_AUTH_TOKEN` | Prod admin/metrics | |
+| `RUST_LOG` | Optional | Defaults to `info` in the image |
+
+CI builds this Dockerfile on PRs that touch `Dockerfile.api` or the API crate graph (`.github/workflows/docker-api.yml`).
 
 ## Unified Liquidity Migration and Rollback
 

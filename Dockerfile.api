@@ -14,6 +14,8 @@ ARG RUST_VERSION=1.88
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /app
 
+# Copy the full workspace needed to compile stellarroute-api and its path deps.
+# .dockerignore excludes .env, target/, frontend/, secrets, etc.
 COPY Cargo.toml ./
 COPY crates ./crates
 
@@ -33,11 +35,14 @@ COPY --from=builder /app/target/release/stellarroute-api /usr/local/bin/stellarr
 USER 10001
 WORKDIR /home/stellarroute
 
+# PaaS-style bind: PORT present ⇒ listen on 0.0.0.0:$PORT (see resolve_bind_address).
 ENV PORT=8080 \
     RUST_LOG=info
 
 EXPOSE 8080
 
+# /health is readiness (requires reachable DATABASE_URL). The process exits at
+# startup if Postgres is unreachable — see docs/deployment/README.md.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
   CMD curl -sf "http://127.0.0.1:${PORT}/health" || exit 1
 
