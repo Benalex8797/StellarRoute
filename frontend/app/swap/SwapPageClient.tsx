@@ -11,10 +11,12 @@ const SwapCard = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="w-full max-w-[480px] h-[580px] bg-card/40 backdrop-blur-md rounded-[32px] border border-border/20 flex items-center justify-center shadow-2xl">
+      <div className="flex h-[520px] w-full max-w-[480px] items-center justify-center rounded-2xl chart-panel sm:h-[580px] sm:rounded-3xl">
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
-          <span className="text-xs text-muted-foreground font-mono animate-pulse">Initializing swap interface...</span>
+          <span className="font-mono text-xs text-muted-foreground animate-pulse">
+            Initializing swap interface...
+          </span>
         </div>
       </div>
     )
@@ -66,7 +68,19 @@ function SwapRoutesBeta() {
 
 export function SwapPageClient() {
   return (
-    <div className="w-full max-w-[960px] mx-auto space-y-4">
+    <div className="mx-auto w-full max-w-[960px] space-y-4 overflow-x-hidden px-0 sm:space-y-5">
+      <div className="space-y-1 px-1 sm:px-0">
+        <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-primary">
+          Trade deck
+        </p>
+        <h1 className="brand-wordmark text-2xl text-foreground sm:text-3xl">
+          Route &amp; swap
+        </h1>
+        <p className="max-w-xl text-sm text-muted-foreground">
+          Compare venues, lock a quote, then sign — built for Stellar SDEX and
+          Soroban liquidity.
+        </p>
+      </div>
       <OnboardingChecklist />
       <RoutesBetaGate fallback={<SwapLegacyRoutes />}>
         <SwapRoutesBeta />

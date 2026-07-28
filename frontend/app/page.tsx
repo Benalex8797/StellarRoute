@@ -1,7 +1,5 @@
-import { redirect } from "next/navigation";
-
-import { ROUTES } from "@/lib/constants";
+import { HeroSection } from "@/components/HeroSection";
 
 export default function Home() {
-  redirect(ROUTES.SWAP);
+  return <HeroSection />;
 }

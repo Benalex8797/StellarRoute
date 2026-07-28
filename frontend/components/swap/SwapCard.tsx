@@ -39,7 +39,6 @@ import { useQuoteStreamStatus } from '@/hooks/useQuoteStreamStatus';
 import { useCompactMode } from '@/hooks/useCompactMode';
 import { useShareableQuote } from '@/hooks/useShareableQuote';
 import { ShareQuoteButton } from './ShareQuoteButton';
-import { NetworkMismatchBanner } from '@/components/shared/NetworkMismatchBanner';
 import { WalletCapabilitiesBanner } from '@/components/shared/WalletCapabilitiesBanner';
 import { DiagnosticsPanel } from '@/components/shared/DiagnosticsPanel';
 import { useWallet } from '@/components/providers/wallet-provider';
@@ -905,8 +904,6 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
       data-testid="swap-card"
       className="w-full max-w-[480px] mx-auto perspective-1000"
     >
-      {/* Network Mismatch Banner */}
-      <NetworkMismatchBanner className="mb-4" />
       <WalletCapabilitiesBanner className="mb-4" />
 
       {/* Shared Quote Stale Warning */}
@@ -928,24 +925,26 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
 
       <Card
         className={cn(
-          'relative overflow-hidden border-border/40 bg-background/60 backdrop-blur-xl shadow-2xl rounded-[32px] transition-all duration-500 hover:shadow-primary/5',
-          isCompact && 'rounded-2xl',
-          expertMode &&
-            'border-amber-500/30 hover:shadow-amber-500/10 shadow-amber-500/5'
+          'relative overflow-hidden chart-panel rounded-2xl transition-all duration-300 sm:rounded-3xl',
+          isCompact && 'rounded-xl',
+          expertMode && 'border-signal/40'
         )}
       >
-        {/* Animated Background Gradients */}
-        <div className="absolute -top-24 -left-24 w-48 h-48 bg-primary/10 rounded-full blur-3xl animate-pulse" />
-        <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl animate-pulse delay-700" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
 
-        <CardContent className={cn('space-y-4', isCompact ? 'p-4' : 'p-6')}>
+        <CardContent
+          className={cn(
+            'space-y-3 sm:space-y-4',
+            isCompact ? 'p-3 sm:p-4' : 'p-4 sm:p-6'
+          )}
+        >
           {/* Header */}
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-1 sm:mb-2">
             <div className="flex items-center gap-1.5">
               <h2
                 className={cn(
-                  'font-bold tracking-tight bg-gradient-to-br from-foreground to-foreground/60 bg-clip-text text-transparent',
-                  isCompact ? 'text-lg' : 'text-xl'
+                  'brand-wordmark tracking-tight text-foreground',
+                  isCompact ? 'text-lg' : 'text-xl sm:text-2xl'
                 )}
               >
                 Swap
@@ -1045,15 +1044,15 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
           </div>
 
           {/* Toggle Button */}
-          <div className="relative h-2 flex items-center justify-center z-10">
+          <div className="relative z-10 flex h-3 items-center justify-center sm:h-2">
             <Button
               variant="outline"
               size="icon"
               onClick={handleSwitchTokens}
-              aria-label="Switch pay and receive tokens"
-              className="absolute h-10 w-10 rounded-xl bg-background border-border/40 shadow-lg hover:shadow-primary/20 hover:border-primary/40 hover:scale-110 active:scale-95 transition-all duration-300 group"
+              aria-label="Swap token direction"
+              className="absolute h-11 w-11 min-h-11 min-w-11 rounded-xl border-border/50 bg-card shadow-md transition-all duration-300 hover:border-primary/50 hover:bg-accent group"
             >
-              <ArrowUpDown className="h-4 w-4 text-primary group-hover:rotate-180 transition-transform duration-500" />
+              <ArrowUpDown className="h-4 w-4 text-primary transition-transform duration-500 group-hover:rotate-180" />
             </Button>
           </div>
 

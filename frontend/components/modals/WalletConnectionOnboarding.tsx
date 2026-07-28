@@ -100,12 +100,12 @@ export function WalletConnectionOnboarding({
 
   const handleWalletSelect = async (wallet: AvailableWallet) => {
     if (!wallet.installed) {
-      window.open(
-        wallet.id === 'freighter'
-          ? 'https://www.freighter.app/'
-          : 'https://wallet.xbull.app/',
-        '_blank',
-      );
+      const installUrls: Record<string, string> = {
+        freighter: 'https://www.freighter.app/',
+        xbull: 'https://wallet.xbull.app/',
+        albedo: 'https://albedo.link/',
+      };
+      window.open(installUrls[wallet.id] ?? 'https://www.freighter.app/', '_blank');
       return;
     }
 
@@ -188,16 +188,25 @@ export function WalletConnectionOnboarding({
                   <li className="flex items-start gap-3">
                     <span className="text-primary mt-0.5">✓</span>
                     <span>
-                      <strong>Freighter</strong> - A browser extension wallet for Stellar
+                      <strong>Freighter</strong> — browser extension (recommended for testnet)
                     </span>
                   </li>
                   <li className="flex items-start gap-3">
                     <span className="text-primary mt-0.5">✓</span>
                     <span>
-                      <strong>xBull</strong> - A web-based Stellar wallet
+                      <strong>xBull</strong> — browser extension / web wallet
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <span className="text-primary mt-0.5">✓</span>
+                    <span>
+                      <strong>Albedo</strong> — hosted web wallet (no extension required)
                     </span>
                   </li>
                 </ul>
+                <p className="text-xs text-muted-foreground">
+                  LOBSTR and other mobile wallets are not supported here yet.
+                </p>
               </div>
 
               <Alert>
@@ -331,7 +340,12 @@ export function WalletConnectionOnboarding({
           <>
             <DialogHeader>
               <DialogTitle>
-                Connecting {selectedWallet === 'freighter' ? 'Freighter' : 'xBull'}
+                Connecting{' '}
+                {selectedWallet === 'freighter'
+                  ? 'Freighter'
+                  : selectedWallet === 'albedo'
+                    ? 'Albedo'
+                    : 'xBull'}
               </DialogTitle>
               <DialogDescription>
                 Please approve the connection in your wallet

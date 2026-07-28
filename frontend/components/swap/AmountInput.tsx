@@ -191,7 +191,8 @@ export function AmountInput({
             variant="ghost"
             size="sm"
             onClick={onMax}
-            className="absolute right-2 top-1/2 -translate-y-1/2 h-8 px-3 text-xs font-bold text-primary hover:bg-primary/10 hover:text-primary rounded-lg transition-colors"
+            aria-label="Use maximum balance"
+            className="absolute right-2 top-1/2 -translate-y-1/2 h-11 min-h-11 px-3 text-xs font-bold text-primary hover:bg-primary/10 hover:text-primary rounded-lg transition-colors"
           >
             MAX
           </Button>

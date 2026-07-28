@@ -1,19 +1,27 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Bricolage_Grotesque, Figtree, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 import { AppShell } from "@/components/layout/app-shell";
 import ErrorBoundary from "../components/ErrorBoundary";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const display = Bricolage_Grotesque({
+  variable: "--font-bricolage",
   subsets: ["latin"],
+  weight: ["500", "600", "700", "800"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const sans = Figtree({
+  variable: "--font-figtree",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+});
+
+const mono = JetBrains_Mono({
+  variable: "--font-jetbrains",
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -21,7 +29,7 @@ export const metadata: Metadata = {
   description: "Best-price routing across Stellar DEX and Soroban AMM pools",
 
   manifest: "/manifest.json",
-  themeColor: "#0b1220",
+  themeColor: "#060b11",
 
   icons: {
     icon: "/icons/icon-192.svg",
@@ -65,7 +73,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen flex flex-col`}
+        className={`${display.variable} ${sans.variable} ${mono.variable} antialiased min-h-screen flex flex-col`}
       >
         <ErrorBoundary>
           <Providers>

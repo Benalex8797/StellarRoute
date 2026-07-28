@@ -98,8 +98,15 @@ export function TokenSelector({
         variant="secondary"
         onClick={() => setIsModalOpen(true)}
         disabled={disabled || loading}
+        aria-label={
+          selectedAssetOption
+            ? `Select token, currently ${selectedAssetOption.code}`
+            : selectedAsset === 'native'
+              ? 'Select token, currently XLM'
+              : 'Select token'
+        }
         className={cn(
-          "h-11 rounded-xl px-3 gap-2 bg-background/60 hover:bg-background/80 border-border/40 shadow-sm transition-all flex-shrink-0 min-w-[120px]",
+          "h-11 min-h-11 rounded-xl px-3 gap-2 bg-background/60 hover:bg-background/80 border-border/40 shadow-sm transition-all flex-shrink-0 min-w-[120px]",
           className
         )}
       >

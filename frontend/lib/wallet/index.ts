@@ -2,7 +2,7 @@ import {
   requestAccess,
   getAddress,
   getNetworkDetails,
-  isAllowed,
+  isConnected,
   signTransaction,
 } from '@stellar/freighter-api';
 
@@ -156,13 +156,13 @@ export const WALLET_LABELS: Record<SupportedWallet, string> = {
 export async function getAvailableWallets(): Promise<AvailableWallet[]> {
   const wallets: AvailableWallet[] = [];
 
-  // Freighter
+  // Freighter — use isConnected() for extension presence (isAllowed is post-grant)
   try {
-    const res = await isAllowed();
+    const res = await isConnected();
     wallets.push({
       id: 'freighter',
       label: 'Freighter',
-      installed: res.isAllowed,
+      installed: !!res.isConnected && !res.error,
     });
   } catch {
     wallets.push({ id: 'freighter', label: 'Freighter', installed: false });
