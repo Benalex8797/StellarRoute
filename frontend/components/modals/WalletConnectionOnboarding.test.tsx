@@ -65,4 +65,36 @@ describe('WalletConnectionOnboarding', () => {
     expect(dialog.className).toMatch(/90dvh|90vh/);
     expect(dialog.className).toMatch(/overflow-hidden/);
   });
+
+  it('lists LOBSTR and connects even when not yet detected', async () => {
+    const user = userEvent.setup();
+    const onConnect = vi.fn().mockResolvedValue(undefined);
+    const onRefreshWallets = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <WalletConnectionOnboarding
+        open
+        onOpenChange={vi.fn()}
+        availableWallets={[
+          { id: 'freighter', label: 'Freighter', installed: false },
+          { id: 'lobstr', label: 'LOBSTR', installed: false },
+        ]}
+        isLoading={false}
+        error={null}
+        onConnect={onConnect}
+        appNetwork="testnet"
+        walletNetwork={null}
+        onRefreshWallets={onRefreshWallets}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+    await user.click(screen.getByRole('button', { name: /testnet/i }));
+    expect(screen.getByRole('heading', { name: /select your wallet/i })).toBeInTheDocument();
+    expect(screen.getByText('LOBSTR')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /lobstr/i }));
+    expect(onRefreshWallets).toHaveBeenCalled();
+    expect(onConnect).toHaveBeenCalledWith('lobstr');
+  });
 });

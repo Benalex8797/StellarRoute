@@ -9,6 +9,8 @@ import { useCallback, useMemo } from 'react';
 const WALLET_DOCS: Record<string, string> = {
   freighter: 'https://docs.freighter.app/docs/guide/gettingStarted',
   xbull: 'https://xbull.app/docs',
+  albedo: 'https://albedo.link/',
+  lobstr: 'https://lobstr.co/',
 };
 
 interface WalletCapabilitiesBannerProps {

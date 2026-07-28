@@ -224,6 +224,8 @@ function inferWalletError(errorMessage: string): TraderErrorCopy | null {
     text.includes('wallet') ||
     text.includes('freighter') ||
     text.includes('xbull') ||
+    text.includes('albedo') ||
+    text.includes('lobstr') ||
     text.includes('rejected') ||
     text.includes('denied') ||
     text.includes('signature')

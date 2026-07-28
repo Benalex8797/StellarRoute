@@ -133,3 +133,23 @@ Focus here first when debugging behavior across crates.
 ## Known project-specific testing details
 - Frontend Vitest setup includes `matchMedia` and `localStorage` mocks in `frontend/vitest.setup.ts`.
 - If icon imports break frontend tests, check `frontend/__mocks__/lucide-react.tsx`.
+
+## Learned User Preferences
+- Primary goal is a live DEX with real users: prioritize production deployability over docs-only or filler work.
+- GitHub issues should be grounded in real codebase gaps (not placeholders), with hard/high-quality acceptance criteria and Wave-friendly labels.
+- Frontend contributor issues should require downloading relevant frontend skills, and should cover a premium UI plus Vercel and testnet deployment work.
+- Frontend UI should feel unique and spacious; reject dense/jammed header and swap chrome, and polish wallet/error messaging rather than stacking warnings.
+- When processing contributor/fork PRs, fix conflicts and CI and merge rather than closing; keep going until the open queue is empty unless a PR is explicitly unmergeable.
+- Prefer lean CI that contributors can get green easily; remove or simplify unnecessary checks when CI is blocking merges.
+- For large PR queues, prefer parallel per-PR workers over a single serial queue.
+- When closing multiple related issues, prefer one PR that closes them together.
+- Do not edit attached plan files during implementation.
+
+## Learned Workspace Facts
+- Canonical GitHub repo is `StellarRoute/StellarRoute`; local path is `/Users/daniel/Desktop/2026/StellarRoute`.
+- Project participates in the Drips/Stellar Wave contributor program; issues commonly use Wave/`help wanted`/complexity labels.
+- Frontend target deploy path includes Vercel; wiring the app to testnet API/indexer is an explicit product goal.
+- Browser wallet support is Freighter, xBull, Albedo, and LOBSTR; Freighter detection should use `isConnected()`, not `isAllowed`.
+- Related sibling work under `~/Desktop/2026/` (separate from this repo) includes StellarHydra, WaveFlow, route-visualizer, and swap-agrregrator — do not commit StellarRoute changes into those trees by mistake.
+- Frontend Vitest in CI is split by path (app/components/hooks/lib); flaky or heavy suites have been a recurring main-branch blocker.
+- `gh` is the expected interface for GitHub issues, PRs, labels, and CI log inspection on this repo.

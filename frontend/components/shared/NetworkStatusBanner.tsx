@@ -1,14 +1,17 @@
 'use client';
 
-import { AlertTriangle, ArrowRight, ExternalLink } from 'lucide-react';
+import { AlertTriangle, ArrowRight, ExternalLink, Loader2, Radio } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useWallet } from '@/components/providers/wallet-provider';
+import { useHealth } from '@/hooks/useApi';
 import { isNetworkAllowed } from '@/lib/network-policy';
 import { cn } from '@/lib/utils';
 
 const WALLET_DOCS: Record<string, string> = {
   freighter: 'https://docs.freighter.app/docs/guide/gettingStarted',
   xbull: 'https://xbull.app/docs',
+  albedo: 'https://albedo.link/',
+  lobstr: 'https://lobstr.co/',
 };
 
 function formatNetworkLabel(value: string | null | undefined): string {
@@ -19,13 +22,49 @@ function formatNetworkLabel(value: string | null | undefined): string {
   return value;
 }
 
+function ApiReachability({
+  loading,
+  ok,
+  error,
+}: {
+  loading: boolean;
+  ok: boolean;
+  error: Error | null;
+}) {
+  if (loading && !ok && !error) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+        Checking API…
+      </span>
+    );
+  }
+  if (ok) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+        <Radio className="h-3 w-3" aria-hidden />
+        API reachable
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-signal">
+      <AlertTriangle className="h-3 w-3" aria-hidden />
+      API unreachable
+    </span>
+  );
+}
+
 /**
  * Persistent network strip: quiet status when matched;
  * roomy mismatch callout when wallet and app disagree.
+ * Also surfaces API reachability for production wiring (#1036).
  */
 export function NetworkStatusBanner() {
   const { network, networkMismatch, walletNetwork, walletId, disconnect, setNetwork } =
     useWallet();
+  const { data: health, loading: healthLoading, error: healthError } = useHealth(30_000);
+  const apiOk = Boolean(health) && !healthError;
 
   const walletDocsUrl = walletId ? WALLET_DOCS[walletId] : null;
   const canUseWalletNetwork =
@@ -129,18 +168,25 @@ export function NetworkStatusBanner() {
           : 'border-primary/25 bg-primary/10 text-foreground'
       )}
     >
-      <div className="container mx-auto flex max-w-7xl items-center justify-between gap-3 sm:px-2 lg:px-4">
+      <div className="container mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 sm:px-2 lg:px-4">
         <p>
           Active network:{' '}
           <span className="font-semibold uppercase tracking-wide">
             {network === 'mainnet' ? 'Mainnet' : 'Testnet'}
           </span>
         </p>
-        <p className="hidden text-muted-foreground sm:block">
-          {network === 'mainnet'
-            ? 'Public Stellar network — real funds'
-            : 'SDF testnet — safe for trial swaps'}
-        </p>
+        <div className="flex flex-wrap items-center gap-4">
+          <ApiReachability
+            loading={healthLoading}
+            ok={apiOk}
+            error={healthError ? new Error(healthError.message) : null}
+          />
+          <p className="hidden text-muted-foreground sm:block">
+            {network === 'mainnet'
+              ? 'Public Stellar network — real funds'
+              : 'SDF testnet — safe for trial swaps'}
+          </p>
+        </div>
       </div>
     </div>
   );

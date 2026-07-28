@@ -213,7 +213,12 @@ export function WalletProvider({
       return;
     }
     const savedWalletId = window.localStorage.getItem(LAST_WALLET_ID_KEY);
-    if (savedWalletId !== 'freighter' && savedWalletId !== 'xbull') {
+    if (
+      savedWalletId !== 'freighter' &&
+      savedWalletId !== 'xbull' &&
+      savedWalletId !== 'albedo' &&
+      savedWalletId !== 'lobstr'
+    ) {
       return;
     }
 

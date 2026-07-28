@@ -5,6 +5,11 @@ import {
   isConnected,
   signTransaction,
 } from '@stellar/freighter-api';
+import {
+  isConnected as isLobstrConnected,
+  getPublicKey as getLobstrPublicKey,
+  signTransaction as signLobstrTransaction,
+} from '@lobstrco/signer-extension-api';
 
 import type {
   AvailableWallet,
@@ -151,35 +156,105 @@ export const WALLET_LABELS: Record<SupportedWallet, string> = {
   freighter: 'Freighter',
   xbull: 'xBull',
   albedo: 'Albedo',
+  lobstr: 'LOBSTR',
 };
 
-export async function getAvailableWallets(): Promise<AvailableWallet[]> {
-  const wallets: AvailableWallet[] = [];
+export const WALLET_INSTALL_URLS: Record<SupportedWallet, string> = {
+  freighter: 'https://www.freighter.app/',
+  xbull: 'https://wallet.xbull.app/',
+  albedo: 'https://albedo.link/',
+  lobstr: 'https://lobstr.co/',
+};
 
-  // Freighter — use isConnected() for extension presence (isAllowed is post-grant)
+const FREIGHTER_DETECT_TIMEOUT_MS = 800;
+const LOBSTR_DETECT_TIMEOUT_MS = 800;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(fallback), ms);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch(() => {
+        window.clearTimeout(timer);
+        resolve(fallback);
+      });
+  });
+}
+
+function isFreighterInjected(): boolean {
+  const win = getWindowRecord();
+  return Boolean(win?.freighter);
+}
+
+async function detectFreighterInstalled(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  if (isFreighterInjected()) return true;
+
   try {
-    const res = await isConnected();
-    wallets.push({
-      id: 'freighter',
-      label: 'Freighter',
-      installed: !!res.isConnected && !res.error,
-    });
+    const res = await withTimeout(
+      isConnected(),
+      FREIGHTER_DETECT_TIMEOUT_MS,
+      { isConnected: false }
+    );
+    return !!res.isConnected && !res.error;
   } catch {
-    wallets.push({ id: 'freighter', label: 'Freighter', installed: false });
+    return false;
+  }
+}
+
+async function detectLobstrInstalled(timeoutMs = LOBSTR_DETECT_TIMEOUT_MS): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (timeoutMs <= 0) {
+      return await isLobstrConnected();
+    }
+    return await withTimeout(isLobstrConnected(), timeoutMs, false);
+  } catch {
+    return false;
+  }
+}
+
+export async function getAvailableWallets(): Promise<AvailableWallet[]> {
+  if (typeof window === 'undefined') {
+    return [
+      { id: 'freighter', label: WALLET_LABELS.freighter, installed: false },
+      { id: 'xbull', label: WALLET_LABELS.xbull, installed: false },
+      { id: 'albedo', label: WALLET_LABELS.albedo, installed: false },
+      { id: 'lobstr', label: WALLET_LABELS.lobstr, installed: false },
+    ];
   }
 
-  // xBull — detected via window.xbull or SEP-43 window.xBullSDK
-  const xbullInstalled = !!getXBullClient();
-  wallets.push({ id: 'xbull', label: 'xBull', installed: xbullInstalled });
+  const [freighterInstalled, lobstrInstalled] = await Promise.all([
+    detectFreighterInstalled(),
+    detectLobstrInstalled(),
+  ]);
 
-  // Albedo works as a hosted intent wallet and may also inject window.albedo.
-  wallets.push({
-    id: 'albedo',
-    label: 'Albedo',
-    installed: typeof window !== 'undefined',
-  });
-
-  return wallets;
+  return [
+    {
+      id: 'freighter',
+      label: WALLET_LABELS.freighter,
+      installed: freighterInstalled,
+    },
+    {
+      id: 'xbull',
+      label: WALLET_LABELS.xbull,
+      installed: !!getXBullClient(),
+    },
+    {
+      id: 'albedo',
+      label: WALLET_LABELS.albedo,
+      // Hosted intent wallet — always available in the browser.
+      installed: true,
+    },
+    {
+      id: 'lobstr',
+      label: WALLET_LABELS.lobstr,
+      installed: lobstrInstalled,
+    },
+  ];
 }
 
 export async function connectWallet(
@@ -234,6 +309,27 @@ export async function connectWallet(
 
     if (!address) {
       throw new Error('Albedo did not return a public key');
+    }
+
+    return {
+      walletId,
+      address,
+      network: process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet',
+      isConnected: true,
+    };
+  }
+
+  if (walletId === 'lobstr') {
+    const installed = await detectLobstrInstalled(0);
+    if (!installed) {
+      throw new Error('LOBSTR extension is not installed');
+    }
+
+    const address = await getLobstrPublicKey();
+    if (!address) {
+      throw new Error(
+        'LOBSTR did not return a public key. Open the LOBSTR extension and unlock your account.'
+      );
     }
 
     return {
@@ -434,6 +530,64 @@ export async function checkWalletCapabilities(
         ? undefined
         : 'Switch app to testnet or mainnet',
     });
+  } else if (walletId === 'lobstr') {
+    const installed = await detectLobstrInstalled(0);
+    let hasAddress = false;
+    if (installed) {
+      try {
+        const address = await getLobstrPublicKey();
+        hasAddress = !!address;
+      } catch {
+        hasAddress = false;
+      }
+    }
+
+    const supportedNetwork =
+      network === 'testnet' || network === 'mainnet' || network === 'public';
+
+    statuses.push({
+      capability: 'request_access',
+      allowed: installed,
+      reason: installed ? undefined : 'LOBSTR extension is not installed',
+      resolution: installed ? undefined : 'Install the LOBSTR browser extension',
+    });
+    statuses.push({
+      capability: 'view_address',
+      allowed: hasAddress,
+      reason: hasAddress
+        ? undefined
+        : installed
+          ? 'Unlock LOBSTR and select an account'
+          : 'LOBSTR extension is not installed',
+      resolution: hasAddress
+        ? undefined
+        : getCapabilityResolution('view_address'),
+    });
+    statuses.push({
+      capability: 'view_network',
+      allowed: supportedNetwork,
+      reason: supportedNetwork
+        ? undefined
+        : `LOBSTR supports testnet/public, expected ${network}`,
+      resolution: supportedNetwork
+        ? undefined
+        : 'Switch app to testnet or mainnet',
+    });
+    statuses.push({
+      capability: 'sign_transaction',
+      allowed: Boolean(installed && hasAddress && supportedNetwork),
+      reason: !installed
+        ? 'LOBSTR extension is not installed'
+        : !hasAddress
+          ? 'No address available'
+          : !supportedNetwork
+            ? 'Unsupported network'
+            : undefined,
+      resolution:
+        !installed || !hasAddress || !supportedNetwork
+          ? getCapabilityResolution('sign_transaction')
+          : undefined,
+    });
   }
 
   return {
@@ -526,6 +680,20 @@ export async function signTransactionWithWallet(
     }
   }
 
+  if (walletId === 'lobstr') {
+    try {
+      const signedXdr = await signLobstrTransaction(xdr);
+      if (!signedXdr) {
+        throw new Error('LOBSTR did not return a signed XDR');
+      }
+      return signedXdr;
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'Transaction signing failed';
+      throw new Error(normalizeWalletSignError(message));
+    }
+  }
+
   throw new Error(`Transaction signing not supported for wallet: ${walletId}`);
 }
 
@@ -552,8 +720,8 @@ export async function checkAddressChange(
       return addressRes.address !== currentAddress ? addressRes.address : null;
     }
 
-    if (walletId === 'xbull' || walletId === 'albedo') {
-      // xBull and Albedo do not expose a passive address check; reconnect instead.
+    if (walletId === 'xbull' || walletId === 'albedo' || walletId === 'lobstr') {
+      // These wallets do not expose a reliable passive address check; reconnect instead.
       return null;
     }
   } catch {
@@ -610,6 +778,27 @@ export async function refreshWalletSession(
 
     if (!address) {
       throw new Error('Albedo did not return a public key');
+    }
+
+    return {
+      walletId,
+      address,
+      network: process.env.NEXT_PUBLIC_STELLAR_NETWORK || 'testnet',
+      isConnected: true,
+    };
+  }
+
+  if (walletId === 'lobstr') {
+    const installed = await detectLobstrInstalled(0);
+    if (!installed) {
+      throw new Error('LOBSTR extension is not installed');
+    }
+
+    const address = await getLobstrPublicKey();
+    if (!address) {
+      throw new Error(
+        'LOBSTR did not return a public key. Open the LOBSTR extension and unlock your account.'
+      );
     }
 
     return {

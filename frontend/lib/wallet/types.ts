@@ -1,4 +1,4 @@
-export type SupportedWallet = 'freighter' | 'xbull' | 'albedo';
+export type SupportedWallet = 'freighter' | 'xbull' | 'albedo' | 'lobstr';
 
 export type WalletNetwork = 'testnet' | 'mainnet' | 'futurenet' | string;
 

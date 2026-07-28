@@ -24,6 +24,17 @@ describe('wallet availability', () => {
       installed: true,
     });
   });
+
+  it('includes LOBSTR in the wallet list', async () => {
+    const wallets = await getAvailableWallets();
+    const lobstr = wallets.find((wallet) => wallet.id === 'lobstr');
+
+    expect(lobstr).toEqual({
+      id: 'lobstr',
+      label: 'LOBSTR',
+      installed: false,
+    });
+  });
 });
 
 describe('connectWallet - Albedo', () => {
@@ -318,5 +329,41 @@ describe('checkWalletCapabilities - Albedo', () => {
 
     expect(signCap?.allowed).toBe(false);
     expect(signCap?.resolution).toBe('Switch app to testnet or mainnet');
+  });
+});
+
+describe('connectWallet - LOBSTR', () => {
+  it('connects when the extension returns a public key', async () => {
+    const lobstr = await import('@lobstrco/signer-extension-api');
+    vi.mocked(lobstr.isConnected).mockResolvedValueOnce(true);
+    vi.mocked(lobstr.getPublicKey).mockResolvedValueOnce(MOCK_PUBLIC_KEY);
+
+    const session = await connectWallet('lobstr');
+
+    expect(session).toMatchObject({
+      walletId: 'lobstr',
+      address: MOCK_PUBLIC_KEY,
+      isConnected: true,
+    });
+  });
+
+  it('throws when the extension is missing', async () => {
+    const lobstr = await import('@lobstrco/signer-extension-api');
+    vi.mocked(lobstr.isConnected).mockResolvedValueOnce(false);
+
+    await expect(connectWallet('lobstr')).rejects.toThrow(
+      /LOBSTR extension is not installed/
+    );
+  });
+});
+
+describe('signTransactionWithWallet - LOBSTR', () => {
+  it('returns the signed XDR from the extension', async () => {
+    const lobstr = await import('@lobstrco/signer-extension-api');
+    vi.mocked(lobstr.signTransaction).mockResolvedValueOnce('SIGNED_XDR');
+
+    await expect(
+      signTransactionWithWallet(MOCK_XDR, 'lobstr', TEST_PASSPHRASE)
+    ).resolves.toBe('SIGNED_XDR');
   });
 });

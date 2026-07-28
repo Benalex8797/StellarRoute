@@ -41,6 +41,7 @@ export function WalletButton() {
     disconnect,
     setNetwork,
     refreshAccount,
+    refreshWallets,
     walletId,
   } = useWallet();
 
@@ -122,6 +123,7 @@ export function WalletButton() {
           appNetwork={network}
           walletNetwork={walletNetwork}
           onNetworkSelection={handleNetworkSelection}
+          onRefreshWallets={refreshWallets}
         />
       </>
     );
