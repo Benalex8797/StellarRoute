@@ -1,4 +1,18 @@
 // frontend/components/shared/TradeActivityTable.test.tsx
+import React from "react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { TradeActivityTable } from "./TradeActivityTable";
+import { TradeRecord } from "../../types/trade";
+
+const getSwapActivity = vi.fn();
+
+vi.mock("../../hooks/useStellarRouteClient", () => ({
+  useStellarRouteClient: () => ({
+    getSwapActivity,
+  }),
+}));
+// frontend/components/shared/TradeActivityTable.test.tsx
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -15,6 +29,16 @@ vi.mock('../../hooks/useStellarRouteClient', () => ({
 
 const mockData: TradeRecord[] = [
   {
+    id: "1",
+    txHash: "123456789012345",
+    timestamp: new Date(2026, 0, 1),
+    action: "BUY",
+    amount: "100",
+    asset: "XLM",
+  },
+];
+
+describe("TradeActivityTable component", () => {
     id: '1',
     txHash: '123456789012345',
     timestamp: new Date(2026, 0, 1),
