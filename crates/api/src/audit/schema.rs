@@ -67,6 +67,10 @@ pub enum SwapSubmitOutcome {
     /// The signed transaction was submitted to the network successfully.
     Submitted,
     /// The prepare or submit step failed.
+    ///
+    /// Specific classes (prepare rejection, auth failure, permanent broadcast
+    /// failure, pending reconciliation) are carried in `error_class` / metadata
+    /// so the DB CHECK (`prepared|submitted|failed`) stays stable.
     Failed,
 }
 

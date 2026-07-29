@@ -124,10 +124,7 @@ impl AmmAggregator {
         } else {
             // Discover new pools since last check via contract events. If none are
             // discovered, fall back to the operator-managed registry or env var list.
-            let mut new_pools = match self
-                .discover_new_pools(start_ledger, current_ledger)
-                .await
-            {
+            let mut new_pools = match self.discover_new_pools(start_ledger, current_ledger).await {
                 Ok(pools) => pools,
                 Err(e) => {
                     warn!(
@@ -156,10 +153,7 @@ impl AmmAggregator {
                 self.process_pool_batch(&new_pools).await?;
             }
 
-            match self
-                .index_swap_activity(start_ledger, current_ledger)
-                .await
-            {
+            match self.index_swap_activity(start_ledger, current_ledger).await {
                 Ok(indexed_swaps) if indexed_swaps > 0 => {
                     info!("Indexed {} contract swap activity events", indexed_swaps);
                 }

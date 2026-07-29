@@ -61,10 +61,8 @@ impl ExternalDependencyHealth {
             .map(|v| v.trim().trim_end_matches('/').to_string())
             .filter(|v| !v.is_empty());
 
-        let horizon_urls =
-            parse_failover_urls(horizon_primary, "STELLAR_HORIZON_FALLBACK_URLS");
-        let soroban_rpc_urls =
-            parse_failover_urls(soroban_primary, "SOROBAN_RPC_FALLBACK_URLS");
+        let horizon_urls = parse_failover_urls(horizon_primary, "STELLAR_HORIZON_FALLBACK_URLS");
+        let soroban_rpc_urls = parse_failover_urls(soroban_primary, "SOROBAN_RPC_FALLBACK_URLS");
 
         Self::new(horizon_urls, soroban_rpc_urls)
     }
@@ -274,7 +272,7 @@ mod tests {
     /// rather than let each request wait on a dependency known to be down.
     #[test]
     fn live_path_fails_fast_when_soroban_dependency_fails() {
-        let health = ExternalDependencyHealth::new(None, None);
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
         assert!(health.guard_live_path().is_ok());
 
         for _ in 0..3 {
@@ -282,7 +280,10 @@ mod tests {
         }
 
         let err = health.guard_live_path().unwrap_err();
-        assert!(matches!(err, crate::error::ApiError::DependencyUnavailable(_)));
+        assert!(matches!(
+            err,
+            crate::error::ApiError::DependencyUnavailable(_)
+        ));
         assert_eq!(
             err.into_response().status(),
             axum::http::StatusCode::SERVICE_UNAVAILABLE
@@ -292,7 +293,7 @@ mod tests {
     /// Simulated Postgres outage, fed by the `/health/deps` probe.
     #[test]
     fn live_path_fails_fast_when_database_dependency_fails() {
-        let health = ExternalDependencyHealth::new(None, None);
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
 
         for _ in 0..3 {
             health.record_database_result(false);
@@ -306,7 +307,7 @@ mod tests {
     /// A recovered dependency must stop rejecting traffic.
     #[test]
     fn live_path_recovers_once_breaker_closes() {
-        let health = ExternalDependencyHealth::new(None, None);
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
 
         for _ in 0..3 {
             health.record_horizon_result(false);
@@ -315,7 +316,7 @@ mod tests {
 
         // Breakers only leave Open via the recovery timeout, so drive the
         // transition explicitly through a fresh instance's success path.
-        let recovered = ExternalDependencyHealth::new(None, None);
+        let recovered = ExternalDependencyHealth::new(vec![], vec![]);
         recovered.record_horizon_result(true);
         assert!(recovered.guard_live_path().is_ok());
         assert!(recovered.open_dependencies().is_empty());
@@ -323,7 +324,7 @@ mod tests {
 
     #[test]
     fn open_dependencies_reports_every_failing_dependency() {
-        let health = ExternalDependencyHealth::new(None, None);
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
 
         for _ in 0..3 {
             health.record_soroban_result(false);

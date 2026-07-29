@@ -1,6 +1,7 @@
 import { StellarRouteApiError } from '@/lib/api/client';
 import { HorizonSubmitError } from '@/lib/wallet/submit';
 import type { ApiErrorCode } from '@/types';
+import { isLifecycleError } from '@/lib/swap/lifecycle-error';
 
 export interface TraderErrorCopy {
   headline: string;
@@ -82,6 +83,72 @@ const API_ERROR_COPY: Record<ApiErrorCode, TraderErrorCopy> = {
     explanation: 'The app could not reach routing services from this device.',
     recoveryAction: 'Check your connection and refresh once online.',
     ctaLabel: 'Reconnect and refresh',
+  },
+  invalid_amount: {
+    headline: 'Check the trade amount',
+    explanation: 'The requested amount is not valid for this pair.',
+    recoveryAction: 'Enter a positive amount and refresh the quote.',
+    ctaLabel: 'Update amount',
+  },
+  invalid_slippage: {
+    headline: 'Check your slippage setting',
+    explanation: 'The slippage tolerance is outside the allowed range.',
+    recoveryAction: 'Adjust slippage in settings, then refresh.',
+    ctaLabel: 'Adjust slippage',
+  },
+  invalid_asset_format: {
+    headline: 'Asset format is not recognized',
+    explanation: 'One of the selected assets uses an unsupported identifier shape.',
+    recoveryAction: 'Choose a supported asset pair and try again.',
+    ctaLabel: 'Select another pair',
+  },
+  not_executable: {
+    headline: 'This route is not executable right now',
+    explanation: 'Simulation or venue policy blocked this trade path.',
+    recoveryAction: 'Refresh for another route or try a smaller amount.',
+    ctaLabel: 'Refresh quote',
+  },
+  not_implemented: {
+    headline: 'This action is not available yet',
+    explanation: 'The requested operation is documented but not enabled on this API.',
+    recoveryAction: 'Try again later or use a supported classic SDEX route.',
+    ctaLabel: 'Choose another route',
+  },
+  quote_not_found: {
+    headline: 'Prepared quote was not found',
+    explanation: 'The prepare quote id is unknown or no longer valid.',
+    recoveryAction: 'Refresh the quote and start the swap again.',
+    ctaLabel: 'Refresh quote',
+  },
+  quote_expired: {
+    headline: 'This quote expired',
+    explanation: 'The prepared swap timed out before it could be submitted.',
+    recoveryAction: 'Refresh for a new price, then confirm again.',
+    ctaLabel: 'Refresh quote',
+  },
+  duplicate_quote: {
+    headline: 'A swap is already in progress',
+    explanation: 'This wallet already has an active prepare or submitted quote.',
+    recoveryAction: 'Wait for the in-progress swap to settle, or check wallet activity.',
+    ctaLabel: 'Check activity',
+  },
+  dependency_unavailable: {
+    headline: 'Network dependency unavailable',
+    explanation: 'Horizon or another upstream dependency is temporarily unreachable.',
+    recoveryAction: 'Wait briefly and reconcile before preparing a new swap.',
+    ctaLabel: 'Retry shortly',
+  },
+  unsupported_execution_mode: {
+    headline: 'AMM and Soroban swaps are not supported yet',
+    explanation: 'Live swaps currently support classic one-hop SDEX PathPayment only.',
+    recoveryAction: 'Choose a direct SDEX quote and try again.',
+    ctaLabel: 'Use classic SDEX route',
+  },
+  unsupported_route: {
+    headline: 'This route shape is not supported',
+    explanation: 'Multi-hop classic routes cannot be prepared in this build.',
+    recoveryAction: 'Select a one-hop SDEX pair and refresh the quote.',
+    ctaLabel: 'Choose one-hop route',
   },
   unknown_error: DEFAULT_COPY,
 };
@@ -266,6 +333,103 @@ function inferNetworkError(errorMessage: string): TraderErrorCopy | null {
   return null;
 }
 
+const ACTIVE_PREPARE_COPY: TraderErrorCopy = {
+  headline: 'An active prepare already exists',
+  explanation:
+    'This wallet already has a prepared swap that has not expired yet.',
+  recoveryAction:
+    'Finish or wait for the active prepare to expire before preparing again.',
+  ctaLabel: 'Check activity',
+};
+
+const CONFIRM_TIMEOUT_COPY: TraderErrorCopy = {
+  headline: 'Confirmation timed out',
+  explanation:
+    'Horizon did not confirm the transaction in time, but submission may still reconcile on-chain.',
+  recoveryAction:
+    'Check wallet activity before preparing or submitting again.',
+  ctaLabel: 'Check activity',
+};
+
+const BAD_SEQUENCE_COPY: TraderErrorCopy = {
+  headline: 'Account sequence is out of date',
+  explanation:
+    'Your wallet account changed while this swap was being prepared.',
+  recoveryAction: 'Refresh the quote and submit the swap again.',
+  ctaLabel: 'Refresh and retry',
+};
+
+const MISSING_NETWORK_PASSPHRASE_COPY: TraderErrorCopy = {
+  headline: 'Prepared swap is missing network details',
+  explanation:
+    'The prepare response did not include a network passphrase required for safe signing.',
+  recoveryAction: 'Refresh the quote and try again.',
+  ctaLabel: 'Refresh quote',
+};
+
+const SUBMITTING_WITHOUT_HASH_COPY: TraderErrorCopy = {
+  headline: 'Previous submit is still in progress',
+  explanation:
+    'A matching quote is locked in submitting state without a confirmed transaction hash yet.',
+  recoveryAction:
+    'Wait and reconcile wallet activity before preparing or submitting again.',
+  ctaLabel: 'Check activity',
+};
+
+const NETWORK_MISMATCH_COPY: TraderErrorCopy = {
+  headline: 'Wallet network does not match',
+  explanation:
+    'Your wallet is on a different Stellar network than the prepared swap.',
+  recoveryAction:
+    'Switch your wallet to the correct network, refresh the quote, then try again.',
+  ctaLabel: 'Switch network',
+};
+
+function copyForConflictStatus(
+  status: string | undefined,
+): TraderErrorCopy | null {
+  if (status === 'active_prepare_exists') return ACTIVE_PREPARE_COPY;
+  if (status === 'confirm_timeout') return CONFIRM_TIMEOUT_COPY;
+  if (status === 'bad_sequence') return BAD_SEQUENCE_COPY;
+  if (status === 'missing_network_passphrase') {
+    return MISSING_NETWORK_PASSPHRASE_COPY;
+  }
+  if (status === 'submitting_without_hash') {
+    return SUBMITTING_WITHOUT_HASH_COPY;
+  }
+  if (status === 'network_mismatch') return NETWORK_MISMATCH_COPY;
+  if (status === 'already_submitted' || status === 'in_progress') {
+    return {
+      headline: 'This swap was already submitted',
+      explanation: 'A matching quote is already in flight or settled.',
+      recoveryAction: 'Check wallet activity before trying again.',
+      ctaLabel: 'Check activity',
+    };
+  }
+  if (status === 'pending_reconcile') {
+    return API_ERROR_COPY.dependency_unavailable;
+  }
+  return null;
+}
+
+function copyFromApiCode(code: string | undefined): TraderErrorCopy | null {
+  if (!code || code === 'unknown_error') return null;
+  if (code === 'confirm_timeout') return CONFIRM_TIMEOUT_COPY;
+  if (code in API_ERROR_COPY) {
+    return API_ERROR_COPY[code as ApiErrorCode];
+  }
+  return null;
+}
+
+function lifecycleStatusFromApiError(
+  error: StellarRouteApiError,
+): string | undefined {
+  const details = error.details;
+  if (!details || typeof details !== 'object') return undefined;
+  const status = (details as { status?: unknown }).status;
+  return typeof status === 'string' ? status : undefined;
+}
+
 export function getTraderErrorCopy(error: unknown): TraderErrorCopy {
   if (error instanceof HorizonSubmitError) {
     const hints = [
@@ -291,10 +455,14 @@ export function getTraderErrorCopy(error: unknown): TraderErrorCopy {
   }
 
   if (error instanceof StellarRouteApiError) {
-    if (error.code && error.code !== 'unknown_error' && API_ERROR_COPY[error.code]) {
-      return API_ERROR_COPY[error.code];
-    }
-    
+    const conflictCopy = copyForConflictStatus(
+      lifecycleStatusFromApiError(error),
+    );
+    if (conflictCopy) return conflictCopy;
+
+    const byCode = copyFromApiCode(error.code);
+    if (byCode) return byCode;
+
     if (error.status === 400) return API_ERROR_COPY.bad_request;
     if (error.status === 401) return API_ERROR_COPY.unauthorized;
     if (error.status === 404) return API_ERROR_COPY.not_found;
@@ -304,8 +472,27 @@ export function getTraderErrorCopy(error: unknown): TraderErrorCopy {
     return API_ERROR_COPY[error.code] ?? DEFAULT_COPY;
   }
 
-  if (error && typeof error === 'object' && 'status' in error && typeof (error as any).status === 'number') {
-    const status = (error as any).status;
+  if (isLifecycleError(error)) {
+    const conflictCopy = copyForConflictStatus(error.status);
+    if (conflictCopy) return conflictCopy;
+    const byCode = copyFromApiCode(error.code);
+    if (byCode) return byCode;
+
+    const horizonCopy = inferHorizonError(error.message);
+    if (horizonCopy) return horizonCopy;
+    const walletCopy = inferWalletError(error.message);
+    if (walletCopy) return walletCopy;
+    const networkCopy = inferNetworkError(error.message);
+    if (networkCopy) return networkCopy;
+  }
+
+  if (
+    error &&
+    typeof error === 'object' &&
+    'status' in error &&
+    typeof (error as { status?: unknown }).status === 'number'
+  ) {
+    const status = (error as { status: number }).status;
     if (status === 400) return API_ERROR_COPY.bad_request;
     if (status === 401) return API_ERROR_COPY.unauthorized;
     if (status === 404) return API_ERROR_COPY.not_found;
@@ -314,6 +501,17 @@ export function getTraderErrorCopy(error: unknown): TraderErrorCopy {
   }
 
   if (error instanceof Error) {
+    const attachedStatus = (error as Error & { status?: unknown }).status;
+    if (typeof attachedStatus === 'string') {
+      const conflictCopy = copyForConflictStatus(attachedStatus);
+      if (conflictCopy) return conflictCopy;
+    }
+    const attachedCode = (error as Error & { code?: unknown }).code;
+    if (typeof attachedCode === 'string') {
+      const byCode = copyFromApiCode(attachedCode);
+      if (byCode) return byCode;
+    }
+
     const horizonCopy = inferHorizonError(error.message);
     if (horizonCopy) {
       return horizonCopy;

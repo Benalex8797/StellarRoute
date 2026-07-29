@@ -225,4 +225,29 @@ describe('getTraderErrorCopy', () => {
       }
     });
   });
+
+  it('maps allowlisted lifecycle conflict statuses to curated copy', () => {
+    const cases = [
+      {
+        status: 'bad_sequence',
+        headline: 'Account sequence is out of date',
+      },
+      {
+        status: 'missing_network_passphrase',
+        headline: 'Prepared swap is missing network details',
+      },
+      {
+        status: 'submitting_without_hash',
+        headline: 'Previous submit is still in progress',
+      },
+    ] as const;
+
+    for (const { status, headline } of cases) {
+      const copy = getTraderErrorCopy(
+        new StellarRouteApiError(409, 'duplicate_quote', 'conflict', { status }),
+      );
+      expect(copy.headline).toBe(headline);
+      expect(JSON.stringify(copy)).not.toContain('stack');
+    }
+  });
 });

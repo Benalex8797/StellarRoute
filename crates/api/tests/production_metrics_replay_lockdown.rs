@@ -41,12 +41,7 @@ async fn setup_router(admin_auth_token: Option<&str>) -> axum::Router {
 async fn get(router: &axum::Router, path: &str) -> StatusCode {
     router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(path)
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
         .await
         .expect("request failed")
         .status()

@@ -20,7 +20,6 @@ import { QuoteStreamStatusIndicator } from './QuoteStreamStatusIndicator';
 import { SessionRecoveryModal } from './SessionRecoveryModal';
 import { useSwapState } from '@/hooks/useSwapState';
 import { useOptimisticSwap } from '@/hooks/useOptimisticSwap';
-import type { TradeParams } from '@/hooks/useTransactionLifecycle';
 import type { PreSubmitSnapshot } from '@/types/transaction';
 import { useOptionalTradingPair } from '@/contexts/TradingPairContext';
 import { useExpertSettings } from '@/hooks/useExpertSettings';
@@ -45,8 +44,14 @@ import { WalletCapabilitiesBanner } from '@/components/shared/WalletCapabilities
 import { DiagnosticsPanel } from '@/components/shared/DiagnosticsPanel';
 import { useWallet } from '@/components/providers/wallet-provider';
 import { signTransactionWithWallet } from '@/lib/wallet';
-import { submitToHorizon, getNetworkPassphrase, getHorizonUrl } from '@/lib/wallet/submit';
-import { buildPathPaymentXdr } from '@/lib/wallet/xdr-builder';
+import { getNetworkPassphrase } from '@/lib/wallet/submit';
+import {
+  createApiSwapExecution,
+  preflightClassicOneHop,
+  resolveSwapExecutionMode,
+  userCopyForSwapExecutionError,
+} from '@/lib/swap/api-execution';
+import { isProductionFrontendEnv } from '@/lib/env-guard';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useSwapI18n } from '@/lib/swap-i18n';
@@ -282,6 +287,10 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     updateExtendedRouteDetails,
   } = useExpertSettings();
   const { enabled: batchSwapsEnabled } = useFeatureFlag('batch_swaps');
+  const {
+    enabled: apiSwapExecutionEnabled,
+    loading: apiSwapFlagsLoading,
+  } = useFeatureFlag('real_xdr');
   const batchRequests = useMemo<QuoteRequestItem[]>(() => {
     const amount = Number.parseFloat(fromAmount);
     if (
@@ -525,31 +534,71 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
   const walletReady =
     isConnected && !!walletId && !!walletAddress && !networkMismatch;
 
+  const classicPreflight = useMemo(() => {
+    const path = selectedRoute?.rawPath ?? quote.data?.path ?? [];
+    return preflightClassicOneHop(path);
+  }, [selectedRoute?.rawPath, quote.data?.path]);
+
+  const swapExecutionMode = useMemo(
+    () =>
+      resolveSwapExecutionMode({
+        realXdrEnabled: apiSwapExecutionEnabled,
+        flagsLoading: apiSwapFlagsLoading,
+        isProduction: isProductionFrontendEnv(process.env),
+      }),
+    [apiSwapExecutionEnabled, apiSwapFlagsLoading],
+  );
+
   const productionSwapDeps = useMemo(() => {
     if (!walletReady || !walletId || !walletAddress) return null;
     const networkPassphrase = getNetworkPassphrase(walletAppNetwork);
-    const horizonUrl = getHorizonUrl(walletAppNetwork);
-    return {
-      buildXdr: (params: TradeParams) =>
-        buildPathPaymentXdr({
-          walletAddress: params.walletAddress || walletAddress,
-          fromAsset: params.fromAsset,
-          fromAmount: params.fromAmount,
-          toAsset: params.toAsset,
-          minReceived: params.minReceived,
-          routePath: params.routePath,
-          networkPassphrase,
-          horizonUrl,
-        }),
-      signTransaction: (xdr: string) =>
-        signTransactionWithWallet(xdr, walletId, networkPassphrase),
-      submitTransaction: (signedXdr: string) =>
-        submitToHorizon(signedXdr, walletAppNetwork),
+    const signTransaction = (xdr: string) =>
+      signTransactionWithWallet(xdr, walletId, networkPassphrase);
+
+    // Classic API prepare → Freighter (wallet passphrase) → API submit → Horizon confirm.
+    // No client-built XDR / direct-Horizon product path — fail closed when unavailable.
+    if (swapExecutionMode.mode === 'api_prepare_submit') {
+      const apiDeps = createApiSwapExecution({
+        sender: walletAddress,
+        slippageBps: Math.round(slippage * 100),
+        network: walletAppNetwork,
+        signTransaction,
+      });
+      return {
+        buildXdr: apiDeps.buildXdr,
+        signTransaction: apiDeps.signTransaction,
+        submitTransaction: apiDeps.submitTransaction,
+        getPreparedAmounts: apiDeps.getPreparedAmounts,
+      };
+    }
+
+    const disabledMessage = swapExecutionMode.message;
+    const reject = async () => {
+      throw new Error(disabledMessage);
     };
-  }, [walletReady, walletId, walletAddress, walletAppNetwork]);
+    return {
+      buildXdr: reject,
+      signTransaction: reject,
+      submitTransaction: reject,
+      getPreparedAmounts: () => null,
+    };
+  }, [
+    walletReady,
+    walletId,
+    walletAddress,
+    walletAppNetwork,
+    swapExecutionMode,
+    slippage,
+  ]);
 
   const optimistic = useOptimisticSwap({
-    ...(productionSwapDeps ?? {}),
+    ...(productionSwapDeps
+      ? {
+          buildXdr: productionSwapDeps.buildXdr,
+          signTransaction: productionSwapDeps.signTransaction,
+          submitTransaction: productionSwapDeps.submitTransaction,
+        }
+      : {}),
     rollbackTarget: {
       setFromToken,
       setToToken,
@@ -593,8 +642,12 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
       reset();
       setSelectedRoute(null);
     } else if (optimistic.status === 'failed') {
-      const errorObj = optimistic.errorMessage ? new Error(optimistic.errorMessage) : new Error('Unknown error');
-      const copy = getTraderErrorCopy(errorObj);
+      const copy = getTraderErrorCopy(
+        optimistic.error ??
+          (optimistic.errorMessage
+            ? { message: optimistic.errorMessage }
+            : new Error('Unknown error')),
+      );
       toast.error(toTraderErrorLine(copy), {
         id: 'swap-toast',
       });
@@ -605,6 +658,7 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     }
   }, [
     optimistic.status,
+    optimistic.error,
     optimistic.errorMessage,
     bypassConfirmation,
     isModalOpen,
@@ -639,6 +693,9 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     if (quote.priceImpact > 10) return 'high_impact_warning';
     if (quote.loading) return 'refreshing_quote';
     if (quote.isStale) return 'error';
+    // One-hop classic preflight always applies — AMM/multi-hop never bypass gates.
+    if (!classicPreflight.ok) return 'error';
+    if (swapExecutionMode.mode === 'disabled') return 'error';
     return 'ready';
   }, [
     fromAmount,
@@ -654,6 +711,8 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     requiresFreshQuote,
     memoError,
     balanceState.error,
+    classicPreflight.ok,
+    swapExecutionMode.mode,
   ]);
 
   const displayButtonState = storyPresentation?.buttonState ?? buttonState;
@@ -668,8 +727,40 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
   const displayIsModalOpen = storyPresentation?.confirmModalOpen ?? isModalOpen;
   const displayOptimisticStatus =
     storyPresentation?.optimisticStatus ?? optimistic.status;
-  const displayTradeParams =
-    storyPresentation?.tradeParams ?? optimistic.tradeParams;
+  // Prefer authoritative prepare amounts once API prepare completes (status advances).
+  const displayTradeParams = useMemo(() => {
+    const base = storyPresentation?.tradeParams ?? optimistic.tradeParams;
+    if (!base) return base;
+    if (swapExecutionMode.mode !== 'api_prepare_submit') return base;
+    const prepared = productionSwapDeps?.getPreparedAmounts?.();
+    if (!prepared) return base;
+    return {
+      ...base,
+      toAmount: prepared.expected_output,
+      minReceived: prepared.min_output
+        ? `${prepared.min_output} ${toSymbol}`
+        : base.minReceived,
+    };
+    // optimistic.status re-renders after prepare so getPreparedAmounts() is fresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- status is a prepare-completion signal
+  }, [
+    storyPresentation?.tradeParams,
+    optimistic.tradeParams,
+    optimistic.status,
+    swapExecutionMode.mode,
+    productionSwapDeps,
+    toSymbol,
+  ]);
+
+  const swapExecutionErrorMessage = useMemo(() => {
+    if (!optimistic.error && !optimistic.errorMessage) return undefined;
+    if (swapExecutionMode.mode !== 'api_prepare_submit') {
+      return optimistic.errorMessage;
+    }
+    return userCopyForSwapExecutionError(
+      optimistic.error ?? { message: optimistic.errorMessage! },
+    );
+  }, [optimistic.error, optimistic.errorMessage, swapExecutionMode.mode]);
 
   useEffect(() => {
     if (!storyPresentation?.seedFromAmount) return;
@@ -757,6 +848,17 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
       );
       return;
     }
+    if (!classicPreflight.ok) {
+      toast.error(
+        classicPreflight.message ??
+          'This route cannot be executed as a classic one-hop SDEX swap.',
+      );
+      return;
+    }
+    if (swapExecutionMode.mode === 'disabled') {
+      toast.error(swapExecutionMode.message);
+      return;
+    }
     const snap: PreSubmitSnapshot = {
       fromToken,
       toToken,
@@ -802,6 +904,8 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     optimistic,
     walletAddress,
     productionSwapDeps,
+    swapExecutionMode,
+    classicPreflight,
   ]);
 
   const handleSwap = useCallback(() => {
@@ -1374,7 +1478,15 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
           isOpen={displayIsModalOpen}
           status={displayOptimisticStatus}
           txHash={optimistic.txHash}
-          errorMessage={optimistic.errorMessage}
+          error={
+            swapExecutionMode.mode === 'api_prepare_submit'
+              ? (optimistic.error ??
+                (optimistic.errorMessage
+                  ? { message: optimistic.errorMessage }
+                  : undefined))
+              : undefined
+          }
+          errorMessage={swapExecutionErrorMessage ?? optimistic.errorMessage}
           tradeParams={displayTradeParams}
           onConfirm={() => {}}
           onCancel={() => {

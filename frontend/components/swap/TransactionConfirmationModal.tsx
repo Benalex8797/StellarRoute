@@ -29,6 +29,8 @@ export interface TransactionConfirmationModalProps {
   isOpen: boolean;
   status: TransactionStatus | 'review';
   txHash?: string;
+  /** Structured lifecycle / API error — preferred over reconstructing from errorMessage. */
+  error?: unknown;
   errorMessage?: string;
   tradeParams?: TradeParams;
   onConfirm: () => void;
@@ -88,6 +90,7 @@ export function TransactionConfirmationModal({
   isOpen,
   status,
   txHash,
+  error,
   errorMessage,
   tradeParams,
   onConfirm,
@@ -139,8 +142,8 @@ export function TransactionConfirmationModal({
   };
   const config = { ...iconConfig, ...statusTextConfig[status] };
   const failedCopy =
-    status === 'failed' && errorMessage
-      ? getTraderErrorCopy(new Error(errorMessage))
+    status === 'failed' && (error || errorMessage)
+      ? getTraderErrorCopy(error ?? { message: errorMessage! })
       : null;
   const droppedCopy =
     status === 'dropped'

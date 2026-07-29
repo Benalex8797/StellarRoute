@@ -70,6 +70,10 @@ logs/
 *.secret-key
 identity.toml
 
+# Local smoke / readiness evidence (never commit secrets or run artifacts)
+tmp/
+tmp/**
+
 # Local development
 .local/
 requirements.md
@@ -92,3 +96,4 @@ GITHUB_ISSUES.md
 issue.md
 commit.md
 skills-lock.json
+.worktrees/

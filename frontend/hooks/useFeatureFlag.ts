@@ -13,6 +13,9 @@ export type FlagName =
 
 export type FlagMap = Partial<Record<FlagName, boolean>>;
 
+/** Security-critical: secure API swap path — not remotely killable. */
+export const SECURITY_PINNED_FLAGS: ReadonlySet<FlagName> = new Set(['real_xdr']);
+
 // Cache layer
 let remoteFlags: FlagMap | null = null;
 let remoteFetchPromise: Promise<FlagMap> | null = null;
@@ -67,7 +70,18 @@ async function fetchRemoteFlags(): Promise<FlagMap> {
   return remoteFetchPromise;
 }
 
-function resolveFlag(flag: FlagName, remote: FlagMap): boolean {
+/**
+ * Resolve a flag. Ordinary flags: remote > env > false.
+ * `real_xdr` is security-pinned: env/default only (default on). Remote
+ * `FLAGS_URL` cannot disable the secure API prepare/sign/submit path.
+ */
+export function resolveFlag(flag: FlagName, remote: FlagMap = {}): boolean {
+  if (SECURITY_PINNED_FLAGS.has(flag)) {
+    const env = readEnvFlag(flag);
+    if (env !== undefined) return env;
+    // Product default: API prepare → wallet sign → API submit.
+    return true;
+  }
   if (remote[flag] !== undefined) return remote[flag]!;
   const env = readEnvFlag(flag);
   if (env !== undefined) return env;
@@ -78,11 +92,22 @@ export function useFeatureFlag(flag: FlagName): {
   enabled: boolean;
   loading: boolean;
 } {
-  const [enabled, setEnabled] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
+  // Security-pinned flags resolve from env/default synchronously so loading
+  // never briefly reports enabled=false (which would fail-closed and flash).
+  const pinned = SECURITY_PINNED_FLAGS.has(flag);
+  const [enabled, setEnabled] = useState<boolean>(() =>
+    pinned ? resolveFlag(flag) : false,
+  );
+  const [loading, setLoading] = useState<boolean>(() => !pinned);
 
   useEffect(() => {
     let cancelled = false;
+
+    if (SECURITY_PINNED_FLAGS.has(flag)) {
+      setEnabled(resolveFlag(flag));
+      setLoading(false);
+      return;
+    }
 
     fetchRemoteFlags().then((remote) => {
       if (!cancelled) {
@@ -102,10 +127,12 @@ export function useFeatureFlag(flag: FlagName): {
 export function useFeatureFlags(flags: FlagName[]): Record<FlagName, boolean> {
   const [resolved, setResolved] = useState<Record<FlagName, boolean>>(
     () =>
-      Object.fromEntries(flags.map((f) => [f, false])) as Record<
-        FlagName,
-        boolean
-      >
+      Object.fromEntries(
+        flags.map((f) => [
+          f,
+          SECURITY_PINNED_FLAGS.has(f) ? resolveFlag(f) : false,
+        ]),
+      ) as Record<FlagName, boolean>,
   );
 
   useEffect(() => {

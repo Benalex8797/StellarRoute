@@ -34,11 +34,24 @@ Use these commands from repo root unless noted.
 ### Rust workspace
 - Build all crates:
   - `cargo build`
-- Run all tests:
-  - `cargo test`
-- Run formatting check (same as CI):
+- Run formatting check (same as CI `Rust Format` job):
   - `cargo fmt --all -- --check`
-- Run clippy (same as CI):
+- Lean CI Rust checks (same as CI job `Rust Lean Clippy + Lib Tests (excl. api/contracts)`).
+  These are bootstrap gates — not full workspace/all-targets CI:
+  - `cargo clippy --workspace --all-features --exclude stellarroute-contracts -- -D warnings`
+  - `cargo clippy -p stellarroute-contracts -- -D warnings`
+  - `cargo test --workspace --lib --exclude stellarroute-contracts --exclude stellarroute-api`
+- Focused swap/OpenAPI contract CI (job `Rust API Swap + OpenAPI Contract Tests (no external DB)`):
+  - `cargo test -p stellarroute-api --test swap_integration --test swap_submit_integration --test openapi_swap_contract`
+  - `cargo test -p stellarroute-api --lib` (when green in that job)
+  These use lazy pools / in-memory stores — no Postgres/Redis required. They cover
+  AssetPath string+object wire hops, prepare `network_passphrase`, and OpenAPI honesty.
+  Deferred vs full coverage: no `--all-targets` / `cfg(test)` clippy, no contracts lib
+  tests, no broader API integration suite, no ignored DB tests. Known blockers:
+  indexer `tests/amm_ingest.rs`, contracts `fuzz_targets`, other `crates/*/tests/*`
+  that need live deps.
+- Recommended full local commands (stricter than lean CI; may fail until deferred debt is fixed):
+  - `cargo test`
   - `cargo clippy --all-targets --all-features -- -D warnings`
   - `cargo clippy -p stellarroute-contracts --all-targets -- -D warnings`
 - Run a single test (example pattern):
@@ -140,6 +153,7 @@ Focus here first when debugging behavior across crates.
 - Frontend contributor issues should require downloading relevant frontend skills, and should cover a premium UI plus Vercel and testnet deployment work.
 - Frontend UI should feel unique and spacious; reject dense/jammed header and swap chrome, and polish wallet/error messaging rather than stacking warnings.
 - When processing contributor/fork PRs, fix conflicts and CI and merge rather than closing; keep going until the open queue is empty unless a PR is explicitly unmergeable.
+- For fork PRs far behind `main`, cherry-pick feature commits onto current `main` instead of merging the stale branch wholesale.
 - Prefer lean CI that contributors can get green easily; remove or simplify unnecessary checks when CI is blocking merges.
 - For large PR queues, prefer parallel per-PR workers over a single serial queue.
 - When closing multiple related issues, prefer one PR that closes them together.
@@ -155,3 +169,4 @@ Focus here first when debugging behavior across crates.
 - Related sibling work under `~/Desktop/2026/` (separate from this repo) includes StellarHydra, WaveFlow, route-visualizer, and swap-agrregrator — do not commit StellarRoute changes into those trees by mistake.
 - Frontend Vitest in CI is split by path (app/components/hooks/lib); flaky or heavy suites have been a recurring main-branch blocker.
 - `gh` is the expected interface for GitHub issues, PRs, labels, and CI log inspection on this repo.
+- `main` has classic branch protection blocking force pushes (`allow_force_pushes=false`, `enforce_admins=true`).

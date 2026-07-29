@@ -177,8 +177,8 @@ impl StellarRoute {
             let mut amount = (total_balance
                 .checked_mul(rec.share_bps as i128)
                 .unwrap_or(i128::MAX))
-                .checked_div(10000)
-                .unwrap_or(0);
+            .checked_div(10000)
+            .unwrap_or(0);
 
             // Add rounding dust to treasury or last recipient
             if (found_treasury && i == treasury_idx) || (!found_treasury && i == num_recipients - 1)
@@ -686,8 +686,8 @@ impl StellarRoute {
         let fee_amount = (current_amount
             .checked_mul(fee_rate as i128)
             .ok_or(ContractError::Overflow)?)
-            .checked_div(10000)
-            .ok_or(ContractError::Overflow)?;
+        .checked_div(10000)
+        .ok_or(ContractError::Overflow)?;
         let final_output = current_amount
             .checked_sub(fee_amount)
             .ok_or(ContractError::Overflow)?;
@@ -888,8 +888,8 @@ impl StellarRoute {
         let fee_amount = (current_input_amount
             .checked_mul(fee_rate as i128)
             .ok_or(ContractError::Overflow)?)
-            .checked_div(10000)
-            .ok_or(ContractError::Overflow)?;
+        .checked_div(10000)
+        .ok_or(ContractError::Overflow)?;
         let final_output = current_input_amount
             .checked_sub(fee_amount)
             .ok_or(ContractError::Overflow)?;
@@ -908,7 +908,8 @@ impl StellarRoute {
                     .estimated_output
                     .checked_sub(final_output)
                     .ok_or(ContractError::Overflow)?;
-                diff.checked_mul(10000).ok_or(ContractError::Overflow)?
+                diff.checked_mul(10000)
+                    .ok_or(ContractError::Overflow)?
                     .checked_div(params.route.estimated_output)
                     .ok_or(ContractError::Overflow)?
             } else {

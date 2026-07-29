@@ -1,5 +1,6 @@
 //! Pathfinding algorithms for swap routing with N-hop support and safety bounds
 
+use crate::cross_chain::{is_bridge_edge, BridgeEdgeMeta};
 use crate::error::{Result, RoutingError};
 use crate::policy::{RouteDiagnostic, RoutingPolicy};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,9 @@ impl Default for PathfinderConfig {
 }
 
 /// Represents a liquidity edge in the routing graph
+///
+/// `from` / `to` may be legacy Stellar identifiers or CAIP-19 chain-scoped ids.
+/// Bridge/cross-chain edges optionally carry [`BridgeEdgeMeta`] (abstraction only).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LiquidityEdge {
     pub from: String,
@@ -32,6 +36,28 @@ pub struct LiquidityEdge {
     pub price: f64,
     #[serde(default = "default_fee_bps")]
     pub fee_bps: u32,
+    /// Optional liquidity provider id (DEX venue operator or bridge adapter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Optional bridge / cross-chain metadata. Absent for same-chain DEX edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<BridgeEdgeMeta>,
+}
+
+impl Default for LiquidityEdge {
+    fn default() -> Self {
+        Self {
+            from: String::new(),
+            to: String::new(),
+            venue_type: String::new(),
+            venue_ref: String::new(),
+            liquidity: 0,
+            price: 0.0,
+            fee_bps: default_fee_bps(),
+            provider: None,
+            bridge: None,
+        }
+    }
 }
 
 fn default_fee_bps() -> u32 {
@@ -45,7 +71,7 @@ pub struct SwapPath {
     pub estimated_output: i128,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct PathHop {
     pub source_asset: String,
     pub destination_asset: String,
@@ -53,6 +79,10 @@ pub struct PathHop {
     pub venue_ref: String,
     pub price: f64,
     pub fee_bps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<BridgeEdgeMeta>,
 }
 
 /// N-hop pathfinder with safety bounds
@@ -120,6 +150,11 @@ impl Pathfinder {
                     .map(|h| crate::policy::RouteHop {
                         venue_type: h.venue_type.clone(),
                         asset: h.destination_asset.clone(),
+                        provider: h
+                            .provider
+                            .clone()
+                            .or_else(|| h.bridge.as_ref().and_then(|b| b.provider.clone())),
+                        bridge: h.bridge.clone(),
                     })
                     .collect::<Vec<_>>();
 
@@ -159,7 +194,31 @@ impl Pathfinder {
         let mut graph: HashMap<String, Vec<LiquidityEdge>> = HashMap::new();
 
         for edge in edges {
+            // Hard-disable bridges unless explicitly opted in (default: false).
+            if is_bridge_edge(&edge.venue_type, edge.bridge.as_ref()) && !policy.allow_bridge_edges
+            {
+                continue;
+            }
+
+            // Even when opted in, reject contradictory bridge metadata.
+            if let Some(bridge) = edge.bridge.as_ref() {
+                if bridge
+                    .validate_against_endpoints(&edge.from, &edge.to)
+                    .is_err()
+                {
+                    continue;
+                }
+            }
+
             if !policy.is_venue_allowed(&edge.venue_type) {
+                continue;
+            }
+
+            let provider = edge
+                .provider
+                .as_deref()
+                .or_else(|| edge.bridge.as_ref().and_then(|b| b.provider.as_deref()));
+            if !policy.is_provider_allowed(provider) {
                 continue;
             }
 
@@ -221,6 +280,8 @@ impl Pathfinder {
                         venue_ref: edge.venue_ref.clone(),
                         price: edge.price,
                         fee_bps: edge.fee_bps,
+                        provider: edge.provider.clone(),
+                        bridge: edge.bridge.clone(),
                     };
 
                     let estimated_after_hop = (estimated_output * 9950) / 10000;

@@ -13,16 +13,18 @@ re-audit, and report publication.
 
 | Stage | Status |
 |---|---|
-| 1. Auditor selection | ☐ Not started |
+| 1. Auditor selection | ☐ Not started — solicitation materials ready; no firm engaged |
 | 2. Commit / hash freeze | ☐ Blocked on stage 1 |
-| 3. Scope + assumptions published | ☑ Drafted in this directory (see below) |
-| 4. Audit fieldwork | ☐ Blocked on stage 2 |
+| 3. Scope + assumptions published | ☑ Drafted in this directory (see below); see also [`readiness-evidence.md`](readiness-evidence.md) |
+| 4. Audit fieldwork | ☐ Blocked on stage 2 — **cannot be marked complete by a software agent** |
 | 5. Findings remediation | ☐ Blocked on stage 4 |
 | 6. Re-audit (if required) | ☐ Blocked on stage 5 |
-| 7. Report published | ☐ Blocked on stage 6 |
+| 7. Report published | ☐ Blocked on stage 6 — **cannot be marked complete without the auditor report artifact** |
 
 Update this table (and the sections below) as the engagement progresses;
 every stage change should reference the PR or issue that advanced it.
+Do **not** check stages 1, 4, or 7 without attached evidence (quotes/SOW,
+fieldwork notes, published report).
 
 ## 1. Auditor selection
 

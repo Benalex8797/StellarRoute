@@ -4,6 +4,7 @@ import {
   useFeatureFlag,
   useFeatureFlags,
   invalidateFlagCache,
+  resolveFlag,
 } from "./useFeatureFlag";
 
 function mockFetch(flags: Record<string, boolean>) {
@@ -18,6 +19,26 @@ beforeEach(() => {
   delete process.env.NEXT_PUBLIC_FLAGS_URL;
   delete process.env.NEXT_PUBLIC_FLAG_ROUTES_BETA;
   delete process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2;
+  delete process.env.NEXT_PUBLIC_FLAG_REAL_XDR;
+});
+
+describe("resolveFlag / real_xdr security pin", () => {
+  it("defaults real_xdr to true when unset", () => {
+    expect(resolveFlag("real_xdr")).toBe(true);
+  });
+
+  it("honors explicit real_xdr=false from env", () => {
+    process.env.NEXT_PUBLIC_FLAG_REAL_XDR = "false";
+    expect(resolveFlag("real_xdr", { real_xdr: true })).toBe(false);
+  });
+
+  it("ignores remote false when env/default pins real_xdr on", () => {
+    // Production-like: unset env → default true; remote cannot disable.
+    expect(resolveFlag("real_xdr", { real_xdr: false })).toBe(true);
+
+    process.env.NEXT_PUBLIC_FLAG_REAL_XDR = "true";
+    expect(resolveFlag("real_xdr", { real_xdr: false })).toBe(true);
+  });
 });
 
 describe("useFeatureFlag", () => {
@@ -27,6 +48,44 @@ describe("useFeatureFlag", () => {
     expect(result.current.enabled).toBe(false);
   });
 
+  it("defaults real_xdr to true when unset (server XDR product path)", async () => {
+    const { result } = renderHook(() => useFeatureFlag("real_xdr"));
+    // Security-pinned: resolves synchronously — no loading flash to false.
+    expect(result.current.loading).toBe(false);
+    expect(result.current.enabled).toBe(true);
+  });
+
+  it("honors explicit real_xdr=false", async () => {
+    process.env.NEXT_PUBLIC_FLAG_REAL_XDR = "false";
+    const { result } = renderHook(() => useFeatureFlag("real_xdr"));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.enabled).toBe(false);
+  });
+
+  it("remote false + production env/default true → real_xdr remains enabled", async () => {
+    process.env.NEXT_PUBLIC_FLAGS_URL = "https://flags.example.com/flags.json";
+    process.env.NEXT_PUBLIC_FLAG_REAL_XDR = "true";
+    mockFetch({ real_xdr: false, routes_beta: true });
+
+    const { result } = renderHook(() => useFeatureFlag("real_xdr"));
+    expect(result.current.enabled).toBe(true);
+    expect(result.current.loading).toBe(false);
+
+    // Ordinary flags still honor remote.
+    const { result: routes } = renderHook(() => useFeatureFlag("routes_beta"));
+    await waitFor(() => expect(routes.current.loading).toBe(false));
+    expect(routes.current.enabled).toBe(true);
+  });
+
+  it("remote false + default true (env unset) → real_xdr remains enabled", async () => {
+    process.env.NEXT_PUBLIC_FLAGS_URL = "https://flags.example.com/flags.json";
+    mockFetch({ real_xdr: false });
+
+    const { result } = renderHook(() => useFeatureFlag("real_xdr"));
+    expect(result.current.enabled).toBe(true);
+    expect(result.current.loading).toBe(false);
+  });
+
   it("reads flag from env var", async () => {
     process.env.NEXT_PUBLIC_FLAG_ROUTES_BETA = "true";
     const { result } = renderHook(() => useFeatureFlag("routes_beta"));
@@ -34,7 +93,7 @@ describe("useFeatureFlag", () => {
     expect(result.current.enabled).toBe(true);
   });
 
-  it("remote config takes priority over env", async () => {
+  it("remote config takes priority over env for ordinary flags", async () => {
     process.env.NEXT_PUBLIC_FLAGS_URL = "https://flags.example.com/flags.json";
     process.env.NEXT_PUBLIC_FLAG_ROUTES_BETA = "false";
     mockFetch({ routes_beta: true });

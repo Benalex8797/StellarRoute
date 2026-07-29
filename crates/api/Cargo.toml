@@ -55,6 +55,11 @@ brotli = "8"
 stellarroute-indexer = { path = "../indexer" }
 stellarroute-routing = { path = "../routing" }
 
+# Stellar transaction construction / envelope validation
+stellar-xdr = { version = "21.2.0", features = ["std", "base64"] }
+stellar-strkey = "0.0.16"
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+
 # API documentation
 utoipa = { version = "4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "6", features = ["axum"] }
@@ -82,6 +87,11 @@ tokio-tungstenite = "0.20"
 futures-util = "0.3"
 criterion = { version = "0.5", features = ["html_reports"] }
 wiremock = "0.6"
+# Integration-test signing helpers (tests/common) — not exported from the lib.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+stellar-xdr = { version = "21.2.0", features = ["std", "base64"] }
+stellar-strkey = "0.0.16"
+sha2 = "0.10"
 
 [[bench]]
 name = "quote_serialization"

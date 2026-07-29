@@ -11,32 +11,32 @@ listed under a **Breaking** heading below.
 
 ### Added
 
-- Release engineering docs: [`PUBLISHING.md`](./PUBLISHING.md) publish checklist and
-  this changelog.
-- README quickstart walking through the full quote → swap path.
+- Chain-aware asset foundation (`ChainAsset`, `canonicalizeAssetId`, `looksLikeCaip`).
+- Classic live-swap methods: `prepareSwap`, `submitSwap`, `confirmSwap`, and
+  `executeSwap` with required `signTransaction`.
+- Prepare/submit/confirm types including `execution_mode: classic_path_payment`,
+  `quote_id`, `expected_output`, `min_output`, and Horizon confirmation result.
+- `parseApiErrorBody` supporting flat and `{ data: { error, message, details } }`
+  envelopes; `API_ERROR_CODES` includes `dependency_unavailable`,
+  `unsupported_execution_mode`, and `unsupported_route`.
+- Explicit ambiguous-submit retries that reuse the same `{ quote_id, signed_xdr }`
+  without re-prepare/re-sign.
+
+### Breaking
+
+- `ExecuteSwapParams.signTransaction` is required.
+- `ExecuteSwapParams.networkPassphrase` is required (string or async callback);
+  prepare vs integrator mismatch throws typed `network_mismatch` before sign/submit.
+- `ExecuteSwapResult` includes `quote_id`, `execution_mode`, `tx_hash`, `status`,
+  and optional `min_output`.
+- Non-`classic_path_payment` prepare responses fail closed before signing.
 
 ## [0.1.0] — Initial release
 
 ### Added
 
-- `StellarRouteClient` covering `getHealth`, `getPairs`, `getOrderbook`, `getQuote`,
-  `getRankedRoutes`, `simulateRoute`, `getPriceHistory`, and batch quote/orderbook.
-- `executeSwap(params)` — validates the route via `simulateRoute`, then returns the
-  XDR envelope to sign.
-- WebSocket client for streaming quote updates (`./websocket.js`).
-- `StellarRouteApiError` + `isStellarRouteApiError` type guard for structured error
-  handling, and quote-staleness helpers (`isQuoteStale`, `getTimeUntilExpiry`).
+- `StellarRouteClient` covering health, pairs, orderbook, quote, routes, simulate,
+  price history, and batch helpers.
+- WebSocket client for streaming quote updates.
+- `StellarRouteApiError` + staleness helpers.
 - Dual ESM/CJS builds with bundled type declarations.
-
-### Breaking
-
-- None — first published version.
-
-### Known limitations
-
-- `executeSwap` throws `StellarRouteApiError` with `code === "not_implemented"` until
-  the server-side swap-build endpoint is deployed. Simulation still runs first, so a
-  successful simulate followed by this error means the route is valid and the caller
-  should build/sign the transaction with the Stellar SDK directly. Removing that stub
-  will be a **breaking** change to `executeSwap`'s failure mode and will land in its
-  own minor release with a migration note here.

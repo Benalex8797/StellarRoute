@@ -41,6 +41,54 @@ pub struct AssetInfo {
     pub asset_issuer: Option<String>,
 }
 
+/// Chain-scoped asset used by the `/api/v2` seam.
+///
+/// Wire form is CAIP-inspired. Solana/TRON use internal network labels (not
+/// genesis-hash CAIP-2). Natives use numeric SLIP-44 (never `slip44:native`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChainAsset {
+    /// Chain id, e.g. `"stellar:pubnet"`, `"eip155:1"`.
+    pub chain_id: String,
+    /// Asset suffix, e.g. `"slip44:148"`, `"erc20:0x…"`.
+    pub asset: String,
+    /// Full canonical id (`{chain_id}/{asset}`).
+    pub canonical: String,
+    /// Optional human symbol (not unique across chains).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+}
+
+/// Bridge / cross-chain venue metadata (abstraction only — not executable).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeVenueMeta {
+    pub provider: String,
+    pub source_chain: String,
+    pub destination_chain: String,
+}
+
+/// Response from `GET /api/v2` (inside the standard `{ v, data, … }` envelope).
+///
+/// `/api/v2` seam surface today: this info descriptor and
+/// `POST /api/v2/assets/canonicalize` only — there is no v2 quote endpoint.
+/// Prefer calling those HTTP paths directly; DTO types here stay wire-aligned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiV2Info {
+    pub version: u8,
+    pub chain_aware_assets: bool,
+    pub bridge_venues_metadata_only: bool,
+    /// Always `false` until bridge settlement exists.
+    #[serde(default)]
+    pub bridge_settlement_executable: bool,
+    pub supported_chain_namespaces: Vec<String>,
+}
+
+/// Response from `POST /api/v2/assets/canonicalize` (`data` payload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanonicalizeAssetResponse {
+    pub asset: ChainAsset,
+    pub input_form: String,
+}
+
 impl AssetInfo {
     /// Returns a human-readable identifier: `"native"`, `"CODE"`, or `"CODE:ISSUER"`.
     pub fn display_name(&self) -> String {

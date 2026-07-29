@@ -60,10 +60,7 @@ fn broken_continuity_route(env: &Env, pool: &Address, hops: u32) -> Route {
             (Asset::Native, Asset::Native)
         } else if i == 1 {
             // Intentionally discontinuous with hop 0 destination (Native).
-            (
-                Asset::Soroban(Address::generate(env)),
-                Asset::Native,
-            )
+            (Asset::Soroban(Address::generate(env)), Asset::Native)
         } else {
             (Asset::Native, Asset::Native)
         };

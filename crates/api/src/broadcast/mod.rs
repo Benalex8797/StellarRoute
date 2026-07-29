@@ -1,7 +1,8 @@
 //! Transaction broadcast abstraction for swap submission.
 //!
-//! Production code posts signed envelopes to Horizon. Tests inject a mock
-//! implementation via [`AppState::transaction_broadcaster`].
+//! Distinguishes permanent Horizon result codes from transient transport failures.
+//! Ambiguous timeout-after-accept must reconcile via [`TransactionBroadcaster::lookup`]
+//! before any rebroadcast.
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -9,7 +10,6 @@ use serde::Deserialize;
 use std::time::Duration;
 use thiserror::Error;
 
-/// Result of a successful Horizon submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BroadcastResult {
     pub tx_hash: String,
@@ -18,23 +18,30 @@ pub struct BroadcastResult {
     pub ledger: Option<u64>,
 }
 
-/// Broadcast failure taxonomy mapped to swap submit metrics / audit classes.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum BroadcastError {
     #[error("validation: {0}")]
     Validation(String),
+    /// Transport timeout — may be ambiguous if the request left the client.
     #[error("timeout")]
     Timeout,
-    #[error("rpc error: {0}")]
-    RpcError(String),
+    /// Transient network / 5xx failure before a definitive Horizon result.
+    #[error("transient rpc error: {0}")]
+    TransientRpc(String),
     #[error("insufficient fee")]
     InsufficientFee,
     #[error("insufficient balance")]
     InsufficientBalance,
-    #[error("slippage exceeded")]
+    #[error("slippage exceeded (op_under_dest_min)")]
     SlippageExceeded,
     #[error("bad signature")]
     BadSignature,
+    #[error("bad sequence")]
+    BadSequence,
+    #[error("malformed transaction")]
+    Malformed,
+    #[error("permanent horizon failure: {0}")]
+    Permanent(String),
 }
 
 impl BroadcastError {
@@ -42,22 +49,91 @@ impl BroadcastError {
         match self {
             Self::Validation(_) => "validation",
             Self::Timeout => "timeout",
-            Self::RpcError(_) => "rpc_error",
+            Self::TransientRpc(_) => "rpc_error",
             Self::InsufficientFee => "insufficient_fee",
             Self::InsufficientBalance => "insufficient_balance",
             Self::SlippageExceeded => "slippage_exceeded",
             Self::BadSignature => "bad_signature",
+            Self::BadSequence => "bad_sequence",
+            Self::Malformed => "malformed",
+            Self::Permanent(_) => "permanent",
         }
+    }
+
+    /// True only for pre-accept transport failures that may safely retry prepare/submit
+    /// after reconciliation proves the tx is absent.
+    pub fn is_transient_transport(&self) -> bool {
+        matches!(self, Self::Timeout | Self::TransientRpc(_))
+    }
+
+    pub fn requires_fresh_prepare(&self) -> bool {
+        matches!(
+            self,
+            Self::BadSequence
+                | Self::BadSignature
+                | Self::Malformed
+                | Self::SlippageExceeded
+                | Self::InsufficientFee
+                | Self::InsufficientBalance
+                | Self::Permanent(_)
+                | Self::Validation(_)
+        )
     }
 }
 
-/// Abstraction for broadcasting signed transaction envelopes.
+/// Map Horizon transaction / operation result codes to typed errors.
+pub fn map_horizon_result_codes(
+    tx_code: Option<&str>,
+    op_codes: Option<&[String]>,
+) -> Option<BroadcastError> {
+    if let Some(code) = tx_code {
+        match code {
+            "tx_insufficient_fee" => return Some(BroadcastError::InsufficientFee),
+            "tx_bad_auth" | "tx_bad_auth_extra" => return Some(BroadcastError::BadSignature),
+            "tx_bad_seq" => return Some(BroadcastError::BadSequence),
+            "tx_malformed" => return Some(BroadcastError::Malformed),
+            "tx_failed" => {
+                // Inspect ops below.
+            }
+            other if other.starts_with("tx_") => {
+                // Unknown tx_* codes are permanent unless clearly retryable.
+                if other == "tx_too_late" || other == "tx_insufficient_balance" {
+                    return Some(BroadcastError::Permanent(other.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(ops) = op_codes {
+        for c in ops {
+            if c.contains("under_dest_min") || c == "op_under_dest_min" {
+                return Some(BroadcastError::SlippageExceeded);
+            }
+            if c.contains("underfunded") || c == "op_underfunded" {
+                return Some(BroadcastError::InsufficientBalance);
+            }
+            if c == "op_malformed" || c.contains("malformed") {
+                return Some(BroadcastError::Malformed);
+            }
+            if c.starts_with("op_") {
+                return Some(BroadcastError::Permanent(c.clone()));
+            }
+        }
+    }
+    if tx_code == Some("tx_failed") {
+        return Some(BroadcastError::Permanent("tx_failed".into()));
+    }
+    None
+}
+
 #[async_trait]
 pub trait TransactionBroadcaster: Send + Sync {
     async fn submit(&self, signed_xdr: &str) -> Result<BroadcastResult, BroadcastError>;
+
+    /// Look up a transaction by hash for timeout reconciliation.
+    async fn lookup(&self, tx_hash: &str) -> Result<Option<BroadcastResult>, BroadcastError>;
 }
 
-/// Horizon `POST /transactions` broadcaster.
 #[derive(Clone)]
 pub struct HorizonTransactionBroadcaster {
     client: Client,
@@ -144,7 +220,7 @@ impl TransactionBroadcaster for HorizonTransactionBroadcaster {
         }
 
         let body = format!("tx={}", urlencoding::encode(signed_xdr.trim()));
-        let mut last_err = BroadcastError::RpcError("no horizon URLs configured".to_string());
+        let mut last_err = BroadcastError::TransientRpc("no horizon URLs configured".to_string());
 
         for base in &self.horizon_urls {
             let url = format!("{base}/transactions");
@@ -161,7 +237,7 @@ impl TransactionBroadcaster for HorizonTransactionBroadcaster {
                     if e.is_timeout() {
                         last_err = BroadcastError::Timeout;
                     } else {
-                        last_err = BroadcastError::RpcError(e.to_string());
+                        last_err = BroadcastError::TransientRpc(e.to_string());
                     }
                     continue;
                 }
@@ -169,7 +245,7 @@ impl TransactionBroadcaster for HorizonTransactionBroadcaster {
 
             if response.status().is_success() {
                 let parsed: HorizonTxResponse = response.json().await.map_err(|e| {
-                    BroadcastError::RpcError(format!("invalid horizon response: {e}"))
+                    BroadcastError::TransientRpc(format!("invalid horizon response: {e}"))
                 })?;
                 let status = if parsed.successful == Some(true) {
                     "success".to_string()
@@ -187,53 +263,90 @@ impl TransactionBroadcaster for HorizonTransactionBroadcaster {
             let text = response.text().await.unwrap_or_default();
             if let Ok(err_body) = serde_json::from_str::<HorizonErrorBody>(&text) {
                 if let Some(codes) = err_body.extras.and_then(|e| e.result_codes) {
-                    if codes.transaction.as_deref() == Some("tx_insufficient_fee") {
-                        return Err(BroadcastError::InsufficientFee);
-                    }
-                    if codes
-                        .operations
-                        .as_ref()
-                        .is_some_and(|ops| ops.iter().any(|c| c.contains("underfunded")))
-                    {
-                        return Err(BroadcastError::InsufficientBalance);
-                    }
-                    if codes
-                        .operations
-                        .as_ref()
-                        .is_some_and(|ops| ops.iter().any(|c| c.contains("slippage")))
-                    {
-                        return Err(BroadcastError::SlippageExceeded);
-                    }
-                    if codes.transaction.as_deref() == Some("tx_bad_auth") {
-                        return Err(BroadcastError::BadSignature);
+                    if let Some(mapped) = map_horizon_result_codes(
+                        codes.transaction.as_deref(),
+                        codes.operations.as_deref(),
+                    ) {
+                        return Err(mapped);
                     }
                 }
                 let msg = err_body
                     .detail
                     .or(err_body.title)
                     .unwrap_or_else(|| format!("HTTP {status}"));
-                last_err = BroadcastError::RpcError(msg);
+                if status.is_server_error() {
+                    last_err = BroadcastError::TransientRpc(msg);
+                } else {
+                    return Err(BroadcastError::Permanent(msg));
+                }
+            } else if status.is_server_error() {
+                last_err = BroadcastError::TransientRpc(format!("HTTP {status}: {text}"));
             } else {
-                last_err = BroadcastError::RpcError(format!("HTTP {status}: {text}"));
-            }
-
-            if status.is_client_error() {
-                return Err(last_err);
+                return Err(BroadcastError::Permanent(format!("HTTP {status}: {text}")));
             }
         }
 
         Err(last_err)
     }
+
+    async fn lookup(&self, tx_hash: &str) -> Result<Option<BroadcastResult>, BroadcastError> {
+        let mut last_err = BroadcastError::TransientRpc("no horizon URLs".into());
+        for base in &self.horizon_urls {
+            let url = format!("{base}/transactions/{tx_hash}");
+            match self.client.get(&url).send().await {
+                Ok(resp) if resp.status().as_u16() == 404 => return Ok(None),
+                Ok(resp) if resp.status().is_success() => {
+                    let parsed: HorizonTxResponse = resp
+                        .json()
+                        .await
+                        .map_err(|e| BroadcastError::TransientRpc(e.to_string()))?;
+                    let status = if parsed.successful == Some(true) {
+                        "success".to_string()
+                    } else {
+                        "pending".to_string()
+                    };
+                    return Ok(Some(BroadcastResult {
+                        tx_hash: parsed.hash,
+                        status,
+                        ledger: parsed.ledger,
+                    }));
+                }
+                Ok(resp) if resp.status().is_server_error() => {
+                    last_err = BroadcastError::TransientRpc(format!("HTTP {}", resp.status()));
+                }
+                Ok(resp) => {
+                    return Err(BroadcastError::Permanent(format!(
+                        "lookup HTTP {}",
+                        resp.status()
+                    )));
+                }
+                Err(e) if e.is_timeout() => last_err = BroadcastError::Timeout,
+                Err(e) => last_err = BroadcastError::TransientRpc(e.to_string()),
+            }
+        }
+        Err(last_err)
+    }
 }
 
-/// In-memory mock for unit/integration tests.
-#[derive(Default)]
 pub struct MockTransactionBroadcaster {
     pub result: std::sync::Mutex<Option<Result<BroadcastResult, BroadcastError>>>,
     pub calls: std::sync::Mutex<Vec<String>>,
+    pub lookup: std::sync::Mutex<Option<Option<BroadcastResult>>>,
+}
+
+impl Default for MockTransactionBroadcaster {
+    fn default() -> Self {
+        Self {
+            result: std::sync::Mutex::new(None),
+            calls: std::sync::Mutex::new(Vec::new()),
+            lookup: std::sync::Mutex::new(None),
+        }
+    }
 }
 
 impl MockTransactionBroadcaster {
+    /// Successful accept. Pass an empty `tx_hash` to let the submit path keep the
+    /// cryptographically bound hash; non-empty values must match that hash.
     pub fn succeed(tx_hash: impl Into<String>) -> Self {
         Self {
             result: std::sync::Mutex::new(Some(Ok(BroadcastResult {
@@ -242,6 +355,7 @@ impl MockTransactionBroadcaster {
                 ledger: None,
             }))),
             calls: std::sync::Mutex::new(Vec::new()),
+            lookup: std::sync::Mutex::new(None),
         }
     }
 
@@ -249,7 +363,13 @@ impl MockTransactionBroadcaster {
         Self {
             result: std::sync::Mutex::new(Some(Err(err))),
             calls: std::sync::Mutex::new(Vec::new()),
+            lookup: std::sync::Mutex::new(None),
         }
+    }
+
+    pub fn with_lookup(self, found: Option<BroadcastResult>) -> Self {
+        *self.lookup.lock().unwrap() = Some(found);
+        self
     }
 
     pub fn call_count(&self) -> usize {
@@ -271,6 +391,10 @@ impl TransactionBroadcaster for MockTransactionBroadcaster {
             ledger: None,
         })
     }
+
+    async fn lookup(&self, _tx_hash: &str) -> Result<Option<BroadcastResult>, BroadcastError> {
+        Ok(self.lookup.lock().unwrap().clone().unwrap_or(None))
+    }
 }
 
 #[cfg(test)]
@@ -278,11 +402,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn broadcast_error_metrics_classes_are_stable() {
-        assert_eq!(
-            BroadcastError::BadSignature.metrics_class(),
-            "bad_signature"
-        );
-        assert_eq!(BroadcastError::Timeout.metrics_class(), "timeout");
+    fn result_code_matrix() {
+        assert!(matches!(
+            map_horizon_result_codes(Some("tx_bad_seq"), None),
+            Some(BroadcastError::BadSequence)
+        ));
+        assert!(matches!(
+            map_horizon_result_codes(Some("tx_bad_auth"), None),
+            Some(BroadcastError::BadSignature)
+        ));
+        assert!(matches!(
+            map_horizon_result_codes(Some("tx_malformed"), None),
+            Some(BroadcastError::Malformed)
+        ));
+        assert!(matches!(
+            map_horizon_result_codes(
+                Some("tx_failed"),
+                Some(&["op_under_dest_min".to_string()][..])
+            ),
+            Some(BroadcastError::SlippageExceeded)
+        ));
+        assert!(matches!(
+            map_horizon_result_codes(Some("tx_insufficient_fee"), None),
+            Some(BroadcastError::InsufficientFee)
+        ));
+        assert!(BroadcastError::Timeout.is_transient_transport());
+        assert!(BroadcastError::TransientRpc("x".into()).is_transient_transport());
+        assert!(!BroadcastError::SlippageExceeded.is_transient_transport());
+        assert!(BroadcastError::BadSequence.requires_fresh_prepare());
     }
 }
