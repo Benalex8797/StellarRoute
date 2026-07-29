@@ -1,4 +1,5 @@
 import { StellarRouteApiError } from '@/lib/api/client';
+import { HorizonSubmitError } from '@/lib/wallet/submit';
 import type { ApiErrorCode } from '@/types';
 
 export interface TraderErrorCopy {
@@ -94,6 +95,15 @@ function inferHorizonError(errorMessage: string): TraderErrorCopy | null {
       explanation: 'Your wallet account changed while this swap was being prepared.',
       recoveryAction: 'Refresh the quote and submit the swap again.',
       ctaLabel: 'Refresh and retry',
+    };
+  }
+
+  if (text.includes('tx_bad_auth')) {
+    return {
+      headline: 'Transaction could not be authorized',
+      explanation: 'The network rejected the transaction signature for this swap.',
+      recoveryAction: 'Reconnect your wallet on the correct network and try again.',
+      ctaLabel: 'Reconnect wallet',
     };
   }
 
@@ -257,6 +267,29 @@ function inferNetworkError(errorMessage: string): TraderErrorCopy | null {
 }
 
 export function getTraderErrorCopy(error: unknown): TraderErrorCopy {
+  if (error instanceof HorizonSubmitError) {
+    const hints = [
+      ...(error.operationCodes ?? []),
+      error.transactionCode,
+      error.code,
+      error.message,
+    ];
+    for (const hint of hints) {
+      if (!hint) continue;
+      const horizonCopy = inferHorizonError(hint);
+      if (horizonCopy) {
+        return horizonCopy;
+      }
+    }
+    if (error.code === 'timeout') {
+      const timeoutCopy = inferHorizonError('transaction timed out');
+      if (timeoutCopy) {
+        return timeoutCopy;
+      }
+    }
+    return API_ERROR_COPY.network_error;
+  }
+
   if (error instanceof StellarRouteApiError) {
     if (error.code && error.code !== 'unknown_error' && API_ERROR_COPY[error.code]) {
       return API_ERROR_COPY[error.code];

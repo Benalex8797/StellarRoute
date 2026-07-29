@@ -110,6 +110,14 @@ describe('submitToHorizon', () => {
     });
   });
 
+  it('classifies unreachable Horizon as horizon_error', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error('Failed to fetch'));
+
+    await expect(submitToHorizon('xdr', 'testnet')).rejects.toMatchObject({
+      code: 'horizon_error',
+    });
+  });
+
   it('throws with HTTP status when no JSON body', async () => {
     global.fetch = vi.fn().mockResolvedValueOnce({
       ok: false,

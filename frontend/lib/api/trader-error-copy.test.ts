@@ -5,6 +5,7 @@ import {
   getTraderErrorCopy,
   toTraderErrorLine,
 } from '@/lib/api/trader-error-copy';
+import { HorizonSubmitError } from '@/lib/wallet/submit';
 
 describe('getTraderErrorCopy', () => {
   it('maps all top 10 API error codes to trader-facing copy', () => {
@@ -82,6 +83,25 @@ describe('getTraderErrorCopy', () => {
     const copy = getTraderErrorCopy(new Error('Failed to fetch'));
 
     expect(copy.headline).toBe('Network connection interrupted');
+  });
+
+  it('maps HorizonSubmitError codes to trader-facing copy', () => {
+    const underfunded = getTraderErrorCopy(
+      new HorizonSubmitError('Transaction failed: tx_failed (op_underfunded)', {
+        code: 'op_underfunded',
+        transactionCode: 'tx_failed',
+        operationCodes: ['op_underfunded'],
+      }),
+    );
+    expect(underfunded.headline).toBe('Insufficient funds for this swap');
+
+    const badAuth = getTraderErrorCopy(
+      new HorizonSubmitError('Transaction failed: tx_bad_auth', {
+        code: 'tx_bad_auth',
+        transactionCode: 'tx_bad_auth',
+      }),
+    );
+    expect(badAuth.headline).toBe('Transaction could not be authorized');
   });
 
   it('formats copy into a single display line', () => {

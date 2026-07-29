@@ -122,11 +122,12 @@ export async function submitToHorizon(
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '';
+    const isTimeout = message.toLowerCase().includes('timeout');
     throw new HorizonSubmitError(
-      message.toLowerCase().includes('timeout')
+      isTimeout
         ? 'Transaction submission timed out. Please check your wallet activity before trying again.'
         : 'Unable to reach Horizon. Please check your connection and try again.',
-      { code: 'timeout' },
+      { code: isTimeout ? 'timeout' : 'horizon_error' },
     );
   }
 
