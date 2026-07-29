@@ -143,7 +143,9 @@ fn admin_system_mutating_routes_are_all_registered_in_table() {
     for (method, router_path) in &discovered {
         let covered = ADMIN_SYSTEM_MUTATING_ROUTES
             .iter()
-            .any(|(m, concrete_path)| m.as_str() == method && paths_match(router_path, concrete_path));
+            .any(|(m, concrete_path)| {
+                m.as_str() == method && paths_match(router_path, concrete_path)
+            });
 
         assert!(
             covered,

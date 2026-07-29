@@ -4,11 +4,11 @@ This guide explains how StellarRoute's frontend integrates Stellar wallets, incl
 
 ## Supported wallets
 
-StellarRoute currently recognizes three browser wallets/signers:
+StellarRoute currently recognizes four Stellar browser wallets/signers:
 
 - **Freighter**
   - Detected via `@stellar/freighter-api`.
-  - Uses `isAllowed()` to check whether the extension/site access is available.
+  - Uses `isConnected()` to check whether the extension is available (not `isAllowed`).
   - Connects with `requestAccess()`, then reads `getAddress()` and `getNetworkDetails()`.
   - Supports signing via `signTransaction(xdr, { networkPassphrase })`.
 
@@ -22,14 +22,19 @@ StellarRoute currently recognizes three browser wallets/signers:
   - Connects via the Albedo `public_key` intent and reads `pubkey`/`publicKey`.
   - Supports signing via the Albedo `tx` intent and reads `signed_envelope_xdr`/`signedXdr`/`xdr`.
 
+- **LOBSTR**
+  - Detected via `@lobstrco/signer-extension-api`.
+  - Connect/sign follow the shared Stellar wallet module path in `frontend/lib/wallet/index.ts`.
+
 ## Detection logic
 
 Wallet availability is managed in `frontend/lib/wallet/index.ts`.
 
 - `getAvailableWallets()` returns an array of supported wallet objects.
-- Freighter is reported installed if `isAllowed()` returns `true`.
+- Freighter is reported installed when `isConnected()` indicates the extension is present.
 - xBull is reported installed when a global `window.xbull` object exists.
 - Albedo is reported available in browser environments because it can open the hosted intent flow without requiring an extension.
+- LOBSTR is reported installed when its extension API is available.
 
 This list powers UI state in `frontend/components/shared/wallet-button.tsx` and the `WalletProvider`.
 
@@ -193,11 +198,34 @@ The repository includes mocks and test helpers for wallet behavior:
 - `frontend/__mocks__/@stellar/freighter-api.ts`
 - wallet provider tests in `frontend/components/providers/__tests__/wallet-sync.test.tsx`
 
+## Multi-chain adapters (EVM / Solana / Bitcoin / TRON)
+
+Non-Stellar browser wallets live under `frontend/lib/wallet/adapters/` and do **not** extend `SupportedWallet`. The shared `ChainWalletAdapter` surface covers:
+
+| Family | Default adapters | Signing surface |
+|--------|------------------|-----------------|
+| EVM | `evm-injected` (`window.ethereum`) | EIP-1193 message / tx / send |
+| Solana | `solana-injected` (Phantom / injected) | message; Transaction objects with `serialize()` only |
+| Bitcoin | `unisat`, `okx-bitcoin` | message / PSBT |
+| TRON | `tronlink` | TronWeb message / tx object |
+| Stellar | thin wrappers (`freighter`, `xbull`, `albedo`, `lobstr`) | XDR via existing module |
+
+Use `hooks/useChainWallet.ts` for multi-chain sessions. Keep Freighter/xBull/Albedo/LOBSTR swap UX on `WalletProvider` / `hooks/useWallet.ts`.
+
+### Execution support and mismatch
+
+- Connect is soft: network mismatch does not fail connect; `networkMismatch` / `getNetwork().matchesExpected` / live `getExecutionSupport` reflect it.
+- `signMessage`, `signTransaction`, and `sendTransaction` are gated on network match.
+- Disconnected adapters report `not_connected`; capability gaps report `wallet_capability_missing`; otherwise non-Stellar routes report `no_backend_route`.
+- Solana does **not** wrap raw bytes in fake Transaction objects — pass a real wallet-compatible handle or expect `unsupported_capability`.
+
+See `frontend/lib/wallet/adapters/INTEGRATION.md` for contracts, registry ids, and security rules. Stellar connect/sign paths in `frontend/lib/wallet/index.ts` remain unchanged.
+
 ## Adding a new wallet adapter
 
-The adapter entrypoint is `frontend/lib/wallet/index.ts`.
+### Stellar (swap UI path)
 
-To add a new wallet:
+The Stellar adapter entrypoint is `frontend/lib/wallet/index.ts`.
 
 1. Update `SupportedWallet` in `frontend/lib/wallet/types.ts`.
 2. Add a label in `WALLET_LABELS`.
@@ -206,7 +234,12 @@ To add a new wallet:
 5. Implement `refreshWalletSession()` to refresh address and network state.
 6. Implement signing in `signTransactionWithWallet()` if the wallet supports transaction signing.
 7. Update persistence and reconnection behavior in `frontend/components/providers/wallet-provider.tsx` if needed.
-8. Add unit tests for connect/disconnect, session refresh, network mismatch, and pending-transaction guards.
+8. Optionally add a thin wrapper in `adapters/stellar/legacy.ts` and register it.
+9. Add unit tests for connect/disconnect, session refresh, network mismatch, and pending-transaction guards.
+
+### Multi-chain (EVM / Solana / Bitcoin / TRON)
+
+Implement `ChainWalletAdapter` under `frontend/lib/wallet/adapters/<family>/`, extend payload unions in `adapters/types.ts` if needed, append registration in `ensureDefaultAdapters()`, and cover detection/connect/sign/mismatch/execution-support in Vitest. Do not extend `SupportedWallet` for non-Stellar wallets.
 
 ### Extension points in code
 

@@ -137,8 +137,13 @@ mod tests {
         std::env::remove_var("ADMIN_AUDIT_ENABLED");
         let mut hm = HeaderMap::new();
         hm.insert("authorization", "Bearer test-admin-token".parse().unwrap());
-        let entry =
-            build_admin_audit_entry("kill_switch.update", "req-ks-1", &hm, "kill_switch", "success");
+        let entry = build_admin_audit_entry(
+            "kill_switch.update",
+            "req-ks-1",
+            &hm,
+            "kill_switch",
+            "success",
+        );
         let json = emit_admin_audit(&entry).expect("kill switch audit entry must emit");
         assert!(json.contains("\"event\":\"kill_switch.update\""));
         assert!(json.contains("\"outcome\":\"success\""));

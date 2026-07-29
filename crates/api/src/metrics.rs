@@ -395,7 +395,9 @@ pub fn record_health_score_duration(duration: Duration) {
 
 /// Increment the health score recomputation failure counter.
 pub fn record_health_score_failure() {
-    HEALTH_SCORE_JOB_FAILURES.with_label_values::<&str>(&[]).inc();
+    HEALTH_SCORE_JOB_FAILURES
+        .with_label_values::<&str>(&[])
+        .inc();
 }
 
 // ── Webhook metrics ───────────────────────────────────────────────────────────
@@ -470,13 +472,19 @@ lazy_static! {
 }
 
 pub fn record_webhook_delivery_success(integrator_id: &str, duration: Duration) {
-    WEBHOOK_DELIVERY_SUCCESS.with_label_values(&[integrator_id]).inc();
+    WEBHOOK_DELIVERY_SUCCESS
+        .with_label_values(&[integrator_id])
+        .inc();
     WEBHOOK_DELIVERY_DURATION
         .with_label_values(&[integrator_id, "true"])
         .observe(duration.as_secs_f64());
 }
 
-pub fn record_webhook_delivery_failure(integrator_id: &str, failure_reason: &str, duration: Duration) {
+pub fn record_webhook_delivery_failure(
+    integrator_id: &str,
+    failure_reason: &str,
+    duration: Duration,
+) {
     WEBHOOK_DELIVERY_FAILURE
         .with_label_values(&[integrator_id, failure_reason])
         .inc();
@@ -492,7 +500,9 @@ pub fn record_webhook_delivery_attempt(integrator_id: &str, attempt: u32) {
 }
 
 pub fn update_webhook_pending_quotes(count: i64) {
-    WEBHOOK_PENDING_QUOTES.with_label_values::<&str>(&[]).set(count);
+    WEBHOOK_PENDING_QUOTES
+        .with_label_values::<&str>(&[])
+        .set(count);
 }
 
 pub fn record_webhook_poll_cycle_duration(duration: Duration) {
@@ -589,7 +599,11 @@ lazy_static! {
 /// `error_class` should be `"none"` for success; any other value maps to
 /// `outcome="error"` and the literal class is preserved as a label.
 pub fn record_swap_prepare(duration: Duration, error_class: &str) {
-    let outcome_label = if error_class == "none" { "success" } else { "error" };
+    let outcome_label = if error_class == "none" {
+        "success"
+    } else {
+        "error"
+    };
 
     SWAP_PREPARE_LATENCY
         .with_label_values(&[outcome_label])
@@ -605,7 +619,11 @@ pub fn record_swap_prepare(duration: Duration, error_class: &str) {
 /// `error_class` should be `"none"` for success; any other value maps to
 /// `outcome="error"` and the literal class is preserved as a label.
 pub fn record_swap_submit(duration: Duration, error_class: &str) {
-    let outcome_label = if error_class == "none" { "success" } else { "error" };
+    let outcome_label = if error_class == "none" {
+        "success"
+    } else {
+        "error"
+    };
 
     SWAP_SUBMIT_LATENCY
         .with_label_values(&[outcome_label])

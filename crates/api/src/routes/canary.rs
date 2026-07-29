@@ -2,8 +2,10 @@ use axum::{extract::State, Json};
 use serde_json::Value;
 use std::sync::Arc;
 
+use crate::models::{
+    LiveCompareIngestResponse, LiveCompareOutcome, LiveCompareReportResponse, LiveCompareResult,
+};
 use crate::{error::Result, middleware::AdminAuth, state::AppState};
-use crate::models::{LiveCompareIngestResponse, LiveCompareOutcome, LiveCompareReportResponse, LiveCompareResult};
 use stellarroute_routing::canary::CanaryConfig;
 
 /// GET /api/v1/system/canary/report

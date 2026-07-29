@@ -61,6 +61,8 @@ This directory is the documentation hub for StellarRoute. It organizes design, d
 ### Operational runbooks
 
 - [Kill switch runbook](RUNBOOK_KILL_SWITCH.md) — emergency kill-switch activation and recovery procedure.
+- [Swap submitting sender-lock recovery](runbooks/swap-submitting-sender-lock.md) — reconcile bound tx hash / guarded release after timebounds (classic PathPayment only; Soroban unsupported).
+- [Live swap testnet checklist](readiness/live-swap-testnet-checklist.md) — E2E classic prepare/sign/submit on testnet.
 - [Quote purger runbook](QUOTE_PURGER_RUNBOOK.md) — quote purger operation, scheduling, and troubleshooting.
 - [Routing canary](routing_canary.md) — canary routing configuration, promotion, and rollback.
 - [Indexer lag monitoring](indexer-lag-monitoring.md) — indexer lag alerting thresholds and remediation steps.

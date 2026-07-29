@@ -292,7 +292,12 @@ mod tests {
             "raw account must not appear in redacted form"
         );
         assert!(redacted.starts_with("GABC"), "prefix preserved");
-        assert!(redacted.ends_with("LA5"), "suffix preserved");
+        // Implementation keeps the last 4 chars before the `#hash` suffix.
+        let fingerprint = redacted.split('#').next().expect("hash separator");
+        assert!(
+            fingerprint.ends_with("FLA5"),
+            "suffix preserved: {redacted}"
+        );
         assert!(redacted.contains("..."), "middle replaced");
         assert!(redacted.contains('#'), "hash separator present");
     }

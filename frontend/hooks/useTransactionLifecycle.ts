@@ -14,6 +14,10 @@ import {
   getPriceImpactTier,
   type SwapFunnelPayload,
 } from "@/lib/telemetry";
+import {
+  toLifecycleError,
+  type LifecycleError,
+} from "@/lib/swap/lifecycle-error";
 
 function funnelPayloadFromTrade(
   params: TradeParams,
@@ -44,7 +48,10 @@ export interface TradeParams {
 export interface UseTransactionLifecycleResult {
   status: TransactionStatus | "review";
   txHash: string | undefined;
+  /** Backward-compatible string message for non-swap consumers. */
   errorMessage: string | undefined;
+  /** Structured error preserving API code + allowlisted status. */
+  error: LifecycleError | undefined;
   tradeParams: TradeParams | undefined;
   initiateSwap: (params: TradeParams) => Promise<void>;
   cancel: () => void;
@@ -133,9 +140,25 @@ export function useTransactionLifecycle(
   const [errorMessage, setErrorMessage] = useState<string | undefined>(
     undefined
   );
+  const [error, setError] = useState<LifecycleError | undefined>(undefined);
   const [tradeParams, setTradeParams] = useState<TradeParams | undefined>(
     undefined
   );
+
+  const clearError = useCallback(() => {
+    setErrorMessage(undefined);
+    setError(undefined);
+  }, []);
+
+  const failWith = useCallback((err: unknown, messageOverride?: string) => {
+    const lifecycleErr = toLifecycleError(err);
+    if (messageOverride) {
+      lifecycleErr.message = messageOverride;
+    }
+    setError(lifecycleErr);
+    setErrorMessage(lifecycleErr.message);
+    return lifecycleErr.message;
+  }, []);
 
   // Ref to track the current transaction id for history updates
   const txIdRef = useRef<string | undefined>(undefined);
@@ -162,12 +185,14 @@ export function useTransactionLifecycle(
       cancelledRef.current = false;
       setTradeParams(params);
       setTxHash(undefined);
-      setErrorMessage(undefined);
+      clearError();
 
       if (params.walletAddress) {
         if (!buildXdr) {
-          setErrorMessage(
-            "Transaction could not be built. Please refresh and try again."
+          failWith(
+            new Error(
+              "Transaction could not be built. Please refresh and try again.",
+            ),
           );
           setStatus("failed");
           emitSwapFunnelEvent(
@@ -177,7 +202,7 @@ export function useTransactionLifecycle(
           return;
         }
         if (isDefaultSignTransaction(signTransaction)) {
-          setErrorMessage("Wallet not ready for signing.");
+          failWith(new Error("Wallet not ready for signing."));
           setStatus("failed");
           emitSwapFunnelEvent(
             "swap_failed",
@@ -186,7 +211,7 @@ export function useTransactionLifecycle(
           return;
         }
         if (isDefaultSubmitTransaction(submitTransaction)) {
-          setErrorMessage("Transaction submission is not configured.");
+          failWith(new Error("Transaction submission is not configured."));
           setStatus("failed");
           emitSwapFunnelEvent(
             "swap_failed",
@@ -224,10 +249,13 @@ export function useTransactionLifecycle(
           xdrToSign = await buildXdr(params);
         } catch (err: unknown) {
           if (cancelledRef.current) return;
-          const msg = err instanceof XdrBuildError
-            ? `Transaction build failed (${err.code}): ${err.message}`
-            : err instanceof Error ? err.message : 'Failed to build transaction';
-          setErrorMessage(msg);
+          const msg =
+            err instanceof XdrBuildError
+              ? failWith(
+                  err,
+                  `Transaction build failed (${err.code}): ${err.message}`,
+                )
+              : failWith(err, undefined);
           setStatus("failed");
           emitSwapFunnelEvent(
             "swap_failed",
@@ -259,19 +287,19 @@ export function useTransactionLifecycle(
         signedXdr = await signTransaction(xdrToSign);
       } catch (err: unknown) {
         if (cancelledRef.current) return;
-        const msg =
+        const rawMsg =
           err instanceof Error ? err.message : "Signature failed";
-        const userFacingMsg = isRejectionError(msg)
+        const userFacingMsg = isRejectionError(rawMsg)
           ? "Signature rejected. You can try again or dismiss."
-          : msg;
-        setErrorMessage(userFacingMsg);
+          : undefined;
+        const msg = failWith(err, userFacingMsg);
         setStatus("failed");
         emitSwapFunnelEvent(
           "swap_failed",
           funnelPayloadFromTrade(params, { failureStage: "sign" }),
         );
         updateTransactionStatus(tempId, "failed", {
-          errorMessage: userFacingMsg,
+          errorMessage: msg,
         });
         dispatchTransactionNotification(
           {
@@ -343,9 +371,7 @@ export function useTransactionLifecycle(
         clearDeadlineTimer();
         if (cancelledRef.current) return;
 
-        const msg =
-          err instanceof Error ? err.message : "Transaction submission failed";
-        setErrorMessage(msg);
+        const msg = failWith(err);
         setStatus("failed");
         emitSwapFunnelEvent(
           "swap_failed",
@@ -374,6 +400,8 @@ export function useTransactionLifecycle(
       addTransaction,
       updateTransactionStatus,
       clearDeadlineTimer,
+      clearError,
+      failWith,
     ]
   );
 
@@ -382,9 +410,9 @@ export function useTransactionLifecycle(
       cancelledRef.current = true;
       clearDeadlineTimer();
       setStatus("review");
-      setErrorMessage(undefined);
+      clearError();
     }
-  }, [status, clearDeadlineTimer]);
+  }, [status, clearDeadlineTimer, clearError]);
 
   const resubmit = useCallback(async () => {
     if (status === "dropped" && tradeParams) {
@@ -395,23 +423,24 @@ export function useTransactionLifecycle(
   const tryAgain = useCallback(() => {
     clearDeadlineTimer();
     setStatus("review");
-    setErrorMessage(undefined);
+    clearError();
     setTxHash(undefined);
     // tradeParams is preserved so the modal can pre-populate
-  }, [clearDeadlineTimer]);
+  }, [clearDeadlineTimer, clearError]);
 
   const dismiss = useCallback(() => {
     clearDeadlineTimer();
     setStatus("review");
-    setErrorMessage(undefined);
+    clearError();
     setTxHash(undefined);
     setTradeParams(undefined);
-  }, [clearDeadlineTimer]);
+  }, [clearDeadlineTimer, clearError]);
 
   return {
     status,
     txHash,
     errorMessage,
+    error,
     tradeParams,
     initiateSwap,
     cancel,

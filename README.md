@@ -1,6 +1,6 @@
 # StellarRoute
 
-**Open-source DEX aggregation engine and UI that delivers best-price routing across the Stellar DEX (SDEX) orderbook and Soroban AMM pools.**
+**Non-custodial cross-chain execution aggregator centered on Stellar — best-price routing across SDEX and Soroban AMM, with a foundation for bridging to Ethereum, Solana, Bitcoin, and TRON.**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
@@ -14,27 +14,32 @@
 
 ## 🚀 Overview
 
-StellarRoute is a comprehensive DEX aggregation platform built for the Stellar ecosystem. It **solves a critical gap** left by the deprecation of the SDEX Explorer by providing unified price discovery and optimal routing across both traditional Stellar DEX (SDEX) orderbooks and modern Soroban-based AMM pools.
+StellarRoute is a **non-custodial cross-chain execution aggregator centered on Stellar**. Users keep custody of their keys and assets; StellarRoute orchestrates quotes, routing, and swap execution without taking possession of funds.
+
+On Stellar, it provides unified price discovery and optimal routing across SDEX orderbooks and Soroban AMM pools. Beyond Stellar, the platform is evolving to connect major chains — Ethereum, Solana, Bitcoin, and TRON — through established settlement rails (CCTP, NEAR Intents, anchors) rather than building new bridge protocols.
 
 ### The Problem We're Solving
 
-Stellar users currently face:
+Stellar users and integrators currently face:
 
 - **Fragmented liquidity** between SDEX and Soroban AMM pools
 - **No unified price discovery** across different trading venues
 - **Suboptimal trade execution** due to lack of intelligent routing
+- **Isolated Stellar liquidity** with no first-class path to other major chains
 - **Loss of SDEX Explorer** functionality without a clear replacement
 
-StellarRoute addresses these challenges by building open-source infrastructure that benefits traders, developers, and the entire Stellar ecosystem.
+StellarRoute addresses these challenges with open-source infrastructure that benefits traders, developers, and the entire Stellar ecosystem.
 
 ### What We're Building
 
-- **Unified Liquidity Aggregation**: Index and aggregate liquidity from SDEX orderbooks and Soroban AMM pools
-- **Intelligent Routing Engine**: Multi-hop pathfinding algorithm that discovers optimal trade routes across multiple liquidity sources
-- **Smart Contracts**: Soroban-based router contracts for secure, on-chain swap execution
-- **Developer SDKs**: Easy-to-use JavaScript/TypeScript and Rust SDKs for integrations
-- **Web Interface**: Modern, intuitive UI for traders with real-time price updates and wallet integration
-- **High Performance**: Sub-500ms API response times with real-time orderbook synchronization
+- **Stellar-native DEX aggregation**: Index and aggregate liquidity from SDEX orderbooks and Soroban AMM pools
+- **Live swap execution**: Server-authoritative prepare/submit flow with cryptographic signature verification (classic SDEX today; Soroban gated until audit-ready)
+- **Cross-chain foundation**: CAIP-style chain-aware assets, `/api/v2` seam, and wallet adapters for Stellar, EVM, Solana, Bitcoin, and TRON
+- **Intelligent routing engine**: Multi-hop pathfinding with health, policy, and kill-switch controls
+- **Smart contracts**: Soroban-based router contracts for secure on-chain swap execution
+- **Developer SDKs**: JavaScript/TypeScript and Rust SDKs for integrations
+- **Web interface**: Modern UI with real-time quotes, wallet integration, and structured error handling
+- **High performance**: Sub-500ms API response times with real-time orderbook synchronization
 
 ---
 
@@ -42,11 +47,13 @@ StellarRoute addresses these challenges by building open-source infrastructure t
 
 ### Core Capabilities
 
-- ✅ **Best Price Discovery**: Automatically find the best execution price across all liquidity sources
-- ✅ **Multi-Hop Routing**: Support for complex multi-step trades (e.g., XLM → USDC → BTC)
-- ✅ **Price Impact Analysis**: Real-time calculation of price impact and slippage
-- ✅ **Real-Time Indexing**: Continuous synchronization of SDEX and AMM pool states
-- ✅ **Developer-Friendly**: Comprehensive SDKs and APIs for easy integration
+- ✅ **Non-custodial execution**: Users sign transactions in their own wallets; the API never holds keys or funds
+- ✅ **Best price discovery**: Automatically find the best execution price across all Stellar liquidity sources
+- ✅ **Multi-hop routing**: Support for complex multi-step trades (e.g., XLM → USDC → EURC)
+- ✅ **Cross-chain readiness**: Chain-aware asset model, multi-chain wallet adapters, and v2 API seam for bridge settlement rails
+- ✅ **Price impact analysis**: Real-time calculation of price impact and slippage
+- ✅ **Real-time indexing**: Continuous synchronization of SDEX and AMM pool states
+- ✅ **Developer-friendly**: Comprehensive SDKs and APIs for easy integration
 
 ### For Traders
 
@@ -133,7 +140,7 @@ graph TB
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS + shadcn/ui
 - **State Management**: React hooks + context
-- **Wallet Integration**: Freighter, XBull
+- **Wallet Integration**: Stellar (Freighter, xBull, Albedo, LOBSTR), EVM, Solana, Bitcoin, TRON
 
 ### Infrastructure
 
@@ -145,10 +152,9 @@ graph TB
 
 ## 📊 Current Status & Contribution Opportunities
 
-**Milestone**: M1 - Prototype Indexer & API ✅ **COMPLETE!**  
-**Next Phase**: M2 - Soroban AMM Integration  
-**Status**: 🎯 **Ready for Production Testing** | **Actively seeking contributors**  
-**Milestone Progress**: 100% Complete
+**Milestone**: M1 - Prototype Indexer & API ✅ **COMPLETE**  
+**Current focus**: Live Stellar testnet swaps, cross-chain execution foundation, external Soroban audit  
+**Status**: 🎯 **Stellar classic swap path live** | **Cross-chain rails in foundation phase** | **Actively seeking contributors**
 
 ### Why Contribute to StellarRoute?
 
@@ -448,14 +454,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🎯 Vision
 
-Our goal is to create the most efficient, user-friendly, and developer-centric DEX aggregation platform on Stellar. By combining SDEX orderbook depth with Soroban AMM liquidity, we're building infrastructure that will help traders get the best prices while making it easy for developers to integrate sophisticated trading functionality into their applications.
+Our goal is to make Stellar the hub for non-custodial cross-chain execution: the best place to swap on-ledger assets *and* move value to and from Ethereum, Solana, Bitcoin, and TRON through proven settlement rails. By combining SDEX orderbook depth with Soroban AMM liquidity and a chain-aware execution layer, we help traders get the best prices while giving developers a single integration surface for multi-chain flows.
 
 ### Impact on the Stellar Ecosystem
 
-- **For Traders**: Best execution prices and transparent routing
-- **For Developers**: Easy-to-integrate SDKs and comprehensive APIs
-- **For DeFi Projects**: Foundation for building advanced trading applications
-- **For the Ecosystem**: Critical infrastructure filling the SDEX Explorer gap
+- **For Traders**: Best execution prices, transparent routing, and self-custody throughout
+- **For Developers**: Easy-to-integrate SDKs, v1 + v2 APIs, and multi-chain wallet adapters
+- **For DeFi Projects**: Foundation for cross-chain swaps, bridges, and advanced trading applications
+- **For the Ecosystem**: Critical infrastructure that positions Stellar as a cross-chain settlement layer
 
 ---
 

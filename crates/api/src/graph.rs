@@ -179,14 +179,6 @@ impl GraphManager {
                     if p > 0.0 && a > 0.0 {
                         let is_amm = venue_type == "amm";
                         let venue_ref = r.get::<String, _>("venue_ref");
-                        // `fee_bps` may be present from amm_pool_reserves (for AMM) or NULL.
-                        // We'll use DB-provided value when present; otherwise fallback.
-                        let db_fee: Option<i32> = r.get::<Option<i32>, _>("fee_bps");
-                        let fee_bps_u32: u32 = if is_amm {
-                            db_fee.map(|v| v as u32).unwrap_or(DEFAULT_AMM_FEE_BPS)
-                        } else {
-                            db_fee.map(|v| v as u32).unwrap_or(DEFAULT_SDEX_FEE_BPS)
-                        };
 
                         // Perform anomaly detection
                         let mut detector = self.anomaly_detector.lock().await;
@@ -201,6 +193,10 @@ impl GraphManager {
                         let _anomaly_res =
                             detector.update_and_detect(&venue_ref, reserves, depth, None);
 
+                        // Runtime economics: keep reviewed lean-CI constants (30/20).
+                        // Do not ship DB-driven fee_bps from amm_pool_reserves here.
+                        // provider/bridge stay None: graph ingest currently supplies
+                        // no providers; compaction preserves them when set.
                         next_edges.push(LiquidityEdge {
                             from: e_from.clone(),
                             to: e_to.clone(),
@@ -208,7 +204,12 @@ impl GraphManager {
                             venue_ref,
                             liquidity: (a * 1e7) as i128,
                             price: p,
-                            fee_bps: if is_amm { 30 } else { 20 },
+                            fee_bps: if is_amm {
+                                DEFAULT_AMM_FEE_BPS
+                            } else {
+                                DEFAULT_SDEX_FEE_BPS
+                            },
+                            ..Default::default()
                         });
                     }
                 }
@@ -243,9 +244,12 @@ mod tests {
             liquidity: 100,
             price: 1.0,
             fee_bps: 30,
+            ..Default::default()
         }];
 
-        manager.edges.store(Arc::new(initial_edges.clone()));
+        manager
+            .edges
+            .store(Arc::new(CompactedGraph::from_edges(initial_edges)));
 
         let snapshot1 = manager.get_edges();
         assert_eq!(snapshot1.asset_count(), 2);
@@ -259,15 +263,18 @@ mod tests {
             liquidity: 200,
             price: 0.99,
             fee_bps: 30,
+            ..Default::default()
         }];
-        manager.edges.store(Arc::new(new_edges));
+        manager
+            .edges
+            .store(Arc::new(CompactedGraph::from_edges(new_edges)));
 
         let snapshot2 = manager.get_edges();
         assert_eq!(snapshot2.asset_count(), 2);
         assert_eq!(snapshot2.assets[0], "USDC");
 
-        assert_eq!(snapshot1.len(), 1);
-        assert_eq!(snapshot1[0].from, "XLM");
+        assert_eq!(snapshot1.edges.len(), 1);
+        assert_eq!(snapshot1.assets[0], "XLM");
     }
 
     #[tokio::test]
@@ -283,8 +290,11 @@ mod tests {
             liquidity: 100,
             price: 1.0,
             fee_bps: 30,
+            ..Default::default()
         }];
-        manager.edges.store(Arc::new(initial_edges));
+        manager
+            .edges
+            .store(Arc::new(CompactedGraph::from_edges(initial_edges)));
 
         let mut handles = vec![];
         for _ in 0..10 {
@@ -309,8 +319,9 @@ mod tests {
                     liquidity: 100,
                     price: 1.0,
                     fee_bps: 30,
+                    ..Default::default()
                 }];
-                m2.edges.store(Arc::new(edges));
+                m2.edges.store(Arc::new(CompactedGraph::from_edges(edges)));
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
         });

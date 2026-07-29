@@ -25,24 +25,34 @@ console.log(`price=${quote.price} total=${quote.total}`);
 const { routes } = await client.getRankedRoutes('native', 'USDC:GDUKMGUGDZQK6YH...', 100, 5);
 const best = routes[0];
 
-// 3. Swap — simulate + build the transaction envelope.
+// 3. Swap — prepare → network check → sign once → submit.
 try {
   const result = await client.executeSwap({
     route: { hops: best.path.map((hop) => ({
-      from_asset: hop.from_asset,
-      to_asset: hop.to_asset,
+      from_asset: hop.from_asset.asset_type === 'native'
+        ? 'native'
+        : `${hop.from_asset.asset_code}:${hop.from_asset.asset_issuer}`,
+      to_asset: hop.to_asset.asset_type === 'native'
+        ? 'native'
+        : `${hop.to_asset.asset_code}:${hop.to_asset.asset_issuer}`,
       source: hop.source,
     })) },
     amount: '100',
     sender: 'GABC...',
     slippage_bps: 50,
+    // Required: current wallet/app passphrase (or async getter).
+    // Mismatch → typed `network_mismatch` before sign/submit.
+    networkPassphrase: 'Test SDF Network ; September 2015',
+    signTransaction: async (xdr) => {
+      // Freighter / wallet sign; pass the same networkPassphrase to the wallet.
+      return xdr;
+    },
   });
 
-  // Sign `result.xdr_envelope` with the Stellar SDK and submit it.
+  console.log(`tx_hash=${result.tx_hash}`);
 } catch (err) {
-  if (isStellarRouteApiError(err) && err.code === 'not_implemented') {
-    // Simulation passed; the swap-build endpoint is not deployed yet.
-    // Build and sign the transaction directly via the Stellar SDK.
+  if (isStellarRouteApiError(err) && err.code === 'network_mismatch') {
+    // Wallet is on the wrong network — switch and refresh the quote.
   }
 }
 ```

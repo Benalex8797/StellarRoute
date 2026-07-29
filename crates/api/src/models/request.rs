@@ -1,6 +1,10 @@
 //! API request models
 
-use serde::Deserialize;
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
+use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Schema, SchemaType};
+use utoipa::openapi::RefOr;
 use utoipa::ToSchema;
 
 /// Default slippage tolerance in basis points (0.50%)
@@ -251,8 +255,22 @@ pub enum QuoteType {
     Buy,
 }
 
-/// Asset identifier in path parameters
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Canonical object shape for wire JSON `{ "asset_code", "asset_issuer" }`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssetPathObject {
+    asset_code: String,
+    #[serde(default)]
+    asset_issuer: Option<String>,
+}
+
+/// Asset identifier accepted on the wire as either:
+/// - canonical object JSON: `{ "asset_code": "...", "asset_issuer": "..." | null }`
+/// - legacy/client string JSON: `"native"` or `"CODE:ISSUER"`
+///
+/// Parsing is fail-closed: numbers, arrays, booleans, empty strings, and
+/// unknown object fields are rejected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AssetPath {
     /// Asset code (e.g., "XLM", "USDC", or "native" for XLM)
     pub asset_code: String,
@@ -260,18 +278,110 @@ pub struct AssetPath {
     pub asset_issuer: Option<String>,
 }
 
+impl<'de> Deserialize<'de> for AssetPath {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct AssetPathVisitor;
+
+        impl<'de> Visitor<'de> for AssetPathVisitor {
+            type Value = AssetPath;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str(
+                    "asset string (\"native\" or \"CODE:ISSUER\") or object {asset_code, asset_issuer}",
+                )
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                AssetPath::parse(value).map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+
+            fn visit_map<M>(self, map: M) -> std::result::Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let obj = AssetPathObject::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                AssetPath::from_object(obj.asset_code, obj.asset_issuer).map_err(de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(AssetPathVisitor)
+    }
+}
+
+impl<'__s> ToSchema<'__s> for AssetPath {
+    fn schema() -> (&'__s str, RefOr<Schema>) {
+        let string_schema = ObjectBuilder::new()
+            .schema_type(SchemaType::String)
+            .description(Some(
+                "Legacy/client asset string: \"native\" or \"CODE:ISSUER\".",
+            ))
+            .build();
+
+        let object_schema = ObjectBuilder::new()
+            .schema_type(SchemaType::Object)
+            .description(Some(
+                "Canonical asset object with asset_code and optional asset_issuer.",
+            ))
+            .property(
+                "asset_code",
+                ObjectBuilder::new()
+                    .schema_type(SchemaType::String)
+                    .description(Some("Asset code, or \"native\" for XLM."))
+                    .build(),
+            )
+            .property(
+                "asset_issuer",
+                ObjectBuilder::new()
+                    .schema_type(SchemaType::String)
+                    .nullable(true)
+                    .description(Some("Issuer account for credit assets; null for native."))
+                    .build(),
+            )
+            .required("asset_code")
+            .build();
+
+        (
+            "AssetPath",
+            OneOfBuilder::new()
+                .item(string_schema)
+                .item(object_schema)
+                .description(Some(
+                    "Asset identifier: canonical object or legacy string (\"native\" / \"CODE:ISSUER\").",
+                ))
+                .into(),
+        )
+    }
+}
+
 impl AssetPath {
-    /// Parse asset identifier from path segment
+    /// Parse asset identifier from path segment / wire string.
     /// Format: "native" / "XLM" or "CODE" or "CODE:ISSUER"
     pub fn parse(s: &str) -> std::result::Result<Self, String> {
-        if s.eq_ignore_ascii_case("native") || s.eq_ignore_ascii_case("XLM") {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err("Asset identifier cannot be empty".to_string());
+        }
+        if trimmed.eq_ignore_ascii_case("native") || trimmed.eq_ignore_ascii_case("XLM") {
             return Ok(Self {
                 asset_code: "native".to_string(),
                 asset_issuer: None,
             });
         }
 
-        let parts: Vec<&str> = s.split(':').collect();
+        let parts: Vec<&str> = trimmed.split(':').collect();
         match parts.len() {
             1 => {
                 // Preserve case — Stellar asset codes are case-sensitive (e.g. USDy ≠ USDY).
@@ -297,6 +407,41 @@ impl AssetPath {
             }
             _ => Err(format!("Invalid asset format: {}", s)),
         }
+    }
+
+    fn from_object(
+        asset_code: String,
+        asset_issuer: Option<String>,
+    ) -> std::result::Result<Self, String> {
+        let code = asset_code.trim();
+        if code.is_empty() {
+            return Err("asset_code cannot be empty".to_string());
+        }
+        let issuer = match asset_issuer {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Err("asset_issuer cannot be empty when provided".to_string());
+                }
+                Some(trimmed.to_string())
+            }
+            None => None,
+        };
+
+        if code.eq_ignore_ascii_case("native") || code.eq_ignore_ascii_case("XLM") {
+            if issuer.is_some() {
+                return Err("native asset cannot include asset_issuer".to_string());
+            }
+            return Ok(Self {
+                asset_code: "native".to_string(),
+                asset_issuer: None,
+            });
+        }
+
+        Ok(Self {
+            asset_code: code.to_string(),
+            asset_issuer: issuer,
+        })
     }
 
     /// Convert to asset type for database queries
@@ -410,11 +555,65 @@ mod tests {
 
     #[test]
     fn test_parse_preserves_asset_code_case() {
-        let asset = AssetPath::parse(
-            "USDy:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS",
-        )
-        .unwrap();
+        let asset =
+            AssetPath::parse("USDy:GDMVY5CPSEY6IDQBEX7KMJSOVFNHMOMT5QY4MTOCSDFORV24AOFYDDGS")
+                .unwrap();
         assert_eq!(asset.asset_code, "USDy");
+    }
+
+    #[test]
+    fn asset_path_deserializes_string_and_object_without_ambiguity() {
+        let from_string: AssetPath = serde_json::from_value(serde_json::json!("native")).unwrap();
+        assert_eq!(from_string.asset_code, "native");
+        assert_eq!(from_string.asset_issuer, None);
+
+        let issued: AssetPath = serde_json::from_value(serde_json::json!(
+            "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        ))
+        .unwrap();
+        assert_eq!(issued.asset_code, "USDC");
+        assert_eq!(
+            issued.asset_issuer.as_deref(),
+            Some("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
+        );
+
+        let from_object: AssetPath = serde_json::from_value(serde_json::json!({
+            "asset_code": "USDC",
+            "asset_issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        }))
+        .unwrap();
+        assert_eq!(from_object, issued);
+
+        let native_object: AssetPath = serde_json::from_value(serde_json::json!({
+            "asset_code": "native",
+            "asset_issuer": null
+        }))
+        .unwrap();
+        assert_eq!(native_object.asset_code, "native");
+    }
+
+    #[test]
+    fn asset_path_deserialize_fails_closed_on_invalid_wire() {
+        assert!(serde_json::from_value::<AssetPath>(serde_json::json!("")).is_err());
+        assert!(serde_json::from_value::<AssetPath>(serde_json::json!(42)).is_err());
+        assert!(serde_json::from_value::<AssetPath>(serde_json::json!(true)).is_err());
+        assert!(serde_json::from_value::<AssetPath>(serde_json::json!(["native"])).is_err());
+        assert!(serde_json::from_value::<AssetPath>(serde_json::json!({
+            "asset_code": "USDC",
+            "asset_issuer": "GABC",
+            "extra": 1
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<AssetPath>(serde_json::json!({
+            "asset_code": "native",
+            "asset_issuer": "GABC"
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<AssetPath>(serde_json::json!({
+            "asset_code": "",
+            "asset_issuer": null
+        }))
+        .is_err());
     }
 
     #[test]

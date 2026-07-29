@@ -15,7 +15,6 @@ use crate::error::{ApiError, Result};
 
 use super::schema::{
     AuditExclusion, AuditInputs, AuditOutcome, AuditSelected, RouteAuditEntry, SwapSubmitAuditEntry,
-    SwapSubmitOutcome,
 };
 
 /// PostgreSQL-backed store for [`RouteAuditEntry`] records.

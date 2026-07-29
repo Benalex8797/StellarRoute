@@ -79,6 +79,14 @@ pub enum ApiError {
         tx_hash: String,
         status: String,
     },
+
+    /// Classic prepare only supports PathPaymentStrictSend; AMM/Soroban is gated.
+    #[error("Unsupported execution mode: {0}")]
+    UnsupportedExecutionMode(String),
+
+    /// Route shape is not supported by this prepare build (e.g. multi-hop).
+    #[error("Unsupported route: {0}")]
+    UnsupportedRoute(String),
 }
 
 impl From<anyhow::Error> for ApiError {
@@ -191,23 +199,36 @@ impl IntoResponse for ApiError {
                 tx_hash,
                 status,
             } => {
-                let payload = ErrorResponse::new(ApiErrorCode::Conflict, message)
-                    .with_details(serde_json::json!({
+                let payload = ErrorResponse::new(ApiErrorCode::Conflict, message).with_details(
+                    serde_json::json!({
                         "quote_id": quote_id,
                         "tx_hash": tx_hash,
                         "status": status,
-                    }));
+                    }),
+                );
                 let body = Json(ApiResponse::new(payload, "system"));
                 return (StatusCode::CONFLICT, body).into_response();
             }
+            ApiError::UnsupportedExecutionMode(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::UnsupportedExecutionMode,
+                msg,
+            ),
+            ApiError::UnsupportedRoute(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ApiErrorCode::UnsupportedRoute,
+                msg,
+            ),
             ApiError::Database(_) | ApiError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ApiErrorCode::InternalError,
                 "An internal error occurred".to_string(),
             ),
-            ApiError::NotImplemented(msg) => {
-                (StatusCode::NOT_IMPLEMENTED, ApiErrorCode::NotImplemented, msg)
-            }
+            ApiError::NotImplemented(msg) => (
+                StatusCode::NOT_IMPLEMENTED,
+                ApiErrorCode::NotImplemented,
+                msg,
+            ),
         };
 
         let payload = ErrorResponse::new(error_type, message);

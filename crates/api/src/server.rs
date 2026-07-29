@@ -344,8 +344,7 @@ impl Server {
         // that require the client's `SocketAddr` (via `ConnectInfo<SocketAddr>`) work.
         axum::serve(
             listener,
-            self.app
-                .into_make_service_with_connect_info::<SocketAddr>(),
+            self.app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async move {
             shutdown_clone.wait_for_signal().await;
@@ -414,7 +413,10 @@ mod tests {
         let result = validate_cors_config();
 
         reset_cors_env();
-        assert!(result.is_err(), "expected production without an allowlist to fail startup validation");
+        assert!(
+            result.is_err(),
+            "expected production without an allowlist to fail startup validation"
+        );
     }
 
     #[test]

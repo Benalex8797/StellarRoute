@@ -20,6 +20,7 @@ pub mod replay;
 pub mod routes_endpoint;
 pub mod simulation_route;
 pub mod swap;
+pub mod v2;
 pub mod ws;
 
 use axum::{
@@ -155,6 +156,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/health/deps", get(health::dependency_health))
         .merge(operator_routes)
         .merge(live_path_routes)
+        // API v2 seam (chain-aware assets; quotes remain on v1)
+        .route("/api/v2", get(v2::api_v2_info))
+        .route("/api/v2/assets/canonicalize", post(v2::canonicalize_asset))
         // API v1 routes
         .route("/api/v1/assets", get(assets::list_assets_metadata))
         .route("/api/v1/assets/:code", get(assets::get_asset_metadata))

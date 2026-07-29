@@ -20,12 +20,17 @@ pub struct ApiResponse<T> {
 
 impl<T> ApiResponse<T> {
     pub fn new(data: T, request_id: impl Into<String>) -> Self {
+        Self::with_version(1, data, request_id)
+    }
+
+    /// Envelope helper for versioned surfaces (`/api/v2`, …).
+    pub fn with_version(version: u8, data: T, request_id: impl Into<String>) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
         Self {
-            v: 1,
+            v: version,
             timestamp,
             request_id: request_id.into(),
             data,
@@ -267,6 +272,10 @@ pub struct SwapPrepareResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_output: Option<String>,
     pub expires_at: i64,
+    /// Always `classic_path_payment` on success. Soroban/AMM prepare is unsupported.
+    pub execution_mode: String,
+    /// Network passphrase the unsigned envelope was built for (must match wallet before signing).
+    pub network_passphrase: String,
 }
 
 /// Response from `POST /api/v1/swap/submit`.
@@ -728,6 +737,10 @@ pub enum ApiErrorCode {
     /// Idempotent conflict (e.g. quote already submitted)
     #[serde(rename = "duplicate_quote")]
     Conflict,
+    /// Requested venue/execution mode is not supported by this API build
+    UnsupportedExecutionMode,
+    /// Route shape is not supported (e.g. multi-hop classic path)
+    UnsupportedRoute,
 }
 
 impl ApiErrorCode {
@@ -756,6 +769,8 @@ impl ApiErrorCode {
         Self::QuoteNotFound,
         Self::QuoteExpired,
         Self::Conflict,
+        Self::UnsupportedExecutionMode,
+        Self::UnsupportedRoute,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -779,6 +794,8 @@ impl ApiErrorCode {
             Self::QuoteNotFound => "quote_not_found",
             Self::QuoteExpired => "quote_expired",
             Self::Conflict => "duplicate_quote",
+            Self::UnsupportedExecutionMode => "unsupported_execution_mode",
+            Self::UnsupportedRoute => "unsupported_route",
         }
     }
 }

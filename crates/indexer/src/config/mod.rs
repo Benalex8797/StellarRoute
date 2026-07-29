@@ -283,10 +283,7 @@ pub fn check_router_contract_address(
 impl IndexerConfig {
     /// Returns all Horizon URLs to try in priority order: primary first, then fallbacks.
     pub fn horizon_urls(&self) -> Vec<String> {
-        let mut urls = vec![self
-            .stellar_horizon_url
-            .trim_end_matches('/')
-            .to_string()];
+        let mut urls = vec![self.stellar_horizon_url.trim_end_matches('/').to_string()];
         urls.extend(parse_url_list(&self.stellar_horizon_fallback_urls));
         urls
     }
@@ -336,8 +333,9 @@ impl IndexerConfig {
             .map(|v| v.trim().eq_ignore_ascii_case("production"))
             .unwrap_or(false);
 
-        let router = check_router_contract_address(raw_router.as_deref(), allow_empty, is_production)
-            .map_err(config::ConfigError::Message)?;
+        let router =
+            check_router_contract_address(raw_router.as_deref(), allow_empty, is_production)
+                .map_err(config::ConfigError::Message)?;
 
         let mut config = Self::load()?;
         config.router_contract_address = router.unwrap_or_default();

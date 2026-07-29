@@ -10,7 +10,7 @@
 //!
 //! Request logs and decision stages include matching `request_id` values.
 
-use axum::{extract::State, response::IntoResponse, Json};
+use axum::{extract::State, Json};
 use opentelemetry::trace::TraceContextExt;
 use serde_json::{Map, Value};
 use sqlx::Row;
@@ -1166,17 +1166,35 @@ async fn find_best_price(
         circuit_breaker: Some(state.circuit_breaker.clone()),
     };
 
+    // Provider kill-switches from admin/Redis (bridges remain non-executable separately).
+    let provider_policy = state.kill_switch.get_provider_policy().await;
+
     // Stage 4: Policy filter
     let policy_filter_guard = budget_tracker.stage(PipelineStage::PolicyFilter);
-    // Apply filter (pass empty edges — we just need diagnostics for this single-hop path)
+    // Health exclusions remain diagnostic-only for single-hop quotes (pre-existing).
+    // Provider kill-switches actively remove candidates that carry provider metadata.
     let filter = GraphFilter::new(&policy);
-    let (_, routing_diagnostics) = filter.filter_edges(&[], &scored);
+    let (_, routing_diagnostics) =
+        filter.filter_edges_with_providers(&[], &scored, Some(&provider_policy));
+    let mut provider_excluded: Vec<ApiExcludedVenueInfo> = fresh_candidates
+        .iter()
+        .filter(|c| !provider_policy.is_provider_allowed(c.provider.as_deref()))
+        .map(|c| ApiExcludedVenueInfo {
+            venue_ref: c.venue_ref.clone(),
+            reason: ApiExclusionReason::Override,
+        })
+        .collect();
+    let fresh_candidates: Vec<DirectVenueCandidate> = fresh_candidates
+        .into_iter()
+        .filter(|c| provider_policy.is_provider_allowed(c.provider.as_deref()))
+        .collect();
     budget_tracker.record(PipelineStage::PolicyFilter, policy_filter_guard.complete());
 
     tracing::info!(
         stage = "policy_filter",
         excluded = routing_diagnostics.excluded_venues.len(),
-        "Applied policy and threshold filters"
+        provider_excluded = provider_excluded.len(),
+        "Applied policy/threshold diagnostics and provider kill-switch filters"
     );
 
     // Convert routing diagnostics to API types, then prepend stale exclusions (Req 6.2)
@@ -1208,13 +1226,14 @@ async fn find_best_price(
         .collect();
 
     stale_exclusion_entries.append(&mut health_exclusion_entries);
+    stale_exclusion_entries.append(&mut provider_excluded);
     let api_diagnostics = ApiExclusionDiagnostics {
         excluded_venues: stale_exclusion_entries,
     };
 
     // Stage 5: Venue selection
     let venue_selection_guard = budget_tracker.stage(PipelineStage::VenueSelection);
-    // Pass only fresh candidates to price evaluation (Req 2.2, 6.1)
+    // Pass only fresh, provider-allowed candidates to price evaluation (Req 2.2, 6.1)
     let (selected, rationale) = evaluate_single_hop_direct_venues(fresh_candidates, amount)?;
     budget_tracker.record(
         PipelineStage::VenueSelection,
@@ -1261,23 +1280,23 @@ async fn find_best_price(
 
     // Optional Soroban simulation step for AMM venues. If configured and enabled,
     // run a dry-run and convert explicit simulation failures into a NotExecutable error.
-    if selected.venue_type == "amm" {
-        if state.soroban_simulation_enabled {
-            if let Some(sim) = &state.soroban_simulator {
-                // Build a lightweight simulation payload. The real transaction XDR
-                // builder lives elsewhere; for dry-run validation we encode key
-                // route identifiers so tests/mocks can inspect the request.
-                let tx_xdr = format!("simulate:amm:{}:{}:{}",
-                    selected.venue_ref, amount, selected.price);
+    if selected.venue_type == "amm" && state.soroban_simulation_enabled {
+        if let Some(sim) = &state.soroban_simulator {
+            // Build a lightweight simulation payload. The real transaction XDR
+            // builder lives elsewhere; for dry-run validation we encode key
+            // route identifiers so tests/mocks can inspect the request.
+            let tx_xdr = format!(
+                "simulate:amm:{}:{}:{}",
+                selected.venue_ref, amount, selected.price
+            );
 
-                let sim_res = sim.simulate(&tx_xdr).await;
+            let sim_res = sim.simulate(&tx_xdr).await;
 
-                if sim_res.simulated && !sim_res.success {
-                    let reason = sim_res
-                        .failure_reason
-                        .unwrap_or_else(|| "simulation_failure".to_string());
-                    return Err(ApiError::NotExecutable(reason));
-                }
+            if sim_res.simulated && !sim_res.success {
+                let reason = sim_res
+                    .failure_reason
+                    .unwrap_or_else(|| "simulation_failure".to_string());
+                return Err(ApiError::NotExecutable(reason));
             }
         }
     }
@@ -1316,6 +1335,13 @@ struct DirectVenueCandidate {
     source_span_id: String,
     is_inverse: bool,
     fee_bps: u32,
+    /// Optional liquidity provider id (when present, subject to kill-switch policy).
+    ///
+    /// Current `normalized_liquidity` has no provider column, so ingest sets this
+    /// to `None`. Provider kill-switches are forward-compatible and inert for
+    /// today's Stellar venues until ingest supplies provider metadata — do not
+    /// pretend current venues have providers.
+    provider: Option<String>,
 }
 
 impl DirectVenueCandidate {
@@ -1495,6 +1521,8 @@ async fn fetch_source_candidates(
                 source_span_id,
                 is_inverse: false,
                 fee_bps: 0,
+                // Honest: no provider column in normalized_liquidity today.
+                provider: None,
             }
         })
         .collect())
@@ -1734,6 +1762,7 @@ mod tests {
             is_inverse: false,
             source_trace_id: "".to_string(),
             source_span_id: "".to_string(),
+            provider: None,
         }
     }
 

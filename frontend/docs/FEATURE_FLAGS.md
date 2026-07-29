@@ -4,7 +4,7 @@ StellarRoute uses a lightweight, two-layer feature flag system to gate experimen
 
 ## How it works
 
-Flags are resolved in this priority order:
+Ordinary flags are resolved in this priority order:
 
 | Priority | Source | How |
 |---|---|---|
@@ -12,7 +12,22 @@ Flags are resolved in this priority order:
 | 2 | Environment variable | `NEXT_PUBLIC_FLAG_<NAME>=true` |
 | 3 (default) | Hardcoded | Always `false` (default-off) |
 
-All flags are **off by default**. You must explicitly enable them.
+Ordinary flags are **off by default**. You must explicitly enable them.
+
+### Security-pinned flags (`real_xdr`)
+
+`real_xdr` is **not** remotely killable. Precedence:
+
+| Priority | Source | How |
+|---|---|---|
+| 1 | Environment variable | `NEXT_PUBLIC_FLAG_REAL_XDR=true\|false` |
+| 2 (default) | Hardcoded | `true` (API prepare → wallet sign → API submit) |
+
+Remote `FLAGS_URL` values for `real_xdr` are **ignored**. A remote `{"real_xdr": false}` cannot turn off the only secure swap execution path when env is unset (default on) or explicitly `true`.
+
+Operational kill switches belong on the **backend** (provider kill-switch / dependency health), not in client feature flags and not via fallback client-built XDR.
+
+While ordinary flags are still loading, swap execution stays **fail-closed** and API-only — never an alternate client-XDR path.
 
 ---
 
@@ -45,6 +60,8 @@ Deploy or update your flags JSON file at `NEXT_PUBLIC_FLAGS_URL`:
   "your_new_flag": false
 }
 ```
+
+Do **not** put `real_xdr` in remote JSON expecting it to disable live swaps — it will be ignored.
 
 ---
 
@@ -84,12 +101,13 @@ export function SwapPage() {
 
 | Variable | Description |
 |---|---|
-| `NEXT_PUBLIC_FLAGS_URL` | URL to remote JSON flags config (optional) |
+| `NEXT_PUBLIC_FLAGS_URL` | URL to remote JSON flags config (optional; does **not** control `real_xdr`) |
 | `NEXT_PUBLIC_FLAG_ROUTES_BETA` | Enable routes beta (`true`/`false`) |
 | `NEXT_PUBLIC_FLAG_BATCH_SWAPS` | Enable batch swaps (`true`/`false`) |
 | `NEXT_PUBLIC_FLAG_SWAP_UI_V2` | Enable swap UI v2 (`true`/`false`) |
 | `NEXT_PUBLIC_FLAG_TRANSACTION_HISTORY` | Enable transaction history tab |
 | `NEXT_PUBLIC_FLAG_ADVANCED_SLIPPAGE` | Enable advanced slippage controls |
+| `NEXT_PUBLIC_FLAG_REAL_XDR` | **Default on** when unset. Classic API prepare → Freighter sign → API submit → Horizon confirm (`real_xdr`; one-hop SDEX only). Security-pinned: remote flags cannot disable. When false, product swaps fail closed (no client-XDR fallback). |
 
 ---
 

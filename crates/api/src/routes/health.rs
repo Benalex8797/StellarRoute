@@ -144,7 +144,9 @@ pub async fn dependency_health(
     // than queue behind an unreachable Postgres.
     let db_status = match sqlx::query("SELECT 1").execute(state.db.read_pool()).await {
         Ok(_) => {
-            state.external_dependency_health.record_database_result(true);
+            state
+                .external_dependency_health
+                .record_database_result(true);
             "healthy".to_string()
         }
         Err(e) => {

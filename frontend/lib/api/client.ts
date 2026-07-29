@@ -600,6 +600,82 @@ export class StellarRouteClient {
     >(path, opts, undefined, 'POST', serializeBatchQuoteRequests(requests));
     return mapBatchQuoteResponse(unwrapEnvelope<BackendBatchQuoteData>(body));
   }
+
+  /**
+   * POST /api/v1/swap/prepare — build an unsigned swap envelope + quote id.
+   */
+  async prepareSwap(
+    params: SwapPrepareRequest,
+    opts?: FetchOptions,
+  ): Promise<PreparedSwapResponse> {
+    const body = await this.request<
+      ApiResponse<PreparedSwapResponse> | PreparedSwapResponse
+    >('/api/v1/swap/prepare', opts, undefined, 'POST', params);
+    return unwrapEnvelope<PreparedSwapResponse>(body);
+  }
+
+  /**
+   * POST /api/v1/swap/submit — broadcast a wallet-signed envelope.
+   *
+   * Default `retries` is 0 so callers (API execution) own ambiguous-submit
+   * retry policy with the exact same signed body.
+   */
+  async submitSwap(
+    params: SwapSubmitRequest,
+    opts?: FetchOptions & { retries?: number },
+  ): Promise<SwapSubmitResponse> {
+    const body = await this.request<
+      ApiResponse<SwapSubmitResponse> | SwapSubmitResponse
+    >('/api/v1/swap/submit', opts, opts?.retries ?? 0, 'POST', params);
+    return unwrapEnvelope<SwapSubmitResponse>(body);
+  }
+}
+
+/** Hop shape accepted by prepare/simulate route bodies. */
+export interface SwapRouteHop {
+  from_asset: string;
+  to_asset: string;
+  source: string;
+  fee_bps?: number;
+  price?: string;
+  venue_ref?: string;
+}
+
+/** Request body for POST /api/v1/swap/prepare. */
+export interface SwapPrepareRequest {
+  route: { hops: SwapRouteHop[] };
+  amount: string;
+  sender: string;
+  min_output?: string;
+  slippage_bps?: number;
+}
+
+/** Inner data from POST /api/v1/swap/prepare. */
+export interface PreparedSwapResponse {
+  quote_id: string;
+  xdr_envelope: string;
+  expected_output: string;
+  min_output?: string;
+  expires_at: number;
+  /** Always `classic_path_payment` on success. */
+  execution_mode: 'classic_path_payment' | string;
+  /** Network passphrase the unsigned envelope was built for (compare before wallet signing). */
+  network_passphrase: string;
+}
+
+/** Request body for POST /api/v1/swap/submit. */
+export interface SwapSubmitRequest {
+  quote_id: string;
+  signed_xdr: string;
+}
+
+/** Inner data from POST /api/v1/swap/submit. */
+export interface SwapSubmitResponse {
+  quote_id: string;
+  tx_hash: string;
+  status: string;
+  output_amount?: string;
+  ledger?: number;
 }
 
 /** Single request item for a batch quote. */

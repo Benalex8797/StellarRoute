@@ -700,12 +700,43 @@ pub mod keys {
         )
     }
 
-    /// Normalize asset identifiers (e.g. XLM/xlm -> native)
+    /// INTERNAL helper for typed chain-asset cache keys.
     ///
-    /// Delegates to the shared [`stellarroute_routing::normalize_asset`] so
-    /// that all crates use the same canonical representation.
+    /// Not wired into live `/api/v1` quote caching (which remains Stellar-legacy).
+    /// Fails closed on malformed chain-scoped ids — never echoes raw invalid input.
+    pub fn quote_chain_aware(
+        base: &str,
+        quote: &str,
+        amount: &str,
+        slippage_bps: u32,
+        quote_type: &str,
+        explain: bool,
+    ) -> Result<String, String> {
+        let norm_base =
+            stellarroute_routing::canonicalize_asset_id(base).map_err(|e| e.to_string())?;
+        let norm_quote =
+            stellarroute_routing::canonicalize_asset_id(quote).map_err(|e| e.to_string())?;
+        let norm_amount = normalize_amount(amount);
+        Ok(format!(
+            "v2:caip:quote:{}:{}:{}:{}:{}:{}",
+            norm_base, norm_quote, norm_amount, slippage_bps, quote_type, explain
+        ))
+    }
+
+    /// Normalize asset identifiers for v1-compatible cache keys.
+    ///
+    /// Legacy Stellar forms stay as `native` / `CODE:ISSUER` via
+    /// [`stellarroute_routing::normalize_asset`]. Chain-scoped inputs are
+    /// canonicalized; malformed chain ids fail closed to a reserved sentinel
+    /// (never echoed as key material).
     fn normalize_asset(asset: &str) -> String {
-        stellarroute_routing::normalize_asset(asset)
+        match stellarroute_routing::canonicalize_for_v1_cache(asset) {
+            Ok(v) => v,
+            Err(_) => {
+                // Fail closed — distinct from any valid asset id.
+                "__invalid_chain_asset__".to_string()
+            }
+        }
     }
 
     /// Normalize amounts to a canonical string (7 decimal precision)
@@ -717,11 +748,14 @@ pub mod keys {
     }
 
     /// Normalize two assets individually then return them in canonical pair order.
-    ///
-    /// Delegates to the shared [`stellarroute_routing::normalize_pair_owned`]
-    /// so that all crates use the same canonical representation.
     fn normalize_pair_assets(a: &str, b: &str) -> (String, String) {
-        stellarroute_routing::normalize_pair_owned(a, b)
+        let na = normalize_asset(a);
+        let nb = normalize_asset(b);
+        if na <= nb {
+            (na, nb)
+        } else {
+            (nb, na)
+        }
     }
 
     /// Key used to track the latest liquidity revision observed for a pair
@@ -803,6 +837,48 @@ mod tests {
             keys::quote_pair_pattern("BTC", "ETH"),
             keys::quote_pair_pattern("ETH", "BTC"),
         );
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_isolation_across_chains() {
+        const ISSUER: &str = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+        let stellar = keys::quote(&format!("USDC:{ISSUER}"), "native", "1", 50, "sell", false);
+        let eth = keys::quote(
+            "eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "eip155:1/slip44:60",
+            "1",
+            50,
+            "sell",
+            false,
+        );
+        assert_ne!(stellar, eth);
+        assert!(eth.contains("eip155:1/slip44:60"));
+
+        // INTERNAL helper — not live v1 quote caching.
+        let caip_stellar =
+            keys::quote_chain_aware(&format!("USDC:{ISSUER}"), "XLM", "1", 50, "sell", false)
+                .unwrap();
+        let caip_eth = keys::quote_chain_aware(
+            "eip155:1/erc20:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "eip155:1/slip44:60",
+            "1",
+            50,
+            "sell",
+            false,
+        )
+        .unwrap();
+        assert_ne!(caip_stellar, caip_eth);
+        assert!(caip_stellar.contains("stellar:pubnet"));
+        assert!(caip_eth.contains("eip155:1/erc20:"));
+
+        // Malformed chain ids fail closed (no echo of raw invalid input).
+        assert!(
+            keys::quote_chain_aware("eip155:1/slip44:native", "XLM", "1", 50, "sell", false)
+                .is_err()
+        );
+        let bad_v1 = keys::quote("eip155:1/slip44:native", "native", "1", 50, "sell", false);
+        assert!(bad_v1.contains("__invalid_chain_asset__"));
+        assert!(!bad_v1.contains("slip44:native"));
     }
 
     #[tokio::test]

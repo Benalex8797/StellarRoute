@@ -86,16 +86,47 @@ async fn openapi_spec_documents_swap_prepare_and_submit_under_swap_tag() {
 
     let schemas = &spec["components"]["schemas"];
     for schema_name in [
+        "AssetPath",
         "SwapPrepareRequest",
         "SwapPrepareResponse",
         "SwapSubmitRequest",
         "SwapSubmitResponse",
     ] {
         assert!(
-            schemas[schema_name].is_object(),
+            schemas[schema_name].is_object() || schemas[schema_name]["oneOf"].is_array(),
             "{schema_name} schema must be in components.schemas"
         );
     }
+
+    let asset_path = &schemas["AssetPath"];
+    let one_of = asset_path["oneOf"]
+        .as_array()
+        .expect("AssetPath OpenAPI schema must be oneOf string|object");
+    assert!(
+        one_of.len() >= 2,
+        "AssetPath oneOf must include string and object variants, got {asset_path}"
+    );
+    assert!(
+        one_of.iter().any(|item| item["type"] == "string"),
+        "AssetPath oneOf must include a string variant, got {asset_path}"
+    );
+    assert!(
+        one_of.iter().any(|item| {
+            item["type"] == "object"
+                || item["properties"]["asset_code"].is_object()
+                || item["required"]
+                    .as_array()
+                    .is_some_and(|req| req.iter().any(|r| r == "asset_code"))
+        }),
+        "AssetPath oneOf must include an object variant with asset_code, got {asset_path}"
+    );
+
+    let prepare_props = &schemas["SwapPrepareResponse"]["properties"];
+    assert!(
+        prepare_props["network_passphrase"].is_object(),
+        "SwapPrepareResponse must document network_passphrase, got {}",
+        schemas["SwapPrepareResponse"]
+    );
 }
 
 #[test]

@@ -192,13 +192,12 @@ impl HorizonClient {
                     message: error_body,
                 });
             }
-            let body: serde_json::Value = resp.json().await.map_err(|e| {
-                IndexerError::StellarApi {
+            let body: serde_json::Value =
+                resp.json().await.map_err(|e| IndexerError::StellarApi {
                     endpoint: url_c.clone(),
                     status: 0,
                     message: format!("failed to parse ledgers JSON: {e}"),
-                }
-            })?;
+                })?;
             body["_embedded"]["records"][0]["sequence"]
                 .as_u64()
                 .ok_or_else(|| IndexerError::StellarApi {

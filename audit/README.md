@@ -2,7 +2,7 @@
 
 This directory contains all materials required for an external security audit of the StellarRoute smart contracts.
 
-## Contentslk
+## Contents
 
 | Document | Description |
 |----------|-------------|
@@ -16,6 +16,7 @@ This directory contains all materials required for an external security audit of
 | [bug-bounty-scope.md](bug-bounty-scope.md) | Bug bounty scope draft: in/out of bounds, reward tiers, safe harbor |
 | [fuzzing.md](fuzzing.md) | Fuzz targets for `validate_route` / `execute_swap` and overnight runbook |
 | [external-audit.md](external-audit.md) | External audit engagement: auditor selection, commit freeze, findings remediation, report publication |
+| [readiness-evidence.md](readiness-evidence.md) | What is ready to hand an auditor today vs what still requires humans / third parties |
 
 ## Quick Start for Auditors
 
