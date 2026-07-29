@@ -65,6 +65,20 @@ pub enum ApiError {
 
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+
+    #[error("Quote not found: {quote_id}")]
+    QuoteNotFound { quote_id: String },
+
+    #[error("Quote expired: {quote_id}")]
+    QuoteExpired { quote_id: String },
+
+    #[error("Conflict: {message}")]
+    Conflict {
+        message: String,
+        quote_id: String,
+        tx_hash: String,
+        status: String,
+    },
 }
 
 impl From<anyhow::Error> for ApiError {
@@ -152,6 +166,39 @@ impl IntoResponse for ApiError {
                 .with_details(details);
                 let body = Json(ApiResponse::new(payload, "system"));
                 return (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
+            }
+            ApiError::QuoteNotFound { quote_id } => {
+                let payload = ErrorResponse::new(
+                    ApiErrorCode::QuoteNotFound,
+                    format!("Unknown or invalid quote_id: {quote_id}"),
+                )
+                .with_details(serde_json::json!({ "quote_id": quote_id }));
+                let body = Json(ApiResponse::new(payload, "system"));
+                return (StatusCode::NOT_FOUND, body).into_response();
+            }
+            ApiError::QuoteExpired { quote_id } => {
+                let payload = ErrorResponse::new(
+                    ApiErrorCode::QuoteExpired,
+                    "Quote has expired; request a fresh prepare before submitting",
+                )
+                .with_details(serde_json::json!({ "quote_id": quote_id }));
+                let body = Json(ApiResponse::new(payload, "system"));
+                return (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
+            }
+            ApiError::Conflict {
+                message,
+                quote_id,
+                tx_hash,
+                status,
+            } => {
+                let payload = ErrorResponse::new(ApiErrorCode::Conflict, message)
+                    .with_details(serde_json::json!({
+                        "quote_id": quote_id,
+                        "tx_hash": tx_hash,
+                        "status": status,
+                    }));
+                let body = Json(ApiResponse::new(payload, "system"));
+                return (StatusCode::CONFLICT, body).into_response();
             }
             ApiError::Database(_) | ApiError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

@@ -508,6 +508,9 @@ export const API_ERROR_CODES = [
   'not_executable',
   'stale_market_data',
   'not_implemented',
+  'quote_not_found',
+  'quote_expired',
+  'duplicate_quote',
 ] as const;
 
 /** A documented backend error code (see {@link API_ERROR_CODES}). */

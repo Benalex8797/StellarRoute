@@ -258,6 +258,29 @@ pub struct QuoteResponse {
     pub spread_bps: Option<u32>,
 }
 
+/// Response from `POST /api/v1/swap/prepare`.
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+pub struct SwapPrepareResponse {
+    pub quote_id: String,
+    pub xdr_envelope: String,
+    pub expected_output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_output: Option<String>,
+    pub expires_at: i64,
+}
+
+/// Response from `POST /api/v1/swap/submit`.
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+pub struct SwapSubmitResponse {
+    pub quote_id: String,
+    pub tx_hash: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_amount: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ledger: Option<u64>,
+}
+
 /// Single historical price sample for a trading pair.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PriceHistoryPoint {
@@ -658,6 +681,13 @@ pub enum ApiErrorCode {
     StaleMarketData,
     /// The requested operation is documented but not yet available
     NotImplemented,
+    /// Referenced prepare quote is unknown or no longer valid
+    QuoteNotFound,
+    /// Referenced prepare quote has expired
+    QuoteExpired,
+    /// Idempotent conflict (e.g. quote already submitted)
+    #[serde(rename = "duplicate_quote")]
+    Conflict,
 }
 
 impl ApiErrorCode {
@@ -683,6 +713,9 @@ impl ApiErrorCode {
         Self::NotExecutable,
         Self::StaleMarketData,
         Self::NotImplemented,
+        Self::QuoteNotFound,
+        Self::QuoteExpired,
+        Self::Conflict,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -703,6 +736,9 @@ impl ApiErrorCode {
             Self::NotExecutable => "not_executable",
             Self::StaleMarketData => "stale_market_data",
             Self::NotImplemented => "not_implemented",
+            Self::QuoteNotFound => "quote_not_found",
+            Self::QuoteExpired => "quote_expired",
+            Self::Conflict => "duplicate_quote",
         }
     }
 }

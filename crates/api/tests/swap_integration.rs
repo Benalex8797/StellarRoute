@@ -1,10 +1,4 @@
-//! Integration tests for the swap prepare/submit stub endpoints (issue
-//! #1051). Transaction building/submission aren't implemented yet — these
-//! confirm validation runs first and that valid requests get a documented
-//! `501 not_implemented` rather than a silent failure or wrong status.
-//!
-//! Runs fully in-process against a lazily-connected Postgres pool (never
-//! actually dials out), so it requires no network access.
+//! Integration tests for the swap prepare/submit endpoints.
 
 use axum::{
     body::Body,
@@ -12,8 +6,16 @@ use axum::{
 };
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
-use stellarroute_api::{state::DatabasePools, Server, ServerConfig};
+use std::sync::Arc;
+use stellarroute_api::{
+    broadcast::MockTransactionBroadcaster,
+    state::DatabasePools,
+    swap::store::InMemorySwapQuoteStore,
+    AppState,
+};
 use tower::ServiceExt;
+
+const TEST_SENDER: &str = "GCKFBEIYTKP6RQBULIFBXLEMTUFEHYZU7YMGC3JMJLXZA65LRA7SNLQ3";
 
 async fn setup_router() -> axum::Router {
     let pool = PgPoolOptions::new()
@@ -21,9 +23,12 @@ async fn setup_router() -> axum::Router {
         .connect_lazy("postgres://localhost/unused")
         .expect("failed to create lazy pool");
 
-    Server::new(ServerConfig::default(), DatabasePools::new(pool, None))
-        .await
-        .into_router()
+    let app_state = AppState::new(DatabasePools::new(pool, None)).with_swap_services(
+        Arc::new(InMemorySwapQuoteStore::default()),
+        Arc::new(MockTransactionBroadcaster::succeed("test-tx-hash")),
+    );
+
+    stellarroute_api::routes::create_router(app_state.into_arc())
 }
 
 fn valid_prepare_payload() -> Value {
@@ -39,7 +44,7 @@ fn valid_prepare_payload() -> Value {
             }]
         },
         "amount": "100",
-        "sender": "GABCDEF",
+        "sender": TEST_SENDER,
     })
 }
 
@@ -64,16 +69,18 @@ async fn post(router: axum::Router, path: &str, payload: &Value) -> (StatusCode,
 }
 
 #[tokio::test]
-async fn prepare_swap_valid_request_returns_not_implemented() {
+async fn prepare_swap_valid_request_returns_prepared_quote() {
     let router = setup_router().await;
     let (status, body) = post(router, "/api/v1/swap/prepare", &valid_prepare_payload()).await;
 
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(body["data"]["error"], "not_implemented");
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"]["quote_id"].is_string());
+    assert!(body["data"]["xdr_envelope"].is_string());
+    assert!(body["data"]["expected_output"].is_string());
 }
 
 #[tokio::test]
-async fn prepare_swap_rejects_zero_amount_before_not_implemented() {
+async fn prepare_swap_rejects_zero_amount() {
     let mut payload = valid_prepare_payload();
     payload["amount"] = json!("0");
     let router = setup_router().await;
@@ -95,18 +102,18 @@ async fn prepare_swap_rejects_empty_route() {
 }
 
 #[tokio::test]
-async fn submit_swap_valid_request_returns_not_implemented() {
-    let payload = json!({ "xdr_envelope": "AAAAAgAAAAA=" });
+async fn submit_swap_requires_quote_id_and_signed_xdr() {
+    let payload = json!({ "quote_id": "", "signed_xdr": "AAAAAgAAAAA=" });
     let router = setup_router().await;
     let (status, body) = post(router, "/api/v1/swap/submit", &payload).await;
 
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(body["data"]["error"], "not_implemented");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["data"]["error"], "validation_error");
 }
 
 #[tokio::test]
-async fn submit_swap_rejects_empty_xdr_envelope() {
-    let payload = json!({ "xdr_envelope": "" });
+async fn submit_swap_rejects_empty_signed_xdr() {
+    let payload = json!({ "quote_id": "q-1", "signed_xdr": "" });
     let router = setup_router().await;
     let (status, body) = post(router, "/api/v1/swap/submit", &payload).await;
 

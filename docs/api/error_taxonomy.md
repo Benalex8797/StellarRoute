@@ -33,10 +33,13 @@ All API errors return a consistent JSON body:
 | `no_route` | 404 | No trading route was found for the given pair. |
 | `stale_market_data` | 422 | The quote could not be generated because the underlying market data is too stale. |
 | `not_executable` | 422 | The route would fail execution on-chain (simulation detected failure). |
+| `quote_expired` | 422 | The referenced prepare quote has expired; call `prepare` again before submitting. |
 | `rate_limit_exceeded` | 429 | Too many requests have been made in a short period. |
 | `internal_error` | 500 | An unexpected error occurred on the server. |
-| `not_implemented` | 501 | The requested operation is part of the documented API contract but not yet available (e.g. `/api/v1/swap/prepare`, `/api/v1/swap/submit` — see [Swap prepare/submit](#swap-preparesubmit)). |
+| `not_implemented` | 501 | The requested operation is part of the documented API contract but not yet available. |
 | `overloaded` | 503 | The server is currently processing too many requests. |
+| `quote_not_found` | 404 | The referenced `quote_id` is unknown or no longer valid. |
+| `duplicate_quote` | 409 | The prepare quote was already submitted or is currently being submitted. |
 
 This table is the canonical list backing `crates/api/src/models/response.rs`'s
 `ApiErrorCode::ALL` and sdk-js's `API_ERROR_CODES` (`sdk-js/src/types.ts`).
@@ -46,14 +49,12 @@ three drift apart — update all three together when adding a new code.
 ## Swap prepare/submit
 
 `POST /api/v1/swap/prepare` and `POST /api/v1/swap/submit` (tag `swap` in
-Swagger UI) define the OpenAPI contract for the live swap path: `prepare`
-validates a pre-selected route and amount and is meant to return an unsigned
-transaction envelope; `submit` accepts a signed envelope and is meant to
-submit it on-chain. Transaction construction and on-chain submission are not
-implemented yet (tracked under milestone M4 — Live swap path), so both
-currently return `501 not_implemented` after passing input validation. See
+Swagger UI) implement the live swap path: `prepare` validates a pre-selected
+route and amount and returns an unsigned transaction envelope plus `quote_id`;
+`submit` accepts a signed envelope and broadcasts it via Horizon with
+idempotency keyed on `quote_id`. See
 [`docs/readiness/live-swap-testnet-checklist.md`](../readiness/live-swap-testnet-checklist.md)
-for the checklist that will flip once real execution ships.
+for the operational checklist.
 
 ## SDK Mapping
 

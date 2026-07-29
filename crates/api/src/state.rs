@@ -17,10 +17,12 @@ use stellarroute_routing::canary::{CanaryConfig, CanaryEvaluation};
 use stellarroute_routing::health::circuit_breaker::CircuitBreakerRegistry;
 
 use crate::audit::AuditWriter;
+use crate::broadcast::{HorizonTransactionBroadcaster, TransactionBroadcaster};
 use crate::cache::{PrewarmConfig, PrewarmJob};
 use crate::exactlyonce::DedupeLedger;
 use crate::indexer_lag::IndexerLagMonitor;
 use crate::liquidity_alerts::LiquidityThinnessAlerts;
+use crate::swap::store::{PgSwapQuoteStore, SwapQuoteStore};
 use crate::webhooks::QuoteExpirationWebhookService;
 use crate::worker::{JobQueue, RouteWorkerPool, WorkerPoolConfig};
 
@@ -180,6 +182,10 @@ pub struct AppState {
     pub soroban_simulator: Option<Arc<crate::simulation::SorobanSimulator>>,
     /// Whether to run simulations in realtime/latency-sensitive mode
     pub soroban_simulation_enabled: bool,
+    /// Prepared swap quote lifecycle store
+    pub swap_quote_store: Arc<dyn SwapQuoteStore>,
+    /// Signed transaction broadcaster (Horizon in production)
+    pub transaction_broadcaster: Arc<dyn TransactionBroadcaster>,
 }
 
 impl AppState {
@@ -222,6 +228,11 @@ impl AppState {
                 crate::simulation::SorobanSimulator::new(cfg)
             });
 
+        let swap_quote_store: Arc<dyn SwapQuoteStore> =
+            Arc::new(PgSwapQuoteStore::new(db.write_pool().clone()));
+        let transaction_broadcaster: Arc<dyn TransactionBroadcaster> =
+            Arc::new(HorizonTransactionBroadcaster::from_env());
+
         Self {
             db,
             cache: None,
@@ -257,7 +268,20 @@ impl AppState {
                 .ok()
                 .and_then(|v| v.parse::<bool>().ok())
                 .unwrap_or(true),
+            swap_quote_store,
+            transaction_broadcaster,
         }
+    }
+
+    /// Override swap services (used in tests).
+    pub fn with_swap_services(
+        mut self,
+        store: Arc<dyn SwapQuoteStore>,
+        broadcaster: Arc<dyn TransactionBroadcaster>,
+    ) -> Self {
+        self.swap_quote_store = store;
+        self.transaction_broadcaster = broadcaster;
+        self
     }
 
     /// Create new application state with cache
@@ -312,6 +336,11 @@ impl AppState {
                 crate::simulation::SorobanSimulator::new(cfg)
             });
 
+        let swap_quote_store: Arc<dyn SwapQuoteStore> =
+            Arc::new(PgSwapQuoteStore::new(db.write_pool().clone()));
+        let transaction_broadcaster: Arc<dyn TransactionBroadcaster> =
+            Arc::new(HorizonTransactionBroadcaster::from_env());
+
         // Build the AppState value to return, then optionally start background jobs
         let app_state = Self {
             db,
@@ -348,6 +377,8 @@ impl AppState {
                 .ok()
                 .and_then(|v| v.parse::<bool>().ok())
                 .unwrap_or(true),
+            swap_quote_store,
+            transaction_broadcaster,
         };
 
         // Start cache prewarm job if configured via env `PREWARM_PAIRS`.

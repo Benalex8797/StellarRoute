@@ -19,6 +19,8 @@ import type {
   RouteResponse,
   SimulateRouteRequest,
   SimulateRouteResponse,
+  PreparedSwapResponse,
+  SwapSubmitResponse,
 } from './types.js';
 import { DEFAULT_STALENESS_CONFIG, isQuoteStale, isQuoteExpired } from './types.js';
 
@@ -442,24 +444,44 @@ export class StellarRouteClient {
     params: ExecuteSwapParams,
     signal?: AbortSignal,
   ): Promise<ExecuteSwapResult> {
-    // Validate route is executable via dry-run before attempting swap.
-    await this.simulateRoute(
+    // 1. Prepare the swap transaction on the backend.
+    const prepareResponse = await this.request<PreparedSwapResponse>(
+      '/api/v1/swap/prepare',
+      signal,
+      this.retries,
+      'POST',
       {
         route: params.route,
         amount: params.amount,
+        sender: params.sender,
+        min_output: params.min_output,
         slippage_bps: params.slippage_bps,
       },
-      signal,
     );
 
-    // Swap-build endpoint not yet deployed. Throw a documented stub error so
-    // callers can detect and fall back to building the transaction themselves.
-    throw new StellarRouteApiError(
-      501,
-      'not_implemented',
-      'executeSwap: on-chain swap-build endpoint not yet available. ' +
-        'Simulate succeeded — build and sign the XDR transaction via the Stellar SDK.',
+    // 2. Sign the transaction using the caller-provided callback.
+    const signedXdr = await params.signTransaction(prepareResponse.xdr_envelope);
+
+    // 3. Submit the signed transaction for broadcast.
+    const submitResponse = await this.request<SwapSubmitResponse>(
+      '/api/v1/swap/submit',
+      signal,
+      this.retries,
+      'POST',
+      {
+        quote_id: prepareResponse.quote_id,
+        signed_xdr: signedXdr,
+      },
     );
+
+    // 4. Return the aggregated result.
+    return {
+      xdr_envelope: prepareResponse.xdr_envelope,
+      expected_output: prepareResponse.expected_output,
+      expires_at: prepareResponse.expires_at,
+      tx_hash: submitResponse.tx_hash,
+      status: submitResponse.status,
+    };
   }
 
   /**

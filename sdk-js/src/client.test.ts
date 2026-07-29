@@ -623,42 +623,73 @@ describe('simulateRoute', () => {
 // ── executeSwap ───────────────────────────────────────────────────────────────
 
 describe('executeSwap', () => {
-  it('calls simulateRoute first, then throws not_implemented stub', async () => {
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(ok(sampleSimulateResponse));
-    const err = await new StellarRouteClient({ retries: 0 })
-      .executeSwap({
-        route: sampleSimulateRequest.route,
-        amount: '100',
-        sender: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-        slippage_bps: 50,
-      })
-      .catch((e: unknown) => e);
+  it('calls prepare, invokes sign callback, and calls submit', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        ok({
+          quote_id: 'q123',
+          xdr_envelope: 'unsigned_xdr',
+          expected_output: '98',
+          expires_at: 1234567890,
+        })
+      )
+      .mockResolvedValueOnce(
+        ok({
+          tx_hash: 'tx456',
+          status: 'pending',
+        })
+      );
 
-    // simulateRoute was called
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0]?.[0]).toContain('/api/v1/simulate/route');
+    const signTransaction = vi.fn().mockResolvedValue('signed_xdr');
 
-    // Stub error is returned
-    expect(isStellarRouteApiError(err)).toBe(true);
-    expect((err as StellarRouteApiError).status).toBe(501);
-    expect((err as StellarRouteApiError).code).toBe('not_implemented');
+    const result = await new StellarRouteClient({ retries: 0 }).executeSwap({
+      route: sampleSimulateRequest.route,
+      amount: '100',
+      sender: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      slippage_bps: 50,
+      signTransaction,
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // Check prepare call
+    expect(fetchSpy.mock.calls[0]?.[0]).toContain('/api/v1/swap/prepare');
+    const prepareBody = JSON.parse((fetchSpy.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(prepareBody.amount).toBe('100');
+
+    // Check callback invocation
+    expect(signTransaction).toHaveBeenCalledWith('unsigned_xdr');
+
+    // Check submit call
+    expect(fetchSpy.mock.calls[1]?.[0]).toContain('/api/v1/swap/submit');
+    const submitBody = JSON.parse((fetchSpy.mock.calls[1]?.[1] as RequestInit).body as string);
+    expect(submitBody.quote_id).toBe('q123');
+    expect(submitBody.signed_xdr).toBe('signed_xdr');
+
+    // Check result
+    expect(result.tx_hash).toBe('tx456');
+    expect(result.status).toBe('pending');
+    expect(result.xdr_envelope).toBe('unsigned_xdr');
   });
 
-  it('propagates simulation failure without reaching the stub', async () => {
+  it('propagates prepare failure without calling sign', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      apiError('not_found', 'No route', 404),
+      apiError('validation_error', 'Invalid sender', 400),
     );
+
+    const signTransaction = vi.fn();
     const err = await new StellarRouteClient({ retries: 0 })
       .executeSwap({
         route: sampleSimulateRequest.route,
         amount: '100',
-        sender: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+        sender: 'invalid',
+        signTransaction,
       })
       .catch((e: unknown) => e);
 
     expect(isStellarRouteApiError(err)).toBe(true);
-    expect((err as StellarRouteApiError).isNotFound()).toBe(true);
-    expect((err as StellarRouteApiError).code).not.toBe('not_implemented');
+    expect(signTransaction).not.toHaveBeenCalled();
+    expect((err as StellarRouteApiError).code).toBe('validation_error');
   });
 });
 

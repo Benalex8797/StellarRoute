@@ -48,6 +48,18 @@ if [[ ! -f "${POOLS_FILE}" ]]; then
 fi
 
 POOL_COUNT=$(jq '.pools | length' "${POOLS_FILE}")
+
+# ── Mainnet Pool Audit Gate ───────────────────────────────────────────
+if [[ "${NETWORK}" == "mainnet" ]]; then
+    if [[ "${POOL_COUNT}" -gt 0 && "${MAINNET_POOLS_UNLOCK:-0}" != "1" ]]; then
+        log_error "MAINNET POOL AUDIT GATE: pools-mainnet.json is not empty."
+        log_error "Mainnet pools require an explicit unlock for safety."
+        log_error "Ensure testnet soak, audit, and deployment approval evidence are complete."
+        log_error "Run with MAINNET_POOLS_UNLOCK=1 to proceed."
+        exit 1
+    fi
+fi
+
 log_info "Processing ${POOL_COUNT} pool(s) from ${POOLS_FILE}"
 log_info "Router contract: ${CONTRACT_ID}"
 

@@ -318,6 +318,29 @@ impl AssetPath {
     }
 }
 
+// ── Swap prepare/submit ───────────────────────────────────────────────────────
+
+use crate::routes::simulation_route::RouteDryRunPath;
+
+/// Parameters for `POST /api/v1/swap/prepare`.
+#[derive(Debug, Deserialize, Clone, ToSchema)]
+pub struct SwapPrepareRequest {
+    pub route: RouteDryRunPath,
+    pub amount: String,
+    pub sender: String,
+    #[serde(default)]
+    pub min_output: Option<String>,
+    #[serde(default)]
+    pub slippage_bps: Option<u32>,
+}
+
+/// Parameters for `POST /api/v1/swap/submit`.
+#[derive(Debug, Deserialize, Clone, ToSchema)]
+pub struct SwapSubmitRequest {
+    pub quote_id: String,
+    pub signed_xdr: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
