@@ -31,6 +31,27 @@ docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml \
   --env-file .env.prod up -d --build
 ```
 
+## AWS ECS Fargate (production-shaped backend)
+
+See `docs/deployment/aws.md` and `deploy/env.aws.example`.
+
+- [ ] AWS CLI + Terraform configured; `aws sts get-caller-identity` works
+- [ ] `deploy/aws/terraform/terraform.tfvars` filled (`certificate_arn` for HTTPS)
+- [ ] `terraform apply` succeeded (VPC, RDS, Redis, ECR, ALB, ECS, Secrets Manager)
+- [ ] Secrets Manager JSON has real values for:
+  - [ ] `DATABASE_URL` / `REDIS_URL` (seeded by Terraform — confirm)
+  - [ ] `ROUTER_CONTRACT_ADDRESS` — from `config/deployments/testnet.json`
+  - [ ] `SOROBAN_RPC_URL` / `STELLAR_HORIZON_URL` — testnet defaults OK for staging
+  - [ ] `ADMIN_AUTH_TOKEN` — strong random (required with `STELLARROUTE_ENV=production`)
+  - [ ] `CORS_ALLOWED_ORIGINS` — includes `https://www.stellarroute.app` (+ apex / Vercel)
+  - [ ] `PUBLIC_GET_ROUTES` — browser GET prefixes
+  - [ ] `AMM_POOLS` — optional pool IDs
+- [ ] Images pushed: `./deploy/aws/scripts/push-images.sh`
+- [ ] ECS API + indexer services stable; ALB targets healthy on `/health/deps`
+- [ ] DNS `api.<domain>` → ALB; Vercel `NEXT_PUBLIC_API_URL` / `_TESTNET` updated
+- [ ] `STAGING_API_BASE_URL=https://api.<domain> ./scripts/staging-smoke.sh` passes
+- [ ] (Optional) GitHub vars for `.github/workflows/deploy-aws-ecr.yml`: `AWS_ROLE_ARN`, `AWS_REGION`, `ECR_API_REPOSITORY`, `ECR_INDEXER_REPOSITORY`
+
 ## Render deploy (paid / optional Wave 0b)
 
 - [ ] `DATABASE_URL` — automatically wired from `stellarroute-postgres` by `render.yaml`

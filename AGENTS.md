@@ -149,7 +149,7 @@ Focus here first when debugging behavior across crates.
 ## Learned Workspace Facts
 - Canonical GitHub repo is `StellarRoute/StellarRoute`; local path is `/Users/daniel/Desktop/2026/StellarRoute`.
 - Project participates in the Drips/Stellar Wave contributor program; issues commonly use Wave/`help wanted`/complexity labels.
-- Frontend production is on Vercel (`stellarroute.app`); GitHub-linked auto-deploy from `main` with root directory `frontend`; wiring to a public testnet API/indexer is an explicit product goal.
+- Frontend production is on Vercel (`stellarroute.app` and `www.stellarroute.app`); GitHub-linked auto-deploy from `main` with root directory `frontend`; API CORS and env allowlists should include both hosts; wiring to a public testnet API/indexer is an explicit product goal.
 - Browser wallet support is Freighter, xBull, Albedo, and LOBSTR; Freighter detection should use `isConnected()`, not `isAllowed`.
 - Wave 0 public testnet API path is Oracle Always Free ARM VM + `deploy/docker-compose.prod.yml` + Cloudflare Tunnel; runbook is `docs/deployment/oracle-always-free.md` (paid Render blueprint remains optional later).
 - Related sibling work under `~/Desktop/2026/` (separate from this repo) includes StellarHydra, WaveFlow, route-visualizer, and swap-agrregrator — do not commit StellarRoute changes into those trees by mistake.

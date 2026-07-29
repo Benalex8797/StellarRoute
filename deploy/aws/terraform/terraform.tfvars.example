@@ -1,0 +1,30 @@
+aws_region   = "us-east-1"
+project_name = "stellarroute"
+environment  = "staging"
+
+# Must match region AZs
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# ACM cert in the same region as the ALB (leave "" for HTTP-only staging)
+certificate_arn = ""
+
+# After first push: set to git SHA for pinned deploys
+api_image_tag     = "latest"
+indexer_image_tag = "latest"
+
+api_cpu           = 512
+api_memory        = 1024
+api_desired_count = 1
+
+indexer_cpu           = 512
+indexer_memory        = 1024
+indexer_desired_count = 1
+
+db_instance_class      = "db.t4g.micro"
+db_allocated_storage   = 20
+rds_deletion_protection = true # set false only for disposable staging
+
+redis_node_type = "cache.t4g.micro"
+
+enable_nat_gateway = true
+single_nat_gateway = true

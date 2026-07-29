@@ -656,15 +656,20 @@ curl "https://friendbot.stellar.org/?addr=$(soroban keys address deployer)"
 
 The following sections document the concrete hosting blueprint that satisfies
 M5 (Live hosting). **Preferred free path:** Oracle Always Free + Cloudflare
-Tunnel (see [`oracle-always-free.md`](./oracle-always-free.md)). A Render
-Blueprint and Docker Compose production overlay are also provided.
+Tunnel (see [`oracle-always-free.md`](./oracle-always-free.md)). **Production-shaped
+backend path:** AWS ECS Fargate (see [`aws.md`](./aws.md)). A Render Blueprint
+and Docker Compose production overlay are also provided.
 
 ### Files
 
 | File | Purpose |
 |---|---|
 | [`oracle-always-free.md`](./oracle-always-free.md) | **Wave 0 (free):** Oracle ARM VM + compose + Cloudflare Tunnel runbook |
+| [`aws.md`](./aws.md) | **AWS backend:** ECS Fargate + RDS + ElastiCache + ALB + Terraform |
 | [`vercel-frontend.md`](./vercel-frontend.md) | Vercel frontend env + production checklist |
+| `deploy/aws/terraform/` | AWS IaC (VPC, ECR, RDS, Redis, ALB, ECS API + indexer) |
+| `deploy/aws/scripts/push-images.sh` | Build/push API + indexer images to ECR |
+| `deploy/env.aws.example` | Secrets Manager key list for AWS |
 | `render.yaml` | Render Blueprint — managed Postgres, Redis, API web service, indexer worker (paid / optional) |
 | `deploy/docker-compose.prod.yml` | Compose production overlay (hardened, no host ports for DB/Redis) |
 | `deploy/env.prod.example` | Template for `.env.prod` (never commit `.env.prod`) |
@@ -718,8 +723,8 @@ to the blueprint, add a row here.
 
 | Endpoint | Type | Used by |
 |---|---|---|
-| `GET /health` | Liveness — is the process alive? | Render web service health check; Docker Compose healthcheck |
-| `GET /health/deps` | Readiness — are Postgres and Redis reachable? | Post-deploy verification |
+| `GET /health` | Liveness — is the process alive? (may 503 on indexer lag) | Render web service health check; Docker Compose healthcheck |
+| `GET /health/deps` | Readiness — are Postgres and Redis reachable? | AWS ALB target health; post-deploy verification |
 
 Both endpoints are wired in `render.yaml` via `healthCheckPath: /health`.
 The production Compose overlay additionally runs a `curl -sf` healthcheck
@@ -749,7 +754,20 @@ The blueprint also:
 STAGING_API_BASE_URL=https://api.<your-domain> ./scripts/staging-smoke.sh
 ```
 
-**Render (paid):**
+**AWS (ECS Fargate — recommended production-shaped backend):**
+
+Follow [`aws.md`](./aws.md):
+
+```bash
+cd deploy/aws/terraform
+cp terraform.tfvars.example terraform.tfvars
+terraform init && terraform apply
+# fill Secrets Manager (ROUTER + ADMIN + CORS)
+./deploy/aws/scripts/push-images.sh
+STAGING_API_BASE_URL=https://api.<your-domain> ./scripts/staging-smoke.sh
+```
+
+**Render (paid / optional):**
 
 1. Fork/clone the repo.
 2. Work through `deploy/secrets.checklist.md`.
