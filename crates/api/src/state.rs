@@ -15,6 +15,7 @@ use crate::routes::ws::WsState;
 use stellarroute_routing::adaptive_timeout::TimeoutController;
 use stellarroute_routing::canary::{CanaryConfig, CanaryEvaluation};
 use stellarroute_routing::health::circuit_breaker::CircuitBreakerRegistry;
+use crate::models::LiveCompareResult;
 
 use crate::audit::AuditWriter;
 use crate::broadcast::{HorizonTransactionBroadcaster, TransactionBroadcaster};
@@ -162,6 +163,9 @@ pub struct AppState {
     pub canary_config: Arc<tokio::sync::RwLock<CanaryConfig>>,
     /// Canary history buffer for operator reporting
     pub canary_history: Arc<tokio::sync::RwLock<std::collections::VecDeque<CanaryEvaluation>>>,
+    /// Live-compare history buffer: results from the external canary comparison job.
+    /// Capped at 1,000 entries; newest at the back, oldest evicted from the front.
+    pub live_compare_history: Arc<tokio::sync::RwLock<std::collections::VecDeque<LiveCompareResult>>>,
     /// Dynamic timeout controller for quote discovery
     pub timeout_controller: Arc<TimeoutController>,
     /// Non-blocking audit log writer for route decisions
@@ -253,6 +257,9 @@ impl AppState {
             kill_switch,
             canary_config: Arc::new(tokio::sync::RwLock::new(CanaryConfig::default())),
             canary_history: Arc::new(tokio::sync::RwLock::new(
+                std::collections::VecDeque::with_capacity(1000),
+            )),
+            live_compare_history: Arc::new(tokio::sync::RwLock::new(
                 std::collections::VecDeque::with_capacity(1000),
             )),
             timeout_controller: Arc::new(TimeoutController::new(Default::default())),
@@ -362,6 +369,9 @@ impl AppState {
             kill_switch,
             canary_config: Arc::new(tokio::sync::RwLock::new(CanaryConfig::default())),
             canary_history: Arc::new(tokio::sync::RwLock::new(
+                std::collections::VecDeque::with_capacity(1000),
+            )),
+            live_compare_history: Arc::new(tokio::sync::RwLock::new(
                 std::collections::VecDeque::with_capacity(1000),
             )),
             timeout_controller: Arc::new(TimeoutController::new(Default::default())),

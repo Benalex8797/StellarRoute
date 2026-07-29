@@ -326,6 +326,46 @@ pub struct AssetMetadataBulkResponse {
     pub assets: Vec<AssetMetadataResponse>,
 }
 
+/// Outcome of a single external canary comparison run.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveCompareOutcome {
+    Ok,
+    Diverged,
+    Error,
+}
+
+/// Payload pushed by the external canary script after each comparison run.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LiveCompareResult {
+    /// Canonical pair string, e.g. "native/USDC:GA5Z..."
+    pub pair: String,
+    /// StellarRoute quote price (decimal string)
+    pub stellarroute_price: String,
+    /// Horizon best-ask price (decimal string; empty string when outcome is "error")
+    pub reference_price: String,
+    /// Absolute divergence in basis points; 0.0 when outcome is "error"
+    pub divergence_bps: f64,
+    /// Machine-readable outcome
+    pub outcome: LiveCompareOutcome,
+    /// ISO 8601 UTC timestamp of when the comparison was performed
+    pub timestamp: String,
+}
+
+/// Response body for POST /api/v1/system/canary/live-compare
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct LiveCompareIngestResponse {
+    pub status: String,
+    pub entries: usize,
+}
+
+/// Response body for GET /api/v1/system/canary/live-compare/report
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct LiveCompareReportResponse {
+    pub total_entries: usize,
+    pub results: Vec<LiveCompareResult>,
+}
+
 /// Prepared quote payload that can be returned without re-serializing on hot paths.
 #[derive(Debug, Clone)]
 pub struct PreparedQuoteResponse {

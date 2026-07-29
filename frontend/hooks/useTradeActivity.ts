@@ -8,21 +8,25 @@ interface UseTradeActivityProps {
   initialData?: TradeRecord[];
 }
 
-export function useTradeActivity({ address, initialData = [] }: UseTradeActivityProps) {
+export function useTradeActivity({ address, initialData }: UseTradeActivityProps) {
   const client = useStellarRouteClient();
-  const [data, setData] = useState<TradeRecord[]>(initialData);
+  const [data, setData] = useState<TradeRecord[]>(initialData ?? []);
   const [page, setPage] = useState(1);
   const [sortField, setSortField] = useState<keyof TradeRecord>('timestamp');
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
-  const [isLoading, setIsLoading] = useState(false);
+  // If initialData was explicitly provided (even as []), use it directly without fetching.
+  // Only live-fetch when address is given and no initialData was supplied at all.
+  const hasInitialData = initialData !== undefined;
+  const [isLoading, setIsLoading] = useState(() => !!address && !hasInitialData);
   const [error, setError] = useState<Error | null>(null);
 
   // Configuration knob to toggle between mock/offline and live data fetching (Issue #983)
   const useLiveData = true;
 
   useEffect(() => {
-    if (!address || !useLiveData) {
-      setData(initialData);
+    // No address or caller supplied their own initialData — no live fetch needed
+    if (!address || !useLiveData || hasInitialData) {
+      setData(initialData ?? []);
       setIsLoading(false);
       return;
     }
@@ -60,7 +64,7 @@ export function useTradeActivity({ address, initialData = [] }: UseTradeActivity
     return () => {
       active = false;
     };
-  }, [address, client, useLiveData, initialData]);
+  }, [address, client, useLiveData, hasInitialData, initialData]);
 
   const itemsPerPage = 10;
 
@@ -110,7 +114,7 @@ export function useTradeActivity({ address, initialData = [] }: UseTradeActivity
     handleSort,
     sortField,
     sortDirection,
-    isLoading: isLoading || (!address && data.length === 0),
+    isLoading,
     isEmpty: data.length === 0 && !isLoading,
     error,
   };

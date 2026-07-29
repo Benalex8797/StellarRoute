@@ -445,6 +445,30 @@ lazy_static! {
     ).expect("Can't create WEBHOOK_PENDING_QUOTES gauge");
 }
 
+lazy_static! {
+    // ── Canary live-compare metrics ───────────────────────────────────────────────
+
+    /// Latest canary quote divergence from Horizon reference price, in basis points.
+    /// Label: pair (e.g. "native/USDC:GA5Z…")
+    /// Updated on every POST /api/v1/system/canary/live-compare call.
+    /// Set to 0 when outcome is "error" (divergence unknown).
+    pub static ref CANARY_QUOTE_DIVERGENCE_BPS: prometheus::GaugeVec = prometheus::register_gauge_vec!(
+        "stellarroute_canary_quote_divergence_bps",
+        "Latest canary quote divergence from Horizon reference price in basis points",
+        &["pair"]
+    )
+    .expect("Can't create CANARY_QUOTE_DIVERGENCE_BPS gauge");
+
+    /// Total canary live-comparison runs by outcome.
+    /// Labels: pair, outcome ("ok" | "diverged" | "error")
+    pub static ref CANARY_COMPARISON_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_canary_comparison_total",
+        "Total canary live-comparison runs by outcome",
+        &["pair", "outcome"]
+    )
+    .expect("Can't create CANARY_COMPARISON_TOTAL counter");
+}
+
 pub fn record_webhook_delivery_success(integrator_id: &str, duration: Duration) {
     WEBHOOK_DELIVERY_SUCCESS.with_label_values(&[integrator_id]).inc();
     WEBHOOK_DELIVERY_DURATION
@@ -621,4 +645,19 @@ pub fn encode_metrics() -> Result<String, Box<dyn std::error::Error + Send + Syn
     let mut buffer = Vec::new();
     encoder.encode(&metric_families, &mut buffer)?;
     Ok(String::from_utf8(buffer)?)
+}
+
+// ── Canary live-compare metric helpers ───────────────────────────────────────
+
+/// Update canary live-compare Prometheus metrics after a result is ingested.
+///
+/// `outcome` must be one of `"ok"`, `"diverged"`, `"error"`.
+/// When outcome is `"error"`, `divergence_bps` should be `0.0` (unknown reading).
+pub fn record_live_compare_result(pair: &str, divergence_bps: f64, outcome: &str) {
+    CANARY_QUOTE_DIVERGENCE_BPS
+        .with_label_values(&[pair])
+        .set(divergence_bps);
+    CANARY_COMPARISON_TOTAL
+        .with_label_values(&[pair, outcome])
+        .inc();
 }

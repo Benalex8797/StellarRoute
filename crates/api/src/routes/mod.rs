@@ -114,6 +114,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             get(kill_switch::get_kill_switch),
         )
         .route("/api/v1/system/canary/report", get(canary::get_report))
+        .route(
+            "/api/v1/system/canary/live-compare/report",
+            get(canary::live_compare_report),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             production_admin_guard,
@@ -194,6 +198,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         // GET /api/v1/system/canary/report is registered above via
         // `operator_routes`.
         .route("/api/v1/system/canary/config", post(canary::update_config))
+        .route(
+            "/api/v1/system/canary/live-compare",
+            post(canary::ingest_live_compare),
+        )
         // `/api/v1/simulate/route` is registered above via `live_path_routes`.
         // Contract registry routes
         .route(
