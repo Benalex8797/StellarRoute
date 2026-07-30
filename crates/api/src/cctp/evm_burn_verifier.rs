@@ -1,18 +1,30 @@
 //! Production EVM Sepolia burn verifier via JSON-RPC.
+//!
+//! Verifies tx `input` calldata independently of event logs, then cross-checks exactly one
+//! `DepositForBurn` event from TokenMessengerV2.
 
 use alloy_primitives::{Address, Log, B256};
-use alloy_sol_types::{sol, SolEvent};
+use alloy_sol_types::{sol, SolCall, SolEvent};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
-use crate::cctp::builders::evm::SEPOLIA_CHAIN_ID_NUM;
+use crate::cctp::builders::evm::{ITokenMessengerV2, SEPOLIA_CHAIN_ID_NUM};
 use crate::cctp::config::CctpConfig;
 use crate::cctp::verifiers::{EvmBurnVerifier, VerifiedBurnFacts, VerifierError};
 
-const MIN_CONFIRMATIONS: u64 = 1;
+/// `depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)` — Circle TokenMessengerV2.
+/// Cross-check: `cast sig "depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"` => 0x8e0250ee
+pub const DEPOSIT_FOR_BURN_SELECTOR: [u8; 4] = [0x8e, 0x02, 0x50, 0xee];
+
+/// `depositForBurnWithHook(uint256,uint32,bytes32,address,bytes32,uint256,uint32,bytes)`.
+/// Cross-check: `cast sig "depositForBurnWithHook(uint256,uint32,bytes32,address,bytes32,uint256,uint32,bytes)"` => 0x779b432d
+pub const DEPOSIT_FOR_BURN_WITH_HOOK_SELECTOR: [u8; 4] = [0x77, 0x9b, 0x43, 0x2d];
+
+const DEFAULT_MIN_CONFIRMATIONS: u64 = 1;
+const MAX_JSON_BODY_BYTES: usize = 256 * 1024;
 
 sol! {
     event DepositForBurn(
@@ -29,15 +41,27 @@ sol! {
     );
 }
 
+#[derive(Debug)]
 pub struct EvmRpcBurnVerifier {
     client: Client,
     rpc_url: String,
     token_messenger: Address,
     chain_id: u64,
+    min_confirmations: u64,
 }
 
 impl EvmRpcBurnVerifier {
     pub fn new(config: &CctpConfig) -> Result<Self, VerifierError> {
+        Self::with_confirmations(config, DEFAULT_MIN_CONFIRMATIONS)
+    }
+
+    pub fn with_confirmations(
+        config: &CctpConfig,
+        min_confirmations: u64,
+    ) -> Result<Self, VerifierError> {
+        if config.sepolia_rpc_url.trim().is_empty() {
+            return Err(VerifierError::NotReady);
+        }
         let token_messenger = config
             .contracts
             .sepolia_token_messenger
@@ -48,10 +72,11 @@ impl EvmRpcBurnVerifier {
             client: Client::builder()
                 .timeout(Duration::from_secs(15))
                 .build()
-                .map_err(|e| VerifierError::Failed(e.to_string()))?,
+                .map_err(|e| VerifierError::Transient(e.to_string()))?,
             rpc_url: config.sepolia_rpc_url.clone(),
             token_messenger,
             chain_id: SEPOLIA_CHAIN_ID_NUM,
+            min_confirmations,
         })
     }
 
@@ -62,6 +87,13 @@ impl EvmRpcBurnVerifier {
             .or_else(|| trimmed.strip_prefix("0X"))
             .unwrap_or(trimmed);
         format!("0x{}", hex.to_ascii_lowercase())
+    }
+
+    fn bound_body(body: &str) -> Result<(), VerifierError> {
+        if body.len() > MAX_JSON_BODY_BYTES {
+            return Err(VerifierError::Failed("rpc response too large".into()));
+        }
+        Ok(())
     }
 
     async fn rpc_call<T: for<'de> Deserialize<'de>>(
@@ -75,22 +107,100 @@ impl EvmRpcBurnVerifier {
             "method": method,
             "params": params,
         });
+        let body_str = body.to_string();
+        if body_str.len() > MAX_JSON_BODY_BYTES {
+            return Err(VerifierError::Failed("rpc request too large".into()));
+        }
         let resp = self
             .client
             .post(&self.rpc_url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| VerifierError::Failed(e.to_string()))?;
-        let payload: RpcResponse<T> = resp
-            .json()
+            .map_err(|e| VerifierError::Transient(e.to_string()))?;
+        let text = resp
+            .text()
             .await
-            .map_err(|e| VerifierError::Failed(e.to_string()))?;
+            .map_err(|e| VerifierError::Transient(e.to_string()))?;
+        Self::bound_body(&text)?;
+        let payload: RpcResponse<T> =
+            serde_json::from_str(&text).map_err(|e| VerifierError::Failed(e.to_string()))?;
         if let Some(err) = payload.error {
+            if err.message.to_ascii_lowercase().contains("rate limit") {
+                return Err(VerifierError::Transient(err.message));
+            }
             return Err(VerifierError::Failed(err.message));
         }
         payload.result.ok_or(VerifierError::TxNotFound)
     }
+
+    fn decode_calldata(input: &str) -> Result<DecodedBurnCall, VerifierError> {
+        let hex = input
+            .strip_prefix("0x")
+            .or_else(|| input.strip_prefix("0X"))
+            .unwrap_or(input);
+        let bytes = hex::decode(hex).map_err(|_| VerifierError::Failed("calldata hex".into()))?;
+        if bytes.len() < 4 {
+            return Err(VerifierError::Failed("calldata too short".into()));
+        }
+        let selector: [u8; 4] = bytes[0..4].try_into().unwrap();
+        if selector == ITokenMessengerV2::depositForBurnCall::SELECTOR {
+            let call = ITokenMessengerV2::depositForBurnCall::abi_decode(&bytes, true)
+                .map_err(|e| VerifierError::Failed(e.to_string()))?;
+            Ok(DecodedBurnCall {
+                amount: call.amount,
+                destination_domain: call.destinationDomain,
+                mint_recipient: call.mintRecipient.0,
+                burn_token: call.burnToken,
+                destination_caller: call.destinationCaller.0,
+                max_fee: call.maxFee,
+                min_finality: call.minFinalityThreshold,
+                hook_data: None,
+            })
+        } else if selector == ITokenMessengerV2::depositForBurnWithHookCall::SELECTOR {
+            let call = ITokenMessengerV2::depositForBurnWithHookCall::abi_decode(&bytes, true)
+                .map_err(|e| VerifierError::Failed(e.to_string()))?;
+            let hook = if call.hookData.is_empty() {
+                None
+            } else {
+                Some(call.hookData.to_vec())
+            };
+            Ok(DecodedBurnCall {
+                amount: call.amount,
+                destination_domain: call.destinationDomain,
+                mint_recipient: call.mintRecipient.0,
+                burn_token: call.burnToken,
+                destination_caller: call.destinationCaller.0,
+                max_fee: call.maxFee,
+                min_finality: call.minFinalityThreshold,
+                hook_data: hook,
+            })
+        } else {
+            Err(VerifierError::Failed("unknown burn selector".into()))
+        }
+    }
+
+    fn calldata_matches_event(call: &DecodedBurnCall, event: &DepositForBurn) -> bool {
+        call.amount == event.amount
+            && call.destination_domain == event.destinationDomain
+            && call.mint_recipient == event.mintRecipient.0
+            && call.burn_token == event.burnToken
+            && call.destination_caller == event.destinationCaller.0
+            && call.max_fee == event.maxFee
+            && call.min_finality == event.minFinalityThreshold
+            && call.hook_data.as_deref().unwrap_or(&[]) == event.hookData.as_ref()
+    }
+}
+
+struct DecodedBurnCall {
+    amount: alloy_primitives::U256,
+    destination_domain: u32,
+    mint_recipient: [u8; 32],
+    burn_token: Address,
+    destination_caller: [u8; 32],
+    max_fee: alloy_primitives::U256,
+    min_finality: u32,
+    hook_data: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +219,7 @@ struct RpcError {
 struct EthTransaction {
     from: Option<String>,
     to: Option<String>,
+    input: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,10 +242,13 @@ struct EthBlockNumber(String);
 #[async_trait]
 impl EvmBurnVerifier for EvmRpcBurnVerifier {
     fn is_ready(&self) -> bool {
-        true
+        !self.rpc_url.trim().is_empty() && self.chain_id == SEPOLIA_CHAIN_ID_NUM
     }
 
     async fn verify_burn(&self, tx_hash: &str) -> Result<VerifiedBurnFacts, VerifierError> {
+        if !self.is_ready() {
+            return Err(VerifierError::NotReady);
+        }
         let hash = Self::normalize_hash(tx_hash);
         let tx: EthTransaction = self
             .rpc_call("eth_getTransactionByHash", json!([hash]))
@@ -162,6 +276,12 @@ impl EvmBurnVerifier for EvmRpcBurnVerifier {
             return Err(VerifierError::Failed("wrong contract".into()));
         }
 
+        let input = tx
+            .input
+            .as_deref()
+            .ok_or_else(|| VerifierError::Failed("missing input".into()))?;
+        let decoded_call = Self::decode_calldata(input)?;
+
         let chain_id_resp: String = self.rpc_call("eth_chainId", json!([])).await?;
         let parsed_chain = u64::from_str_radix(chain_id_resp.trim_start_matches("0x"), 16)
             .map_err(|_| VerifierError::Failed("chain id parse".into()))?;
@@ -178,7 +298,7 @@ impl EvmBurnVerifier for EvmRpcBurnVerifier {
             .ok_or_else(|| VerifierError::Failed("pending".into()))?;
         let tx_num = u64::from_str_radix(tx_block.trim_start_matches("0x"), 16)
             .map_err(|_| VerifierError::Failed("tx block parse".into()))?;
-        if latest_num.saturating_sub(tx_num) + 1 < MIN_CONFIRMATIONS {
+        if latest_num.saturating_sub(tx_num) + 1 < self.min_confirmations {
             return Err(VerifierError::Failed("insufficient confirmations".into()));
         }
 
@@ -213,6 +333,10 @@ impl EvmBurnVerifier for EvmRpcBurnVerifier {
         }
         let event = parsed_event.ok_or_else(|| VerifierError::Failed("no burn event".into()))?;
 
+        if !Self::calldata_matches_event(&decoded_call, &event) {
+            return Err(VerifierError::Failed("calldata/event mismatch".into()));
+        }
+
         let hook_data = if event.hookData.is_empty() {
             None
         } else {
@@ -246,8 +370,58 @@ fn address_to_bytes32(addr: Address) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cctp::builders::evm::ProductionEvmCctpBuilder;
+    use crate::cctp::config::CctpConfig;
+    use crate::cctp::encoding::evm_address_to_bytes32;
+    use crate::cctp::expectations::ANY_DESTINATION_CALLER;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn selector_literals_match_alloy_codegen() {
+        assert_eq!(
+            DEPOSIT_FOR_BURN_SELECTOR,
+            ITokenMessengerV2::depositForBurnCall::SELECTOR
+        );
+        assert_eq!(
+            DEPOSIT_FOR_BURN_WITH_HOOK_SELECTOR,
+            ITokenMessengerV2::depositForBurnWithHookCall::SELECTOR
+        );
+        // Event topic0 is keccak256(event signature) — distinct from function selectors.
+        assert_ne!(
+            &DepositForBurn::SIGNATURE_HASH.as_slice()[0..4],
+            &ITokenMessengerV2::depositForBurnCall::SELECTOR
+        );
+    }
+
+    #[test]
+    fn decodes_synthetic_deposit_for_burn_calldata() {
+        let mint = evm_address_to_bytes32("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0").unwrap();
+        let data = ProductionEvmCctpBuilder::encode_deposit_for_burn(
+            1_000_000,
+            27,
+            mint,
+            crate::cctp::config::SEPOLIA_USDC,
+            ANY_DESTINATION_CALLER,
+            "1",
+            crate::cctp::config::FINALITY_STANDARD,
+        )
+        .unwrap();
+        let input = format!("0x{}", hex::encode(&data));
+        let decoded = EvmRpcBurnVerifier::decode_calldata(&input).unwrap();
+        assert_eq!(decoded.amount, alloy_primitives::U256::from(1_000_000u64));
+        assert_eq!(decoded.destination_domain, 27);
+    }
+
+    #[test]
+    fn not_ready_without_rpc_url() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = String::new();
+        assert!(matches!(
+            EvmRpcBurnVerifier::new(&cfg),
+            Err(VerifierError::NotReady)
+        ));
+    }
 
     #[tokio::test]
     async fn rejects_failed_receipt() {
