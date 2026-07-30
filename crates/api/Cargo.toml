@@ -77,6 +77,10 @@ lazy_static = "1.4"
 alloy-primitives = "0.8"
 alloy-sol-types = "0.8"
 
+# CCTP attestation crypto (Apache-2.0 / MIT)
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+
 # Async utilities
 futures-util = "0.3"
 

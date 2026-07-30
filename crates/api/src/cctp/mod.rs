@@ -2,21 +2,27 @@
 
 pub mod approval;
 pub mod attestation;
+pub mod attestation_crypto;
+pub mod attester_set;
 pub mod bounds;
 pub mod builders;
 pub mod config;
 pub mod encoding;
 pub mod evm_allowance;
 pub mod evm_approval_verifier;
+pub mod evm_attester_reader;
 pub mod evm_burn_verifier;
 pub mod evm_mint_verifier;
 pub mod evm_rpc;
 pub mod expectations;
 pub mod fixtures;
 pub mod iris;
+pub mod iris_public_keys;
 pub mod message;
 pub mod readiness;
 pub mod service;
+pub mod stellar_attester_reader;
+pub mod stellar_rpc;
 pub mod store;
 pub mod transitions;
 pub mod verifiers;
