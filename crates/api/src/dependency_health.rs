@@ -60,20 +60,12 @@ impl ExternalDependencyHealth {
             .map(|v| v.trim().trim_end_matches('/').to_string())
             .filter(|v| !v.is_empty());
 
-        let soroban_primary = std::env::var("SOROBAN_RPC_URL")
-            .ok()
-            .map(|v| v.trim().trim_end_matches('/').to_string())
-            .filter(|v| !v.is_empty());
-
         let horizon_urls = parse_failover_urls(horizon_primary, "STELLAR_HORIZON_FALLBACK_URLS");
-        let soroban_rpc_urls = parse_failover_urls(soroban_primary, "SOROBAN_RPC_FALLBACK_URLS");
 
-        let evm_primary = std::env::var("CCTP_SEPOLIA_RPC_URL")
-            .or_else(|_| std::env::var("SEPOLIA_RPC_URL"))
-            .ok()
-            .map(|v| v.trim().trim_end_matches('/').to_string())
-            .filter(|v| !v.is_empty());
-        let evm_rpc_urls = parse_failover_urls(evm_primary, "CCTP_SEPOLIA_RPC_FALLBACK_URLS");
+        let soroban_rpc_urls = crate::cctp::rpc_env::resolve_stellar_rpc_urls()
+            .unwrap_or_else(|_| vec![crate::cctp::rpc_env::resolve_stellar_rpc_primary()]);
+
+        let evm_rpc_urls = crate::cctp::rpc_env::resolve_sepolia_rpc_urls().unwrap_or_default();
 
         Self::with_evm_rpc(horizon_urls, soroban_rpc_urls, evm_rpc_urls)
     }

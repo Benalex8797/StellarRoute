@@ -730,6 +730,7 @@ mod tests {
         let kill = Arc::new(KillSwitchManager::new(None));
         let mut cfg = CctpConfig::default_testnet();
         cfg.enabled = true;
+        cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
         let mut runtime = CctpRuntime::from_config(&cfg);
         runtime.attestation_verifier =
             Arc::new(crate::cctp::attestation::FakeAttestationVerifier { ready: true });

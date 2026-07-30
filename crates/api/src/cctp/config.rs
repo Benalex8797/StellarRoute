@@ -2,6 +2,10 @@
 
 use std::fmt;
 
+use crate::cctp::rpc_env::{
+    require_sepolia_rpc_when_cctp_enabled, resolve_sepolia_rpc_primary,
+    resolve_stellar_rpc_primary, DEFAULT_STELLAR_TESTNET_RPC,
+};
 use crate::env_profile::{is_production, parse_bool_env};
 use crate::models::v2_cctp::{
     CctpFinality, CCTP_PROVIDER_ID, CCTP_TESTNET_CORRIDOR_ID, SEPOLIA_USDC_ASSET,
@@ -144,10 +148,10 @@ impl CctpConfig {
             iris_base_url: DEFAULT_IRIS_SANDBOX_URL.into(),
             stellar_domain: STELLAR_TESTNET_DOMAIN,
             sepolia_domain: SEPOLIA_DOMAIN,
-            stellar_rpc_url: "https://soroban-testnet.stellar.org".into(),
+            stellar_rpc_url: DEFAULT_STELLAR_TESTNET_RPC.into(),
             stellar_horizon_url: "https://horizon-testnet.stellar.org".into(),
             stellar_network_passphrase: STELLAR_TESTNET_PASSPHRASE.into(),
-            sepolia_rpc_url: "https://rpc.sepolia.org".into(),
+            sepolia_rpc_url: String::new(),
             amount_cap: "100000".into(),
             quote_ttl_secs: 300,
             mint_payload_ttl_secs: 600,
@@ -178,17 +182,13 @@ impl CctpConfig {
         if let Ok(v) = std::env::var("CCTP_IRIS_BASE_URL") {
             cfg.iris_base_url = v;
         }
-        if let Ok(v) = std::env::var("STELLAR_RPC_URL") {
-            cfg.stellar_rpc_url = v;
-        }
+        cfg.stellar_rpc_url = resolve_stellar_rpc_primary();
+        cfg.sepolia_rpc_url = resolve_sepolia_rpc_primary();
         if let Ok(v) = std::env::var("STELLAR_HORIZON_URL") {
             cfg.stellar_horizon_url = v;
         }
         if let Ok(v) = std::env::var("STELLAR_NETWORK_PASSPHRASE") {
             cfg.stellar_network_passphrase = v;
-        }
-        if let Ok(v) = std::env::var("SEPOLIA_RPC_URL") {
-            cfg.sepolia_rpc_url = v;
         }
         if let Ok(v) = std::env::var("CCTP_AMOUNT_CAP") {
             cfg.amount_cap = v;
@@ -236,6 +236,7 @@ impl CctpConfig {
             })?;
         }
 
+        require_sepolia_rpc_when_cctp_enabled()?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -265,12 +266,17 @@ impl CctpConfig {
 
         validate_iris_url(&self.iris_base_url)?;
 
-        for url in [
-            &self.stellar_rpc_url,
-            &self.stellar_horizon_url,
-            &self.sepolia_rpc_url,
-        ] {
-            validate_https_url(url)?;
+        validate_https_url(&self.stellar_rpc_url)?;
+        validate_https_url(&self.stellar_horizon_url)?;
+        if self.enabled {
+            if self.sepolia_rpc_url.trim().is_empty() {
+                return Err(CctpConfigError::InvalidEnv(
+                    "CCTP_ENABLED=true requires CCTP_SEPOLIA_RPC_URL or SEPOLIA_RPC_URL".into(),
+                ));
+            }
+            validate_https_url(&self.sepolia_rpc_url)?;
+        } else if !self.sepolia_rpc_url.trim().is_empty() {
+            validate_https_url(&self.sepolia_rpc_url)?;
         }
 
         if self.amount_cap.is_empty()
@@ -484,13 +490,61 @@ mod tests {
 
     #[test]
     fn env_parsing_respects_cctp_enabled() {
-        let previous = std::env::var("CCTP_ENABLED").ok();
+        let previous_enabled = std::env::var("CCTP_ENABLED").ok();
+        let previous_sepolia = std::env::var("SEPOLIA_RPC_URL").ok();
         std::env::set_var("CCTP_ENABLED", "true");
+        std::env::set_var("SEPOLIA_RPC_URL", "https://sepolia.drpc.org");
         let cfg = CctpConfig::from_env().expect("valid env config");
         assert!(cfg.enabled);
-        match previous {
+        match previous_enabled {
             Some(v) => std::env::set_var("CCTP_ENABLED", v),
             None => std::env::remove_var("CCTP_ENABLED"),
+        }
+        match previous_sepolia {
+            Some(v) => std::env::set_var("SEPOLIA_RPC_URL", v),
+            None => std::env::remove_var("SEPOLIA_RPC_URL"),
+        }
+    }
+
+    #[test]
+    fn enabled_without_sepolia_rpc_fails() {
+        let previous_enabled = std::env::var("CCTP_ENABLED").ok();
+        let previous_cctp_sepolia = std::env::var("CCTP_SEPOLIA_RPC_URL").ok();
+        let previous_sepolia = std::env::var("SEPOLIA_RPC_URL").ok();
+        std::env::set_var("CCTP_ENABLED", "true");
+        std::env::remove_var("CCTP_SEPOLIA_RPC_URL");
+        std::env::remove_var("SEPOLIA_RPC_URL");
+        assert!(CctpConfig::from_env().is_err());
+        match previous_enabled {
+            Some(v) => std::env::set_var("CCTP_ENABLED", v),
+            None => std::env::remove_var("CCTP_ENABLED"),
+        }
+        match previous_cctp_sepolia {
+            Some(v) => std::env::set_var("CCTP_SEPOLIA_RPC_URL", v),
+            None => std::env::remove_var("CCTP_SEPOLIA_RPC_URL"),
+        }
+        match previous_sepolia {
+            Some(v) => std::env::set_var("SEPOLIA_RPC_URL", v),
+            None => std::env::remove_var("SEPOLIA_RPC_URL"),
+        }
+    }
+
+    #[test]
+    fn disabled_allows_empty_sepolia_rpc() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url.clear();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn stellar_rpc_alias_precedence_from_env() {
+        let previous = std::env::var("CCTP_STELLAR_RPC_URL").ok();
+        std::env::set_var("CCTP_STELLAR_RPC_URL", "https://cctp-stellar.example");
+        let cfg = CctpConfig::from_env().expect("valid env config");
+        assert_eq!(cfg.stellar_rpc_url, "https://cctp-stellar.example");
+        match previous {
+            Some(v) => std::env::set_var("CCTP_STELLAR_RPC_URL", v),
+            None => std::env::remove_var("CCTP_STELLAR_RPC_URL"),
         }
     }
 }

@@ -28,6 +28,7 @@ pub mod prepare_lock;
 pub mod prepare_payload_cache;
 pub mod provenance;
 pub mod readiness;
+pub mod rpc_env;
 pub mod service;
 pub mod stellar_allowance;
 pub mod stellar_approval_verifier;
