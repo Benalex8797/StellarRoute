@@ -6,7 +6,7 @@ pub mod encoder;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 use crate::cctp::builders::{
     BuilderError, BurnPrepareStep, PreparedBurnBundle, PreparedMintBundle, StellarCctpBurnBuilder,
@@ -14,16 +14,26 @@ use crate::cctp::builders::{
 };
 use crate::cctp::config::{CctpConfig, STELLAR_TESTNET_PASSPHRASE};
 use crate::cctp::encoding::{
-    cctp_subunits_to_stellar_subunits, evm_address_to_bytes32, stellar_outbound_cctp_amount,
+    cctp_subunits_to_stellar_subunits, decimal_to_cctp_subunits, evm_address_to_bytes32,
+    stellar_outbound_cctp_amount,
 };
+use crate::cctp::message::parse_cctp_v2_message;
+use crate::cctp::stellar_allowance::StellarRpcAllowanceChecker;
+use crate::cctp::stellar_builder_simulation::{
+    approval_expiration_ledger, ledger_bounds_for_expiry, simulate_and_assemble_invoke,
+    time_bounds_for_expiry,
+};
+use crate::cctp::stellar_payload::{passphrase_for_config, payload_hash_from_envelope_xdr};
+use crate::cctp::stellar_readiness_probes::probe_stellar_contracts;
+use crate::cctp::stellar_rpc::StellarRpcClient;
+use crate::cctp::stellar_sequence::RpcAccountSequenceSource;
 use crate::cctp::store::CctpTransfer;
 use crate::models::v2_cctp::{CctpDirection, PreparedWalletPayload};
-use crate::simulation::{SimulationConfig, SorobanSimulator};
-use crate::swap::tx::AccountSequenceSource;
+use crate::swap::tx::{AccountSequenceSource, DEFAULT_BASE_FEE};
 
-use crate::cctp::stellar_payload::passphrase_for_config;
 use encoder::{
     approve_args, deposit_for_burn_args, encode_invoke_at_sequence, mint_and_forward_args,
+    InvokeTxParams,
 };
 
 /// Soroban token allowance probe — production implementations query on-chain state.
@@ -65,14 +75,15 @@ impl OfflineStellarXdrEncoder {
         token: &str,
         spender: &str,
         amount: i128,
-        ledger_sequence: i64,
+        expiration_ledger: u32,
+        account_sequence: i64,
     ) -> Result<String, BuilderError> {
         encode_invoke_at_sequence(
             source,
             token,
             "approve",
-            approve_args(spender, amount)?,
-            ledger_sequence,
+            approve_args(spender, amount, expiration_ledger)?,
+            account_sequence,
         )
     }
 
@@ -86,7 +97,7 @@ impl OfflineStellarXdrEncoder {
         mint_recipient: [u8; 32],
         burn_token: &str,
         max_fee: i128,
-        ledger_sequence: i64,
+        account_sequence: i64,
     ) -> Result<String, BuilderError> {
         encode_invoke_at_sequence(
             source,
@@ -100,7 +111,7 @@ impl OfflineStellarXdrEncoder {
                 burn_token,
                 max_fee,
             )?,
-            ledger_sequence,
+            account_sequence,
         )
     }
 }
@@ -121,33 +132,51 @@ impl StellarCctpBurnBuilder for OfflineStellarXdrEncoder {
 }
 
 pub struct ProductionStellarCctpBuilder {
-    pub sequences: std::sync::Arc<dyn AccountSequenceSource>,
-    pub simulator: std::sync::Arc<SorobanSimulator>,
-    pub allowance: std::sync::Arc<dyn StellarAllowanceChecker>,
-    pub rpc_url: String,
+    pub sequences: Arc<dyn AccountSequenceSource>,
+    pub rpc: Arc<StellarRpcClient>,
+    pub allowance: Arc<dyn StellarAllowanceChecker>,
+    pub probe_ok: bool,
+    pub base_fee: u32,
 }
 
+#[derive(Clone)]
+pub struct SharedProductionStellarBuilder(pub Arc<ProductionStellarCctpBuilder>);
+
 impl ProductionStellarCctpBuilder {
-    pub fn from_config(
-        config: &CctpConfig,
-        sequences: std::sync::Arc<dyn AccountSequenceSource>,
-        allowance: std::sync::Arc<dyn StellarAllowanceChecker>,
-    ) -> Result<Self, BuilderError> {
-        let simulator = SorobanSimulator::new(SimulationConfig {
-            rpc_url: config.stellar_rpc_url.clone(),
-            ..Default::default()
-        })
-        .ok_or(BuilderError::NotReady)?;
+    pub async fn try_new(config: &CctpConfig) -> Result<Self, BuilderError> {
+        if config.stellar_rpc_url.trim().is_empty() {
+            return Err(BuilderError::NotReady);
+        }
+        Self::ensure_testnet_config(config)?;
+        let rpc = Arc::new(
+            StellarRpcClient::new(config).map_err(|e| BuilderError::Validation(e.to_string()))?,
+        );
+        let probe = if cfg!(test) {
+            rpc.latest_ledger().await.is_ok()
+        } else {
+            probe_stellar_contracts(config).await.all_ok()
+        };
+        let allowance: Arc<dyn StellarAllowanceChecker> =
+            match StellarRpcAllowanceChecker::new(config).await {
+                Ok(c) if c.is_ready() => Arc::new(c),
+                _ => Arc::new(FixedAllowanceChecker { sufficient: false }),
+            };
+        let sequences = Arc::new(RpcAccountSequenceSource::new(config, rpc.clone()));
         Ok(Self {
             sequences,
-            simulator,
+            rpc,
             allowance,
-            rpc_url: config.stellar_rpc_url.clone(),
+            probe_ok: probe,
+            base_fee: DEFAULT_BASE_FEE,
         })
     }
 
-    fn burn_ready(&self) -> bool {
-        !self.rpc_url.trim().is_empty()
+    fn is_production_ready(&self) -> bool {
+        self.probe_ok && self.rpc.is_ready()
+    }
+
+    pub fn builder_ready(&self) -> bool {
+        self.is_production_ready()
     }
 
     fn ensure_testnet_config(config: &CctpConfig) -> Result<(), BuilderError> {
@@ -177,32 +206,43 @@ impl ProductionStellarCctpBuilder {
         Ok(())
     }
 
-    async fn simulate_mandatory(&self, xdr: &str) -> Result<(), BuilderError> {
-        let result = self.simulator.simulate(xdr).await;
-        if !result.simulated {
-            return Err(BuilderError::SimulationFailed(
-                result
-                    .failure_reason
-                    .unwrap_or_else(|| "simulation not executed".into()),
-            ));
-        }
-        if !result.success {
-            return Err(BuilderError::SimulationFailed(
-                result
-                    .failure_reason
-                    .unwrap_or_else(|| "simulation failed".into()),
+    fn validate_g_sender(sender: &str) -> Result<(), BuilderError> {
+        if stellar_strkey::ed25519::PublicKey::from_string(sender.trim()).is_err() {
+            return Err(BuilderError::Validation(
+                "sender must be valid G-address".into(),
             ));
         }
         Ok(())
     }
 
-    async fn build_and_simulate(
+    fn validate_mint_recipient(recipient: &str) -> Result<(), BuilderError> {
+        match crate::cctp::stellar_muxed::parse_recipient_strkey(recipient) {
+            Ok(crate::cctp::stellar_muxed::StellarRecipientKey::Account(_))
+            | Ok(crate::cctp::stellar_muxed::StellarRecipientKey::Muxed { .. }) => Ok(()),
+            Ok(crate::cctp::stellar_muxed::StellarRecipientKey::Contract(_)) => Err(
+                BuilderError::Validation("contract recipient not allowed for corridor".into()),
+            ),
+            Err(_) => Err(BuilderError::Validation(
+                "mint recipient must be G or M address".into(),
+            )),
+        }
+    }
+
+    async fn latest_ledger(&self) -> Result<u32, BuilderError> {
+        self.rpc
+            .latest_ledger()
+            .await
+            .map_err(|e| BuilderError::AccountLookup(e.to_string()))
+    }
+
+    async fn build_simulated_invoke(
         &self,
         source: &str,
         contract: &str,
         function: &str,
         args: Vec<stellar_xdr::curr::ScVal>,
         config: &CctpConfig,
+        transfer: &CctpTransfer,
     ) -> Result<String, BuilderError> {
         Self::ensure_testnet_config(config)?;
         let sequence = self
@@ -210,9 +250,19 @@ impl ProductionStellarCctpBuilder {
             .current_sequence(source)
             .await
             .map_err(|e| BuilderError::AccountLookup(e.to_string()))?;
-        let xdr = encode_invoke_at_sequence(source, contract, function, args, sequence)?;
-        self.simulate_mandatory(&xdr).await?;
-        Ok(xdr)
+        let latest = self.latest_ledger().await?;
+        let quote_exp = transfer.quote_expires_at.timestamp();
+        let params = InvokeTxParams {
+            source: source.to_string(),
+            contract: contract.to_string(),
+            function: function.to_string(),
+            args,
+            sequence,
+            base_fee: self.base_fee,
+            time_bounds: time_bounds_for_expiry(quote_exp),
+            ledger_bounds: ledger_bounds_for_expiry(latest, quote_exp),
+        };
+        simulate_and_assemble_invoke(&self.rpc, params).await
     }
 
     fn stellar_payload(xdr: String, passphrase: &str) -> PreparedWalletPayload {
@@ -242,12 +292,57 @@ impl ProductionStellarCctpBuilder {
             .await?;
         Ok(!sufficient)
     }
+
+    fn validate_mint_message(
+        transfer: &CctpTransfer,
+        config: &CctpConfig,
+        message: &[u8],
+    ) -> Result<(), BuilderError> {
+        let parsed = parse_cctp_v2_message(message)
+            .map_err(|e| BuilderError::Validation(format!("message parse: {e}")))?;
+        let expectations = crate::cctp::expectations::build_corridor_expectations(transfer, config)
+            .map_err(|e| BuilderError::Validation(e.to_string()))?;
+        if parsed.source_domain != expectations.source_domain {
+            return Err(BuilderError::Validation("wrong source domain".into()));
+        }
+        if parsed.destination_domain != expectations.destination_domain {
+            return Err(BuilderError::Validation("wrong destination domain".into()));
+        }
+        if let Some(nonce) = transfer.message_nonce.as_deref() {
+            let expected = nonce.trim().strip_prefix("0x").unwrap_or(nonce.trim());
+            let actual = hex::encode(parsed.nonce);
+            if !actual.eq_ignore_ascii_case(expected) {
+                return Err(BuilderError::Validation("nonce mismatch".into()));
+            }
+        }
+        if parsed.body.burn_token != expectations.burn_token {
+            return Err(BuilderError::Validation("burn token mismatch".into()));
+        }
+        if parsed.body.mint_recipient != expectations.mint_recipient {
+            return Err(BuilderError::Validation("mint recipient mismatch".into()));
+        }
+        if parsed.body.amount != expectations.amount_cctp_subunits {
+            return Err(BuilderError::Validation("amount mismatch".into()));
+        }
+        if parsed.min_finality_threshold != expectations.min_finality {
+            return Err(BuilderError::Validation("finality mismatch".into()));
+        }
+        if expectations.hook_data_required_empty && !parsed.body.hook_data.is_empty() {
+            return Err(BuilderError::Validation("unexpected hook data".into()));
+        }
+        if let Some(expected_hook) = expectations.hook_data.as_ref() {
+            if parsed.body.hook_data != *expected_hook {
+                return Err(BuilderError::Validation("hook data mismatch".into()));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
     fn is_ready(&self) -> bool {
-        self.burn_ready()
+        self.is_production_ready()
     }
 
     async fn prepare_burn(
@@ -255,7 +350,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
         transfer: &CctpTransfer,
         config: &CctpConfig,
     ) -> Result<PreparedBurnBundle, BuilderError> {
-        if !self.burn_ready() {
+        if !self.is_production_ready() {
             return Err(BuilderError::NotReady);
         }
         if transfer.direction != CctpDirection::StellarToEvm {
@@ -269,6 +364,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
                 "sender required for Stellar burn".into(),
             ));
         }
+        Self::validate_g_sender(&transfer.sender)?;
 
         let (cctp_amount, _) = stellar_outbound_cctp_amount(&transfer.amount)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
@@ -280,29 +376,31 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
             .as_deref()
             .ok_or_else(|| BuilderError::Validation("max_fee missing".into()))?;
         let max_fee_stellar = cctp_subunits_to_stellar_subunits(
-            crate::cctp::encoding::decimal_to_cctp_subunits(max_fee)
-                .map_err(|e| BuilderError::Encoding(e.to_string()))?,
+            decimal_to_cctp_subunits(max_fee).map_err(|e| BuilderError::Encoding(e.to_string()))?,
         )
         .map_err(|e| BuilderError::Encoding(e.to_string()))? as i128;
 
-        let passphrase = if config.stellar_network_passphrase.is_empty() {
-            STELLAR_TESTNET_PASSPHRASE.to_string()
-        } else {
-            config.stellar_network_passphrase.clone()
-        };
+        let passphrase = passphrase_for_config(config);
         let expires_at = transfer.quote_expires_at.timestamp();
+        let latest = self.latest_ledger().await?;
+        let approval_exp = approval_expiration_ledger(latest, expires_at);
 
         if self
             .needs_approval(transfer, config, stellar_amount)
             .await?
         {
             let approve_xdr = self
-                .build_and_simulate(
+                .build_simulated_invoke(
                     &transfer.sender,
                     &config.contracts.stellar_usdc,
                     "approve",
-                    approve_args(&config.contracts.stellar_token_messenger, stellar_amount)?,
+                    approve_args(
+                        &config.contracts.stellar_token_messenger,
+                        stellar_amount,
+                        approval_exp,
+                    )?,
                     config,
+                    transfer,
                 )
                 .await?;
             return Ok(PreparedBurnBundle {
@@ -318,7 +416,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
         let mint_recipient = evm_address_to_bytes32(&transfer.recipient)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
         let burn_xdr = self
-            .build_and_simulate(
+            .build_simulated_invoke(
                 &transfer.sender,
                 &config.contracts.stellar_token_messenger,
                 "deposit_for_burn",
@@ -331,6 +429,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
                     max_fee_stellar,
                 )?,
                 config,
+                transfer,
             )
             .await?;
 
@@ -348,7 +447,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
 #[async_trait]
 impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
     fn is_ready(&self) -> bool {
-        self.burn_ready()
+        self.is_production_ready()
     }
 
     async fn prepare_mint(
@@ -356,7 +455,7 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
         transfer: &CctpTransfer,
         config: &CctpConfig,
     ) -> Result<PreparedMintBundle, BuilderError> {
-        if !self.burn_ready() {
+        if !self.is_production_ready() {
             return Err(BuilderError::NotReady);
         }
         if transfer.direction != CctpDirection::EvmToStellar {
@@ -376,20 +475,23 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
         if transfer.recipient.is_empty() {
             return Err(BuilderError::Validation("recipient required".into()));
         }
+        Self::validate_mint_recipient(&transfer.recipient)?;
+        Self::validate_mint_message(transfer, config, message)?;
 
         let xdr = self
-            .build_and_simulate(
+            .build_simulated_invoke(
                 &transfer.recipient,
                 &config.contracts.stellar_cctp_forwarder,
                 "mint_and_forward",
                 mint_and_forward_args(message, attestation)?,
                 config,
+                transfer,
             )
             .await?;
 
-        let payload = Self::stellar_payload(xdr, &passphrase_for_config(config));
-        let json = serde_json::to_string(&payload).unwrap_or_default();
-        let payload_hash = hex::encode(Sha256::digest(json.as_bytes()));
+        let payload = Self::stellar_payload(xdr.clone(), &passphrase_for_config(config));
+        let payload_hash = payload_hash_from_envelope_xdr(&xdr, config)
+            .map_err(|e| BuilderError::Encoding(e.to_string()))?;
         let expires_at = (Utc::now() + chrono::Duration::minutes(10)).timestamp();
 
         Ok(PreparedMintBundle {
@@ -400,24 +502,45 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
     }
 }
 
+#[async_trait]
+impl StellarCctpBurnBuilder for SharedProductionStellarBuilder {
+    fn is_ready(&self) -> bool {
+        self.0.builder_ready()
+    }
+
+    async fn prepare_burn(
+        &self,
+        transfer: &CctpTransfer,
+        config: &CctpConfig,
+    ) -> Result<PreparedBurnBundle, BuilderError> {
+        self.0.prepare_burn(transfer, config).await
+    }
+}
+
+#[async_trait]
+impl StellarCctpMintBuilder for SharedProductionStellarBuilder {
+    fn is_ready(&self) -> bool {
+        self.0.builder_ready()
+    }
+
+    async fn prepare_mint(
+        &self,
+        transfer: &CctpTransfer,
+        config: &CctpConfig,
+    ) -> Result<PreparedMintBundle, BuilderError> {
+        self.0.prepare_mint(transfer, config).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::encoder::envelope_sequence;
     use super::*;
     use crate::cctp::config::CctpConfig;
-    use crate::simulation::{SimulationConfig, SorobanSimulator};
     use crate::swap::tx::FixedAccountSequences;
     use chrono::Duration;
-    use std::sync::Arc;
     use uuid::Uuid;
 
-    fn test_simulator() -> Arc<SorobanSimulator> {
-        SorobanSimulator::new(SimulationConfig {
-            rpc_url: "http://127.0.0.1:1".into(),
-            ..Default::default()
-        })
-        .expect("simulator")
-    }
     fn sample_stellar_burn_transfer(approval_hash: Option<String>) -> CctpTransfer {
         let now = Utc::now();
         CctpTransfer {
@@ -471,6 +594,7 @@ mod tests {
             &cfg.contracts.stellar_usdc,
             &cfg.contracts.stellar_token_messenger,
             1_000_000,
+            9_999,
             100,
         )
         .unwrap();
@@ -498,22 +622,23 @@ mod tests {
 
     #[tokio::test]
     async fn approval_gate_returns_only_approval_payload_when_allowance_insufficient() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.stellar_rpc_url = "http://127.0.0.1:1".into();
+        let rpc = Arc::new(StellarRpcClient::new(&cfg).unwrap());
         let builder = ProductionStellarCctpBuilder {
             sequences: Arc::new(FixedAccountSequences::new(100)),
-            simulator: test_simulator(),
+            rpc,
             allowance: Arc::new(FixedAllowanceChecker { sufficient: false }),
-            rpc_url: "https://soroban-testnet.stellar.org".into(),
+            probe_ok: true,
+            base_fee: DEFAULT_BASE_FEE,
         };
-        // Production builder requires simulation — wiremock test covers full path.
-        // Here we verify allowance gate logic via needs_approval + encoder separation.
         let transfer = sample_stellar_burn_transfer(None);
         let needs = builder
             .needs_approval(&transfer, &CctpConfig::default_testnet(), 1)
             .await
             .unwrap();
         assert!(needs);
-        let with_approval = sample_stellar_burn_transfer(Some("stellar-approval-hash".into()));
-        let mut verified = with_approval;
+        let mut verified = sample_stellar_burn_transfer(Some("stellar-approval-hash".into()));
         verified.source_approval_verified_at = Some(Utc::now());
         let needs_after = builder
             .needs_approval(&verified, &CctpConfig::default_testnet(), 1)
@@ -523,12 +648,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_not_ready_without_rpc_url() {
+    async fn production_not_ready_without_probe() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.stellar_rpc_url = "http://127.0.0.1:1".into();
+        let rpc = Arc::new(StellarRpcClient::new(&cfg).unwrap());
         let builder = ProductionStellarCctpBuilder {
             sequences: Arc::new(FixedAccountSequences::new(1)),
-            simulator: test_simulator(),
+            rpc,
             allowance: Arc::new(FixedAllowanceChecker { sufficient: true }),
-            rpc_url: String::new(),
+            probe_ok: false,
+            base_fee: DEFAULT_BASE_FEE,
         };
         assert!(!StellarCctpBurnBuilder::is_ready(&builder));
         let err = builder
@@ -539,5 +668,14 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, BuilderError::NotReady);
+    }
+
+    #[test]
+    fn rejects_contract_recipient_for_mint() {
+        let err = ProductionStellarCctpBuilder::validate_mint_recipient(
+            "CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP",
+        )
+        .unwrap_err();
+        assert!(matches!(err, BuilderError::Validation(_)));
     }
 }

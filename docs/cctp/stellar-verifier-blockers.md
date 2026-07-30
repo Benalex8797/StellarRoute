@@ -43,9 +43,12 @@ Circle Soroban `MuxedAddress` wire decodes via `stellar_muxed`:
 
 ## Still blocking `is_public_executable`
 
-- Stellar **builders** (`ProductionStellarCctpBuilder`) remain separate readiness gate
 - Attestation verifier bootstrap (Iris + attester snapshots) must be ready
 - `CCTP_ENABLED` and full `CctpRuntime::assess` must pass for corridor direction
+
+Stellar **builders** (`ProductionStellarCctpBuilder`) wire in `from_config_async` when Soroban RPC
++ contract probes succeed; `is_ready` requires probe pass (not mere object existence).
+`is_public_executable` remains false until attestation + all verifiers + `CCTP_ENABLED`.
 
 Public HTTP execution wiring is a later reviewed phase.
 

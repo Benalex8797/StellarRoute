@@ -5,6 +5,9 @@ use std::sync::Arc;
 use crate::cctp::approval::{EvmApprovalVerifier, StellarApprovalVerifier};
 use crate::cctp::attestation::AttestationVerifier;
 use crate::cctp::builders::evm::{ProductionEvmCctpBuilder, SharedProductionEvmBuilder};
+use crate::cctp::builders::stellar::{
+    ProductionStellarCctpBuilder, SharedProductionStellarBuilder,
+};
 use crate::cctp::builders::{
     EvmCctpBurnBuilder, EvmCctpMintBuilder, StellarCctpBurnBuilder, StellarCctpMintBuilder,
 };
@@ -111,6 +114,7 @@ impl CctpRuntime {
     pub async fn from_config_async(config: &CctpConfig) -> Self {
         let mut runtime = Self::from_config(config);
         wire_stellar_verifiers(config, &mut runtime).await;
+        wire_stellar_builders(config, &mut runtime).await;
         if let Some(verifier) = try_build_attestation_verifier_async(config).await {
             runtime.attestation_verifier = verifier;
         } else {
@@ -191,6 +195,43 @@ impl CctpRuntime {
             && self.evm_approval_verifier.is_ready()
             && self.stellar_approval_verifier.is_ready()
             && self.attestation_verifier.is_ready()
+    }
+}
+
+async fn wire_stellar_builders(config: &CctpConfig, runtime: &mut CctpRuntime) {
+    if config.stellar_rpc_url.trim().is_empty() {
+        crate::metrics::record_cctp_stellar_verifier_readiness("stellar_burn_builder", "missing");
+        crate::metrics::record_cctp_stellar_verifier_readiness("stellar_mint_builder", "missing");
+        return;
+    }
+    match ProductionStellarCctpBuilder::try_new(config).await {
+        Ok(builder) if builder.builder_ready() => {
+            let shared = SharedProductionStellarBuilder(Arc::new(builder));
+            runtime.stellar_burn_builder = Arc::new(shared.clone());
+            runtime.stellar_mint_builder = Arc::new(shared);
+            crate::metrics::record_cctp_stellar_verifier_readiness("stellar_burn_builder", "ready");
+            crate::metrics::record_cctp_stellar_verifier_readiness("stellar_mint_builder", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness(
+                "stellar_burn_builder",
+                "probe_failed",
+            );
+            crate::metrics::record_cctp_stellar_verifier_readiness(
+                "stellar_mint_builder",
+                "probe_failed",
+            );
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness(
+                "stellar_burn_builder",
+                "not_ready",
+            );
+            crate::metrics::record_cctp_stellar_verifier_readiness(
+                "stellar_mint_builder",
+                "not_ready",
+            );
+        }
     }
 }
 

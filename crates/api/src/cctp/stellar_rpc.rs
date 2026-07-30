@@ -117,6 +117,47 @@ impl StellarRpcClient {
         Ok(result.sequence)
     }
 
+    /// Current account sequence for the next transaction (Horizon-compatible value).
+    pub async fn get_account_sequence(&self, account_id: &str) -> Result<i64, VerifierError> {
+        use stellar_xdr::curr::{
+            AccountId, LedgerEntry, LedgerEntryData, LedgerKey, LedgerKeyAccount, Limits,
+            PublicKey, ReadXdr, Uint256, WriteXdr,
+        };
+        let pk = stellar_strkey::ed25519::PublicKey::from_string(account_id.trim())
+            .map_err(|_| VerifierError::Failed("invalid G-address".into()))?;
+        let account = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(pk.0)));
+        let key = LedgerKey::Account(LedgerKeyAccount {
+            account_id: account,
+        });
+        let key_xdr = key
+            .to_xdr_base64(Limits::none())
+            .map_err(|e| VerifierError::Failed(e.to_string()))?;
+        #[derive(Deserialize)]
+        struct EntryResult {
+            entries: Vec<EntryItem>,
+        }
+        #[derive(Deserialize)]
+        struct EntryItem {
+            xdr: String,
+        }
+        let result: EntryResult = self
+            .call("getLedgerEntries", json!({ "keys": [key_xdr] }))
+            .await?;
+        let item = result
+            .entries
+            .first()
+            .ok_or_else(|| VerifierError::Failed("account not found".into()))?;
+        if item.xdr.len() > 256 * 1024 {
+            return Err(VerifierError::Failed("ledger entry too large".into()));
+        }
+        let entry = LedgerEntry::from_xdr_base64(&item.xdr, Limits::none())
+            .map_err(|e| VerifierError::Failed(e.to_string()))?;
+        let LedgerEntryData::Account(account_entry) = entry.data else {
+            return Err(VerifierError::Failed("not an account entry".into()));
+        };
+        Ok(account_entry.seq_num.0)
+    }
+
     pub async fn simulate_scval(
         &self,
         contract: &str,
