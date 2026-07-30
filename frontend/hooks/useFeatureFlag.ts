@@ -98,6 +98,16 @@ export function resolveFlag(flag: FlagName, remote: FlagMap = {}): boolean {
   return false;
 }
 
+function hasLocalFlagResolution(flag: FlagName): boolean {
+  return readEnvFlag(flag) !== undefined || readWindowFlag(flag) !== undefined;
+}
+
+function initialFlagLoading(flag: FlagName): boolean {
+  if (SECURITY_PINNED_FLAGS.has(flag)) return false;
+  if (hasLocalFlagResolution(flag)) return false;
+  return Boolean(process.env.NEXT_PUBLIC_FLAGS_URL);
+}
+
 export function useFeatureFlag(flag: FlagName): {
   enabled: boolean;
   loading: boolean;
@@ -105,10 +115,8 @@ export function useFeatureFlag(flag: FlagName): {
   // Security-pinned flags resolve from env/default synchronously so loading
   // never briefly reports enabled=false (which would fail-closed and flash).
   const pinned = SECURITY_PINNED_FLAGS.has(flag);
-  const [enabled, setEnabled] = useState<boolean>(() =>
-    pinned ? resolveFlag(flag) : false,
-  );
-  const [loading, setLoading] = useState<boolean>(() => !pinned);
+  const [enabled, setEnabled] = useState<boolean>(() => resolveFlag(flag));
+  const [loading, setLoading] = useState<boolean>(() => initialFlagLoading(flag));
 
   useEffect(() => {
     let cancelled = false;

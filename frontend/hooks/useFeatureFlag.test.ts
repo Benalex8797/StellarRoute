@@ -48,6 +48,23 @@ describe("useFeatureFlag", () => {
     expect(result.current.enabled).toBe(false);
   });
 
+  it("resolves swap_ui_v2 from env synchronously without loading flash", () => {
+    process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2 = "true";
+    const { result } = renderHook(() => useFeatureFlag("swap_ui_v2"));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.enabled).toBe(true);
+  });
+
+  it("waits for remote flags when only FLAGS_URL is configured", async () => {
+    process.env.NEXT_PUBLIC_FLAGS_URL = "https://flags.example.com/flags.json";
+    mockFetch({ swap_ui_v2: true });
+    const { result } = renderHook(() => useFeatureFlag("swap_ui_v2"));
+    expect(result.current.loading).toBe(true);
+    expect(result.current.enabled).toBe(false);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.enabled).toBe(true);
+  });
+
   it("defaults real_xdr to true when unset (server XDR product path)", async () => {
     const { result } = renderHook(() => useFeatureFlag("real_xdr"));
     // Security-pinned: resolves synchronously — no loading flash to false.
