@@ -107,9 +107,11 @@ fn base_service(
         store,
         iris,
         kill_switch: Arc::new(KillSwitchManager::new(None)),
-        stellar_verifier: stellar,
-        evm_verifier: evm,
-        attestation_verifier: attestation,
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::for_tests(
+            stellar,
+            evm,
+            attestation,
+        ),
     }
 }
 
@@ -475,9 +477,11 @@ async fn poll_timeout_marks_attestation_failed() {
             poll_outcome: IrisPollOutcome::Pending,
         }),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
-        stellar_verifier: Arc::new(FakeBurnVerifier { facts, ready: true }),
-        evm_verifier: Arc::new(NotReadyEvmBurnVerifier),
-        attestation_verifier: Arc::new(FakeAttestationVerifier { ready: true }),
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::for_tests(
+            Arc::new(FakeBurnVerifier { facts, ready: true }),
+            Arc::new(NotReadyEvmBurnVerifier),
+            Arc::new(FakeAttestationVerifier { ready: true }),
+        ),
     };
 
     let prepared = quoted_prepared(&service, CctpDirection::StellarToEvm).await;
@@ -548,9 +552,7 @@ async fn reattest_recovery_clears_terminal_at() {
             poll_outcome: IrisPollOutcome::Pending,
         }),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
-        stellar_verifier: Arc::new(NotReadyStellarBurnVerifier),
-        evm_verifier: Arc::new(NotReadyEvmBurnVerifier),
-        attestation_verifier: Arc::new(NotReadyAttestationVerifier),
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::production_defaults(),
     };
     let recovered = service.reattest(id).await.unwrap();
     assert_eq!(recovered.status, CctpTransferStatus::AwaitingAttestation);
@@ -580,9 +582,11 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
             poll_outcome: IrisPollOutcome::Pending,
         }),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
-        stellar_verifier: Arc::new(FakeBurnVerifier { facts, ready: true }),
-        evm_verifier: Arc::new(NotReadyEvmBurnVerifier),
-        attestation_verifier: Arc::new(NotReadyAttestationVerifier),
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::for_tests(
+            Arc::new(FakeBurnVerifier { facts, ready: true }),
+            Arc::new(NotReadyEvmBurnVerifier),
+            Arc::new(NotReadyAttestationVerifier),
+        ),
     };
 
     let prepared = quoted_prepared(&service, CctpDirection::StellarToEvm).await;
@@ -611,9 +615,11 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
         store: store.clone(),
         iris: service.iris.clone(),
         kill_switch: kill,
-        stellar_verifier: service.stellar_verifier.clone(),
-        evm_verifier: service.evm_verifier.clone(),
-        attestation_verifier: service.attestation_verifier.clone(),
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::for_tests(
+            service.runtime.stellar_burn_verifier.clone(),
+            service.runtime.evm_burn_verifier.clone(),
+            service.runtime.attestation_verifier.clone(),
+        ),
     };
 
     assert!(matches!(
@@ -690,6 +696,89 @@ async fn oversized_patch_rejected() {
     assert!(matches!(err, CctpStoreError::PayloadTooLarge));
 }
 
+#[tokio::test]
+async fn reattest_without_nonce_repolls_by_tx_hash() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let t = sample_transfer_stub(CctpDirection::StellarToEvm);
+    let id = t.transfer_id;
+    store.insert(&t).await.unwrap();
+    store
+        .transition(
+            id,
+            1,
+            CctpTransferStatus::BurnPrepared,
+            TransferPatch::default(),
+        )
+        .await
+        .unwrap();
+    store
+        .transition(
+            id,
+            2,
+            CctpTransferStatus::AwaitingAttestation,
+            TransferPatch {
+                source_tx_hash: Some(TX_HASH.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .transition(
+            id,
+            3,
+            CctpTransferStatus::AttestationFailed,
+            TransferPatch::default(),
+        )
+        .await
+        .unwrap();
+
+    let service = CctpService {
+        config: CctpConfig::default_testnet(),
+        store: store.clone(),
+        iris: Arc::new(MockIris {
+            fees: IrisFeeQuote {
+                standard_fee: Some("1".into()),
+                fast_fee: None,
+            },
+            poll_outcome: IrisPollOutcome::Pending,
+        }),
+        kill_switch: Arc::new(KillSwitchManager::new(None)),
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::production_defaults(),
+    };
+    let recovered = service.reattest(id).await.unwrap();
+    assert_eq!(recovered.status, CctpTransferStatus::AwaitingAttestation);
+    assert!(recovered.message_nonce.is_none());
+}
+
+#[tokio::test]
+async fn prepare_burn_rejects_expired_quote() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let mut t = sample_transfer_stub(CctpDirection::StellarToEvm);
+    t.quote_expires_at = Utc::now() - Duration::seconds(1);
+    let id = t.transfer_id;
+    store.insert(&t).await.unwrap();
+
+    let service = base_service(
+        store,
+        Arc::new(MockIris {
+            fees: IrisFeeQuote {
+                standard_fee: Some("1".into()),
+                fast_fee: None,
+            },
+            poll_outcome: IrisPollOutcome::Pending,
+        }),
+        Arc::new(FakeBurnVerifier {
+            facts: fake_facts(&t, &CctpConfig::default_testnet(), TX_HASH),
+            ready: true,
+        }),
+        Arc::new(NotReadyEvmBurnVerifier),
+        Arc::new(FakeAttestationVerifier { ready: true }),
+    );
+    let err = service.prepare_burn(id).await.unwrap_err();
+    assert!(matches!(err, CctpServiceError::QuoteExpired));
+}
+
 fn sample_transfer_stub(direction: CctpDirection) -> CctpTransfer {
     let now = Utc::now();
     CctpTransfer {
@@ -743,5 +832,7 @@ fn sample_transfer_stub(direction: CctpDirection) -> CctpTransfer {
         created_at: now,
         updated_at: now,
         terminal_at: None,
+        mint_payload_hash: None,
+        mint_payload_expires_at: None,
     }
 }

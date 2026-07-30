@@ -226,6 +226,8 @@ mod tests {
             created_at: now,
             updated_at: now,
             terminal_at: None,
+            mint_payload_hash: None,
+            mint_payload_expires_at: None,
         }
     }
 

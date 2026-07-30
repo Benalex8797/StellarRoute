@@ -51,6 +51,8 @@ pub struct CctpTransfer {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub terminal_at: Option<DateTime<Utc>>,
+    pub mint_payload_hash: Option<String>,
+    pub mint_payload_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Error)]
@@ -67,6 +69,8 @@ pub enum CctpStoreError {
     VersionConflict,
     #[error("invalid persisted status: {0}")]
     InvalidStatus(String),
+    #[error("invalid persisted direction: {0}")]
+    InvalidDirection(String),
     #[error("payload too large")]
     PayloadTooLarge,
 }
@@ -92,6 +96,30 @@ pub trait CctpTransferStore: Send + Sync {
         expected_version: i32,
         tx_hash: &str,
     ) -> Result<CctpTransfer, CctpStoreError>;
+
+    /// `attestation_ready` → `mint_prepared` with payload binding metadata (no signed payload).
+    async fn record_mint_prepared(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        payload_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<CctpTransfer, CctpStoreError>;
+
+    /// Record destination mint tx hash after target verification.
+    async fn record_mint_submission(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError>;
+
+    /// Mark mint completed after destination chain success evidence.
+    async fn record_mint_completed(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+    ) -> Result<CctpTransfer, CctpStoreError>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -109,6 +137,9 @@ pub struct TransferPatch {
     pub last_provider_code: Option<String>,
     pub increment_retry: bool,
     pub clear_terminal_at: bool,
+    pub mint_payload_hash: Option<String>,
+    pub mint_payload_expires_at: Option<DateTime<Utc>>,
+    pub clear_mint_payload: bool,
 }
 
 pub struct PgCctpTransferStore {
@@ -220,15 +251,17 @@ impl CctpTransferStore for PgCctpTransferStore {
                 fee_expires_at = COALESCE($11, fee_expires_at),
                 last_provider_error = COALESCE($12, last_provider_error),
                 last_provider_code = COALESCE($13, last_provider_code),
-                retry_count = $14,
+                mint_payload_hash = COALESCE($14, mint_payload_hash),
+                mint_payload_expires_at = COALESCE($15, mint_payload_expires_at),
+                retry_count = $16,
                 version = version + 1,
                 updated_at = NOW(),
                 terminal_at = CASE
-                    WHEN $15 THEN NOW()
-                    WHEN $16 THEN NULL
+                    WHEN $17 THEN NOW()
+                    WHEN $18 THEN NULL
                     ELSE terminal_at
                 END
-            WHERE transfer_id = $1 AND version = $17
+            WHERE transfer_id = $1 AND version = $19
             "#,
         )
         .bind(transfer_id)
@@ -244,6 +277,8 @@ impl CctpTransferStore for PgCctpTransferStore {
         .bind(patch.fee_expires_at)
         .bind(&patch.last_provider_error)
         .bind(&patch.last_provider_code)
+        .bind(&patch.mint_payload_hash)
+        .bind(patch.mint_payload_expires_at)
         .bind(retry_count as i32)
         .bind(terminal)
         .bind(clear_terminal)
@@ -312,6 +347,62 @@ impl CctpTransferStore for PgCctpTransferStore {
 
         tx.commit().await?;
         self.get(transfer_id).await?.ok_or(CctpStoreError::NotFound)
+    }
+
+    async fn record_mint_prepared(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        payload_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        check_str_len("payload_hash", payload_hash, 128)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+        self.transition(
+            transfer_id,
+            expected_version,
+            CctpTransferStatus::MintPrepared,
+            TransferPatch {
+                mint_payload_hash: Some(payload_hash.to_string()),
+                mint_payload_expires_at: Some(expires_at),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn record_mint_submission(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        check_str_len("tx_hash", tx_hash, MAX_TX_HASH_LEN)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+        self.transition(
+            transfer_id,
+            expected_version,
+            CctpTransferStatus::MintSubmitted,
+            TransferPatch {
+                destination_tx_hash: Some(tx_hash.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn record_mint_completed(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        self.transition(
+            transfer_id,
+            expected_version,
+            CctpTransferStatus::Completed,
+            TransferPatch::default(),
+        )
+        .await
     }
 }
 
@@ -419,7 +510,69 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
         } else if is_terminal(new_status) {
             transfer.terminal_at = Some(Utc::now());
         }
+        if let Some(v) = patch.mint_payload_hash {
+            transfer.mint_payload_hash = Some(v);
+        }
+        if let Some(v) = patch.mint_payload_expires_at {
+            transfer.mint_payload_expires_at = Some(v);
+        }
+        if patch.clear_mint_payload {
+            transfer.mint_payload_hash = None;
+            transfer.mint_payload_expires_at = None;
+        }
         Ok(transfer.clone())
+    }
+
+    async fn record_mint_prepared(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        payload_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        self.transition(
+            transfer_id,
+            expected_version,
+            CctpTransferStatus::MintPrepared,
+            TransferPatch {
+                mint_payload_hash: Some(payload_hash.to_string()),
+                mint_payload_expires_at: Some(expires_at),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn record_mint_submission(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        self.transition(
+            transfer_id,
+            expected_version,
+            CctpTransferStatus::MintSubmitted,
+            TransferPatch {
+                destination_tx_hash: Some(tx_hash.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn record_mint_completed(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        self.transition(
+            transfer_id,
+            expected_version,
+            CctpTransferStatus::Completed,
+            TransferPatch::default(),
+        )
+        .await
     }
 
     async fn record_verified_burn(
@@ -495,6 +648,8 @@ struct TransferRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     terminal_at: Option<DateTime<Utc>>,
+    mint_payload_hash: Option<String>,
+    mint_payload_expires_at: Option<DateTime<Utc>>,
 }
 
 impl TransferRow {
@@ -504,7 +659,7 @@ impl TransferRow {
             support_reference_id: self.support_reference_id,
             corridor_id: self.corridor_id,
             provider: self.provider,
-            direction: parse_direction(&self.direction),
+            direction: parse_direction(&self.direction)?,
             source_chain_id: self.source_chain_id,
             destination_chain_id: self.destination_chain_id,
             source_asset: self.source_asset,
@@ -534,6 +689,8 @@ impl TransferRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             terminal_at: self.terminal_at,
+            mint_payload_hash: self.mint_payload_hash,
+            mint_payload_expires_at: self.mint_payload_expires_at,
         })
     }
 }
@@ -569,10 +726,11 @@ fn status_str(s: CctpTransferStatus) -> &'static str {
     }
 }
 
-fn parse_direction(s: &str) -> CctpDirection {
+fn parse_direction(s: &str) -> Result<CctpDirection, CctpStoreError> {
     match s {
-        "evm_to_stellar" => CctpDirection::EvmToStellar,
-        _ => CctpDirection::StellarToEvm,
+        "stellar_to_evm" => Ok(CctpDirection::StellarToEvm),
+        "evm_to_stellar" => Ok(CctpDirection::EvmToStellar),
+        other => Err(CctpStoreError::InvalidDirection(other.to_string())),
     }
 }
 
@@ -663,6 +821,8 @@ mod tests {
             created_at: now,
             updated_at: now,
             terminal_at: None,
+            mint_payload_hash: None,
+            mint_payload_expires_at: None,
         }
     }
 
@@ -756,5 +916,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, CctpStoreError::DuplicateSourceTxHash));
+    }
+
+    #[test]
+    fn unknown_direction_errors() {
+        let row = TransferRow {
+            transfer_id: Uuid::new_v4(),
+            support_reference_id: "s".into(),
+            corridor_id: "c".into(),
+            provider: "p".into(),
+            direction: "invalid".into(),
+            source_chain_id: "a".into(),
+            destination_chain_id: "b".into(),
+            source_asset: "a".into(),
+            source_asset_canonical: "a".into(),
+            destination_asset: "b".into(),
+            destination_asset_canonical: "b".into(),
+            sender: "".into(),
+            recipient: "r".into(),
+            amount: "1".into(),
+            destination_amount: "1".into(),
+            finality: "standard".into(),
+            runtime_fee_quote: None,
+            max_fee: None,
+            fee_expires_at: None,
+            quote_expires_at: Utc::now(),
+            status: "created".into(),
+            source_tx_hash: None,
+            destination_tx_hash: None,
+            iris_message_hash: None,
+            message_nonce: None,
+            raw_message: None,
+            attestation: None,
+            retry_count: 0,
+            last_provider_error: None,
+            last_provider_code: None,
+            version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            terminal_at: None,
+            mint_payload_hash: None,
+            mint_payload_expires_at: None,
+        };
+        let err = row.try_into_transfer().unwrap_err();
+        assert!(matches!(err, CctpStoreError::InvalidDirection(_)));
     }
 }

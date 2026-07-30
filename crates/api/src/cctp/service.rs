@@ -1,4 +1,4 @@
-//! CCTP core service — quote, burn recording, attestation polling (no wallet tx builders).
+//! CCTP core service — quote, burn/mint preparation, attestation polling, verification.
 
 use std::sync::Arc;
 
@@ -6,8 +6,8 @@ use chrono::{Duration, Utc};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::cctp::attestation::{AttestationVerifier, AttestationVerifyError};
 use crate::cctp::bounds::{check_byte_len, MAX_ATTESTATION_BYTES, MAX_RAW_MESSAGE_BYTES};
+use crate::cctp::builders::{BuilderError, PreparedBurnBundle, PreparedMintBundle};
 use crate::cctp::config::{CctpConfig, SEPOLIA_DOMAIN, STELLAR_TESTNET_DOMAIN};
 use crate::cctp::encoding::{
     cctp_subunits_to_stellar_subunits, decimal_to_cctp_subunits, stellar_outbound_cctp_amount,
@@ -15,9 +15,10 @@ use crate::cctp::encoding::{
 use crate::cctp::expectations::{build_corridor_expectations, build_expected_burn_facts};
 use crate::cctp::iris::{IrisClient, IrisMessage, IrisMessageStatus, IrisPollOutcome};
 use crate::cctp::message::{decode_hex_message, validate_message_for_corridor};
+use crate::cctp::readiness::CctpRuntime;
 use crate::cctp::store::{CctpStoreError, CctpTransfer, CctpTransferStore, TransferPatch};
 use crate::cctp::transitions::can_cancel;
-use crate::cctp::verifiers::{facts_match, EvmBurnVerifier, StellarBurnVerifier, VerifierError};
+use crate::cctp::verifiers::{facts_match, VerifierError};
 use crate::kill_switch::KillSwitchManager;
 use crate::metrics;
 use crate::models::v2_cctp::{
@@ -41,7 +42,9 @@ pub enum CctpServiceError {
     #[error("verifier: {0}")]
     Verifier(VerifierError),
     #[error("attestation: {0}")]
-    Attestation(AttestationVerifyError),
+    Attestation(crate::cctp::attestation::AttestationVerifyError),
+    #[error("builder: {0}")]
+    Builder(BuilderError),
     #[error("verifiers not ready")]
     VerifiersNotReady,
     #[error("message validation failed")]
@@ -60,6 +63,12 @@ pub enum CctpServiceError {
     IrisTxHashMismatch,
     #[error("missing attestation")]
     MissingAttestation,
+    #[error("quote expired")]
+    QuoteExpired,
+    #[error("fee quote expired")]
+    FeeExpired,
+    #[error("mint retryable")]
+    MintRetryable,
 }
 
 pub struct CctpService {
@@ -67,21 +76,23 @@ pub struct CctpService {
     pub store: Arc<dyn CctpTransferStore>,
     pub iris: Arc<dyn IrisClient>,
     pub kill_switch: Arc<KillSwitchManager>,
-    pub stellar_verifier: Arc<dyn StellarBurnVerifier>,
-    pub evm_verifier: Arc<dyn EvmBurnVerifier>,
-    pub attestation_verifier: Arc<dyn AttestationVerifier>,
+    pub runtime: CctpRuntime,
 }
 
 impl CctpService {
+    pub fn is_public_executable(&self) -> bool {
+        self.runtime.is_public_executable(&self.config)
+    }
+
     pub fn burn_verifier_ready(&self, direction: CctpDirection) -> bool {
         match direction {
-            CctpDirection::StellarToEvm => self.stellar_verifier.is_ready(),
-            CctpDirection::EvmToStellar => self.evm_verifier.is_ready(),
+            CctpDirection::StellarToEvm => self.runtime.stellar_burn_verifier.is_ready(),
+            CctpDirection::EvmToStellar => self.runtime.evm_burn_verifier.is_ready(),
         }
     }
 
     pub fn attestation_verifier_ready(&self) -> bool {
-        self.attestation_verifier.is_ready()
+        self.runtime.attestation_verifier.is_ready()
     }
 
     pub fn core_verifiers_ready(&self, direction: CctpDirection) -> bool {
@@ -98,6 +109,22 @@ impl CctpService {
     fn ensure_attestation_verifier_ready(&self) -> Result<(), CctpServiceError> {
         if !self.attestation_verifier_ready() {
             return Err(CctpServiceError::VerifiersNotReady);
+        }
+        Ok(())
+    }
+
+    fn ensure_quote_not_expired(transfer: &CctpTransfer) -> Result<(), CctpServiceError> {
+        if Utc::now() > transfer.quote_expires_at {
+            return Err(CctpServiceError::QuoteExpired);
+        }
+        Ok(())
+    }
+
+    fn ensure_fee_not_expired(transfer: &CctpTransfer) -> Result<(), CctpServiceError> {
+        if let Some(exp) = transfer.fee_expires_at {
+            if Utc::now() > exp {
+                return Err(CctpServiceError::FeeExpired);
+            }
         }
         Ok(())
     }
@@ -128,6 +155,8 @@ impl CctpService {
             return Err(CctpServiceError::InvalidState);
         }
 
+        Self::ensure_quote_not_expired(&transfer)?;
+        Self::ensure_fee_not_expired(&transfer)?;
         self.ensure_burn_verifier_ready(transfer.direction)?;
 
         let updated = self
@@ -240,6 +269,8 @@ impl CctpService {
             created_at: now,
             updated_at: now,
             terminal_at: None,
+            mint_payload_hash: None,
+            mint_payload_expires_at: None,
         };
 
         self.store
@@ -266,16 +297,20 @@ impl CctpService {
             return Err(CctpServiceError::InvalidState);
         }
 
+        Self::ensure_quote_not_expired(&transfer)?;
+        Self::ensure_fee_not_expired(&transfer)?;
         self.ensure_burn_verifier_ready(transfer.direction)?;
 
         let facts = match transfer.direction {
             CctpDirection::StellarToEvm => self
-                .stellar_verifier
+                .runtime
+                .stellar_burn_verifier
                 .verify_burn(tx_hash)
                 .await
                 .map_err(CctpServiceError::Verifier)?,
             CctpDirection::EvmToStellar => self
-                .evm_verifier
+                .runtime
+                .evm_burn_verifier
                 .verify_burn(tx_hash)
                 .await
                 .map_err(CctpServiceError::Verifier)?,
@@ -450,7 +485,8 @@ impl CctpService {
             return Err(CctpServiceError::InvalidMessage);
         }
 
-        self.attestation_verifier
+        self.runtime
+            .attestation_verifier
             .verify_attestation(&raw, &attestation)
             .await
             .map_err(CctpServiceError::Attestation)?;
@@ -491,15 +527,15 @@ impl CctpService {
             return Err(CctpServiceError::InvalidState);
         }
 
-        let nonce = transfer
-            .message_nonce
-            .as_ref()
-            .ok_or(CctpServiceError::InvalidState)?;
-
-        self.iris
-            .reattest(nonce)
-            .await
-            .map_err(|e| CctpServiceError::Iris(e.to_string()))?;
+        if let Some(nonce) = transfer.message_nonce.as_ref() {
+            self.iris
+                .reattest(nonce)
+                .await
+                .map_err(|e| CctpServiceError::Iris(e.to_string()))?;
+        } else if transfer.source_tx_hash.is_none() {
+            return Err(CctpServiceError::InvalidState);
+        }
+        // Without nonce: safe tx-hash repoll recovery only — never reattest without nonce.
 
         let updated = self
             .store
@@ -518,6 +554,195 @@ impl CctpService {
 
         metrics::record_cctp_transition("reattest_awaiting");
         Ok(updated)
+    }
+
+    pub async fn prepare_burn_wallet(
+        &self,
+        transfer_id: Uuid,
+    ) -> Result<PreparedBurnBundle, CctpServiceError> {
+        let transfer = self.prepare_burn(transfer_id).await?;
+        let bundle = match transfer.direction {
+            CctpDirection::StellarToEvm => self
+                .runtime
+                .stellar_burn_builder
+                .prepare_burn(&transfer, &self.config)
+                .await
+                .map_err(CctpServiceError::Builder)?,
+            CctpDirection::EvmToStellar => self
+                .runtime
+                .evm_burn_builder
+                .prepare_burn(&transfer, &self.config)
+                .await
+                .map_err(CctpServiceError::Builder)?,
+        };
+        Ok(bundle)
+    }
+
+    pub async fn prepare_mint(
+        &self,
+        transfer_id: Uuid,
+    ) -> Result<PreparedMintBundle, CctpServiceError> {
+        if !self.config.enabled || !self.config.is_configured() {
+            return Err(CctpServiceError::NotEnabled);
+        }
+        let transfer = self
+            .store
+            .get(transfer_id)
+            .await
+            .map_err(CctpServiceError::Store)?
+            .ok_or(CctpServiceError::NotFound)?;
+
+        let allowed = matches!(
+            transfer.status,
+            CctpTransferStatus::AttestationReady | CctpTransferStatus::MintFailedRetryable
+        );
+        if !allowed {
+            return Err(CctpServiceError::InvalidState);
+        }
+
+        let bundle = match transfer.direction {
+            CctpDirection::StellarToEvm => self
+                .runtime
+                .evm_mint_builder
+                .prepare_mint(&transfer, &self.config)
+                .await
+                .map_err(CctpServiceError::Builder)?,
+            CctpDirection::EvmToStellar => self
+                .runtime
+                .stellar_mint_builder
+                .prepare_mint(&transfer, &self.config)
+                .await
+                .map_err(CctpServiceError::Builder)?,
+        };
+
+        let expires =
+            chrono::DateTime::from_timestamp(bundle.expires_at, 0).unwrap_or_else(Utc::now);
+        let updated = self
+            .store
+            .record_mint_prepared(transfer_id, transfer.version, &bundle.payload_hash, expires)
+            .await
+            .map_err(CctpServiceError::Store)?;
+        metrics::record_cctp_transition("mint_prepared");
+        let _ = updated;
+        Ok(bundle)
+    }
+
+    pub async fn record_mint_submission(
+        &self,
+        transfer_id: Uuid,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpServiceError> {
+        let transfer = self
+            .store
+            .get(transfer_id)
+            .await
+            .map_err(CctpServiceError::Store)?
+            .ok_or(CctpServiceError::NotFound)?;
+
+        if transfer.status != CctpTransferStatus::MintPrepared {
+            return Err(CctpServiceError::InvalidState);
+        }
+
+        let message = transfer
+            .raw_message
+            .as_ref()
+            .ok_or(CctpServiceError::InvalidState)?;
+        let attestation = transfer
+            .attestation
+            .as_ref()
+            .ok_or(CctpServiceError::InvalidState)?;
+        let nonce = transfer
+            .message_nonce
+            .as_ref()
+            .ok_or(CctpServiceError::InvalidState)?;
+
+        let verified = match transfer.direction {
+            CctpDirection::StellarToEvm => self
+                .runtime
+                .evm_mint_verifier
+                .verify_mint_submission(tx_hash, message, attestation, nonce)
+                .await
+                .map_err(CctpServiceError::Verifier)?,
+            CctpDirection::EvmToStellar => self
+                .runtime
+                .stellar_mint_verifier
+                .verify_mint_submission(tx_hash, message, attestation, nonce)
+                .await
+                .map_err(CctpServiceError::Verifier)?,
+        };
+
+        if !verified.targets_expected_contract
+            || !verified.message_bound
+            || !verified.attestation_bound
+        {
+            return Err(CctpServiceError::Verifier(VerifierError::Failed(
+                "mint submission mismatch".into(),
+            )));
+        }
+
+        let submitted = self
+            .store
+            .record_mint_submission(transfer_id, transfer.version, tx_hash)
+            .await
+            .map_err(CctpServiceError::Store)?;
+
+        match transfer.direction {
+            CctpDirection::StellarToEvm => {
+                if self
+                    .runtime
+                    .evm_mint_verifier
+                    .verify_mint_completion(tx_hash, nonce, &transfer.recipient)
+                    .await
+                    .unwrap_or(false)
+                {
+                    return self
+                        .store
+                        .record_mint_completed(submitted.transfer_id, submitted.version)
+                        .await
+                        .map_err(CctpServiceError::Store);
+                }
+            }
+            CctpDirection::EvmToStellar => {
+                if self
+                    .runtime
+                    .stellar_mint_verifier
+                    .verify_mint_completion(tx_hash, nonce, &transfer.recipient)
+                    .await
+                    .unwrap_or(false)
+                {
+                    return self
+                        .store
+                        .record_mint_completed(submitted.transfer_id, submitted.version)
+                        .await
+                        .map_err(CctpServiceError::Store);
+                }
+            }
+        }
+
+        let retryable = self
+            .store
+            .transition(
+                transfer_id,
+                submitted.version,
+                CctpTransferStatus::MintFailedRetryable,
+                TransferPatch {
+                    last_provider_error: Some("mint pending or failed".into()),
+                    last_provider_code: Some("mint_retryable".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(CctpServiceError::Store)?;
+        metrics::record_cctp_transition("mint_failed_retryable");
+        Ok(retryable)
+    }
+
+    pub async fn get_transfer(&self, transfer_id: Uuid) -> Result<CctpTransfer, CctpServiceError> {
+        self.store
+            .get(transfer_id)
+            .await
+            .map_err(CctpServiceError::Store)?
+            .ok_or(CctpServiceError::NotFound)
     }
 
     pub async fn cancel(&self, transfer_id: Uuid) -> Result<CctpTransfer, CctpServiceError> {

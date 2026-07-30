@@ -78,11 +78,7 @@ async fn quote_core_creates_transfer_when_enabled() {
         store,
         iris,
         kill_switch: kill,
-        stellar_verifier: Arc::new(stellarroute_api::cctp::verifiers::NotReadyStellarBurnVerifier),
-        evm_verifier: Arc::new(stellarroute_api::cctp::verifiers::NotReadyEvmBurnVerifier),
-        attestation_verifier: Arc::new(
-            stellarroute_api::cctp::attestation::NotReadyAttestationVerifier,
-        ),
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::production_defaults(),
     };
 
     let transfer = service.quote_core(&sample_quote_request()).await.unwrap();
@@ -118,11 +114,7 @@ async fn provider_kill_switch_blocks_new_quote() {
         store,
         iris,
         kill_switch: kill,
-        stellar_verifier: Arc::new(stellarroute_api::cctp::verifiers::NotReadyStellarBurnVerifier),
-        evm_verifier: Arc::new(stellarroute_api::cctp::verifiers::NotReadyEvmBurnVerifier),
-        attestation_verifier: Arc::new(
-            stellarroute_api::cctp::attestation::NotReadyAttestationVerifier,
-        ),
+        runtime: stellarroute_api::cctp::readiness::CctpRuntime::production_defaults(),
     };
 
     let err = service
