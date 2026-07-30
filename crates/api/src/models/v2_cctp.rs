@@ -266,6 +266,9 @@ impl CctpQuoteRequest {
                         return Err(CctpValidationError::InvalidSender);
                     }
                 }
+                if self.finality == CctpFinality::Fast {
+                    return Err(CctpValidationError::InvalidFinality);
+                }
             }
         }
 
@@ -491,9 +494,9 @@ mod tests {
     }
 
     #[test]
-    fn allows_evm_source_fast_finality_at_validation_layer() {
+    fn rejects_evm_source_fast_finality() {
         let req = base_quote(CctpDirection::EvmToStellar, CctpFinality::Fast);
-        assert!(req.validate().is_ok());
+        assert_eq!(req.validate(), Err(CctpValidationError::InvalidFinality));
     }
 
     #[test]

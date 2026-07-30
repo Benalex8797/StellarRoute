@@ -7,7 +7,11 @@ use reqwest::redirect::Policy;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::cctp::config::{redact_url, CctpConfig};
+use crate::cctp::bounds::{
+    check_str_len, MAX_ATTESTATION_BYTES, MAX_IRIS_JSON_BYTES, MAX_RAW_MESSAGE_BYTES,
+    MAX_TX_HASH_LEN,
+};
+use crate::cctp::config::{parse_service_url, redact_url, CctpConfig, IRIS_SANDBOX_HOST};
 
 const USER_AGENT: &str = "stellarroute-api/cctp-core/1.0";
 
@@ -53,6 +57,8 @@ pub enum IrisError {
     RedirectBlocked,
     #[error("host not allowlisted")]
     HostNotAllowlisted,
+    #[error("response too large")]
+    ResponseTooLarge,
 }
 
 #[async_trait]
@@ -74,6 +80,7 @@ pub trait IrisClient: Send + Sync {
 
 pub struct ReqwestIrisClient {
     client: reqwest::Client,
+    config: CctpConfig,
     base_url: String,
     allowed_host: String,
     max_retries: u32,
@@ -81,13 +88,17 @@ pub struct ReqwestIrisClient {
 
 impl ReqwestIrisClient {
     pub fn from_config(config: &CctpConfig) -> Result<Self, IrisError> {
+        let parsed = parse_service_url(&config.iris_base_url)
+            .map_err(|e| IrisError::Malformed(e.to_string()))?;
+        let allowed_host = if cfg!(test) && is_local_test_host(&parsed.host) {
+            parsed.host.clone()
+        } else {
+            config
+                .validate()
+                .map_err(|e| IrisError::Malformed(e.to_string()))?;
+            IRIS_SANDBOX_HOST.to_string()
+        };
         let base_url = config.iris_base_url.trim_end_matches('/').to_string();
-        let allowed_host = base_url
-            .strip_prefix("https://")
-            .or_else(|| base_url.strip_prefix("http://"))
-            .and_then(|rest| rest.split('/').next())
-            .unwrap_or("")
-            .to_string();
 
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
@@ -98,6 +109,7 @@ impl ReqwestIrisClient {
 
         Ok(Self {
             client,
+            config: config.clone(),
             base_url,
             allowed_host,
             max_retries: config.iris_max_retries,
@@ -105,10 +117,15 @@ impl ReqwestIrisClient {
     }
 
     fn ensure_host(&self, url: &str) -> Result<(), IrisError> {
-        if !url.contains(&self.allowed_host) {
-            return Err(IrisError::HostNotAllowlisted);
+        if cfg!(test) {
+            let parsed = parse_service_url(url).map_err(|_| IrisError::HostNotAllowlisted)?;
+            if is_local_test_host(&parsed.host) && parsed.scheme == "http" {
+                return Ok(());
+            }
         }
-        Ok(())
+        self.config
+            .request_url_matches_allowed_host(url, &self.allowed_host)
+            .map_err(|_| IrisError::HostNotAllowlisted)
     }
 
     async fn get_with_retries(&self, url: &str) -> Result<reqwest::Response, IrisError> {
@@ -129,6 +146,24 @@ impl ReqwestIrisClient {
             }
         }
     }
+
+    async fn read_bounded_json<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        resp: reqwest::Response,
+    ) -> Result<T, IrisError> {
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| IrisError::Http(redact_url(&e.to_string())))?;
+        if bytes.len() > MAX_IRIS_JSON_BYTES {
+            return Err(IrisError::ResponseTooLarge);
+        }
+        serde_json::from_slice(&bytes).map_err(|e| IrisError::Malformed(e.to_string()))
+    }
+}
+
+fn is_local_test_host(host: &str) -> bool {
+    host == "127.0.0.1" || host == "localhost"
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,7 +184,7 @@ struct MessagesResponse {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct MessageV2 {
+pub(crate) struct MessageV2 {
     message: String,
     attestation: Option<String>,
     #[serde(rename = "cctpVersion")]
@@ -157,6 +192,59 @@ struct MessageV2 {
     status: Option<String>,
     #[serde(rename = "eventNonce")]
     event_nonce: Option<String>,
+}
+
+pub fn normalize_tx_hash(hash: &str) -> String {
+    let trimmed = hash.trim();
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    hex.to_ascii_lowercase()
+}
+
+pub(crate) fn select_complete_v2_message(
+    messages: &[MessageV2],
+    expected_tx_hash: &str,
+    response_tx_hash: Option<&str>,
+) -> Result<MessageV2, IrisError> {
+    check_str_len("tx_hash", expected_tx_hash, MAX_TX_HASH_LEN).map_err(IrisError::Malformed)?;
+
+    if let Some(resp_hash) = response_tx_hash {
+        if normalize_tx_hash(resp_hash) != normalize_tx_hash(expected_tx_hash) {
+            return Err(IrisError::Malformed("sourceTxHash mismatch".into()));
+        }
+    }
+
+    let mut complete: Vec<&MessageV2> = Vec::new();
+    for msg in messages {
+        let cctp_version = msg.cctp_version.unwrap_or(0);
+        if cctp_version != 2 {
+            continue;
+        }
+        let status = msg.status.as_deref();
+        if status != Some("complete") {
+            continue;
+        }
+        if msg.message.is_empty() || msg.message == "0x" {
+            continue;
+        }
+        if msg.message.len() > MAX_RAW_MESSAGE_BYTES * 2 + 2 {
+            return Err(IrisError::Malformed("message hex too large".into()));
+        }
+        if let Some(att) = &msg.attestation {
+            if att.len() > MAX_ATTESTATION_BYTES * 2 + 2 {
+                return Err(IrisError::Malformed("attestation hex too large".into()));
+            }
+        }
+        complete.push(msg);
+    }
+
+    match complete.len() {
+        0 => Err(IrisError::Malformed("no complete message".into())),
+        1 => Ok(complete[0].clone()),
+        _ => Err(IrisError::Malformed("ambiguous messages".into())),
+    }
 }
 
 #[async_trait]
@@ -177,10 +265,7 @@ impl IrisClient for ReqwestIrisClient {
         if !resp.status().is_success() {
             return Err(IrisError::Http(format!("status {}", resp.status())));
         }
-        let body: FeesResponse = resp
-            .json()
-            .await
-            .map_err(|e| IrisError::Malformed(e.to_string()))?;
+        let body: FeesResponse = self.read_bounded_json(resp).await?;
         Ok(IrisFeeQuote {
             standard_fee: body.standard_fee.or(body.minimum_fee),
             fast_fee: body.fast_fee,
@@ -218,46 +303,40 @@ impl IrisClient for ReqwestIrisClient {
             return Err(IrisError::Http(format!("status {}", resp.status())));
         }
 
-        let body: MessagesResponse = resp
-            .json()
-            .await
-            .map_err(|e| IrisError::Malformed(e.to_string()))?;
+        let body: MessagesResponse = self.read_bounded_json(resp).await?;
 
         if body.messages.is_empty() {
             return Ok(IrisPollOutcome::Pending);
         }
 
-        let msg = body.messages[0].clone();
-        let cctp_version = msg.cctp_version.unwrap_or(0);
-        if cctp_version != 2 {
-            return Err(IrisError::Malformed(format!(
-                "cctpVersion {cctp_version} != 2"
-            )));
-        }
-
-        let status = match msg.status.as_deref() {
-            Some("complete") => IrisMessageStatus::Complete,
-            Some("pending_confirmations") | None => IrisMessageStatus::Pending,
-            other => {
-                return Err(IrisError::Malformed(format!("status {:?}", other)));
+        let selected = match select_complete_v2_message(
+            &body.messages,
+            tx_hash,
+            body.source_tx_hash.as_deref(),
+        ) {
+            Ok(msg) => msg,
+            Err(IrisError::Malformed(reason)) if reason.contains("no complete") => {
+                return Ok(IrisPollOutcome::Pending);
             }
+            Err(e) => return Err(e),
         };
 
-        if status == IrisMessageStatus::Pending || msg.message.is_empty() || msg.message == "0x" {
-            return Ok(IrisPollOutcome::Pending);
-        }
+        let attestation = selected
+            .attestation
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("PENDING"));
 
         Ok(IrisPollOutcome::Complete(IrisMessage {
-            message_hex: msg.message,
-            attestation_hex: msg.attestation.filter(|a| a != "PENDING"),
-            cctp_version,
-            status,
-            event_nonce: msg.event_nonce.unwrap_or_default(),
+            message_hex: selected.message,
+            attestation_hex: attestation,
+            cctp_version: 2,
+            status: IrisMessageStatus::Complete,
+            event_nonce: selected.event_nonce.unwrap_or_default(),
             source_tx_hash: body.source_tx_hash,
         }))
     }
 
     async fn reattest(&self, nonce: &str) -> Result<(), IrisError> {
+        check_str_len("nonce", nonce, 128).map_err(IrisError::Malformed)?;
         let url = format!(
             "{}/v2/reattest/{}",
             self.base_url,
@@ -375,7 +454,52 @@ mod tests {
             ..CctpConfig::default_testnet()
         };
         let client = ReqwestIrisClient::from_config(&cfg).unwrap();
-        let err = client.poll_messages_by_tx(0, "0xabc").await.unwrap_err();
+        let outcome = client.poll_messages_by_tx(0, "0xabc").await.unwrap();
+        assert_eq!(outcome, IrisPollOutcome::Pending);
+    }
+
+    #[test]
+    fn select_rejects_ambiguous_messages() {
+        let messages = vec![
+            MessageV2 {
+                message: "0x01".into(),
+                attestation: Some("0x02".into()),
+                cctp_version: Some(2),
+                status: Some("complete".into()),
+                event_nonce: Some("1".into()),
+            },
+            MessageV2 {
+                message: "0x03".into(),
+                attestation: Some("0x04".into()),
+                cctp_version: Some(2),
+                status: Some("complete".into()),
+                event_nonce: Some("2".into()),
+            },
+        ];
+        let err = select_complete_v2_message(&messages, "0xabc", Some("0xabc")).unwrap_err();
         assert!(matches!(err, IrisError::Malformed(_)));
+    }
+
+    #[test]
+    fn select_rejects_response_tx_hash_mismatch() {
+        let messages = vec![MessageV2 {
+            message: "0x01".into(),
+            attestation: Some("0x02".into()),
+            cctp_version: Some(2),
+            status: Some("complete".into()),
+            event_nonce: Some("1".into()),
+        }];
+        let err = select_complete_v2_message(&messages, "0xabc", Some("0xdef")).unwrap_err();
+        assert!(matches!(err, IrisError::Malformed(_)));
+    }
+
+    #[test]
+    fn ensure_host_rejects_evil_subdomain_in_client() {
+        let cfg = CctpConfig::default_testnet();
+        let client = ReqwestIrisClient::from_config(&cfg).unwrap();
+        let err = client
+            .ensure_host("https://iris-api-sandbox.circle.com.evil.com/v2/messages/0")
+            .unwrap_err();
+        assert!(matches!(err, IrisError::HostNotAllowlisted));
     }
 }

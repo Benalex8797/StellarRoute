@@ -1,8 +1,9 @@
 # Circle CCTP v2 bridge contract (testnet corridor freeze)
 
 This document freezes the **additive** `/api/v2/bridge/cctp/*` API and SDK wire
-contract for the first Circle CCTP corridor. Protocol execution, Postgres saga
-persistence, and Iris attestation polling are **not implemented** on this branch.
+contract for the first Circle CCTP corridor. A **backend core** (config, Postgres
+saga store, Iris client, encoding, attestation/burn verifier seams, internal
+service) exists on the feature branch but **public execution remains disabled**.
 
 ## Status (non-executable)
 
@@ -10,7 +11,11 @@ persistence, and Iris attestation polling are **not implemented** on this branch
 - `supported_corridors` remains an empty array until backend health gates execution.
 - All CCTP handlers return typed **`503 cctp_not_enabled`** — no fake quotes,
   prepares, or transfer status payloads.
+- Internal saga can advance through quote → burn_prepared → awaiting_attestation →
+  attestation_ready when test verifiers are injected; wallet transaction builders
+  and mint submission are **not implemented**.
 - `/api/v1/swap/*` remains classic Stellar XDR only and is unchanged.
+- **Finality:** v1 corridor is **standard-only** both directions (`fast` rejected on wire).
 
 Later backend work must gate executability via health/config — **not** by
 hardcoding the default contract addresses below.

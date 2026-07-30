@@ -8,6 +8,10 @@ use std::sync::Mutex;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::cctp::bounds::{
+    check_byte_len, check_str_len, MAX_ATTESTATION_BYTES, MAX_MESSAGE_NONCE_LEN,
+    MAX_RAW_MESSAGE_BYTES, MAX_TX_HASH_LEN,
+};
 use crate::cctp::transitions::{is_allowed_transition, is_terminal};
 use crate::models::v2_cctp::{CctpDirection, CctpFinality, CctpTransferStatus};
 
@@ -61,6 +65,10 @@ pub enum CctpStoreError {
     DuplicateSourceTxHash,
     #[error("version conflict")]
     VersionConflict,
+    #[error("invalid persisted status: {0}")]
+    InvalidStatus(String),
+    #[error("payload too large")]
+    PayloadTooLarge,
 }
 
 #[async_trait]
@@ -75,6 +83,14 @@ pub trait CctpTransferStore: Send + Sync {
         expected_version: i32,
         new_status: CctpTransferStatus,
         patch: TransferPatch,
+    ) -> Result<CctpTransfer, CctpStoreError>;
+
+    /// Atomically record verified burn: `burn_prepared` → `awaiting_attestation` with `source_tx_hash`.
+    async fn record_verified_burn(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
     ) -> Result<CctpTransfer, CctpStoreError>;
 }
 
@@ -92,6 +108,7 @@ pub struct TransferPatch {
     pub last_provider_error: Option<String>,
     pub last_provider_code: Option<String>,
     pub increment_retry: bool,
+    pub clear_terminal_at: bool,
 }
 
 pub struct PgCctpTransferStore {
@@ -156,7 +173,7 @@ impl CctpTransferStore for PgCctpTransferStore {
         .bind(transfer_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(TransferRow::into_transfer))
+        Ok(row.map(|r| r.try_into_transfer()).transpose()?)
     }
 
     async fn transition(
@@ -177,12 +194,16 @@ impl CctpTransferStore for PgCctpTransferStore {
             return Err(CctpStoreError::InvalidTransition);
         }
 
-        let terminal = is_terminal(new_status);
         let retry_count = if patch.increment_retry {
             current.retry_count + 1
         } else {
             current.retry_count
         };
+
+        let terminal = is_terminal(new_status);
+        let clear_terminal = patch.clear_terminal_at;
+
+        validate_patch(&patch)?;
 
         let result = sqlx::query(
             r#"
@@ -202,8 +223,12 @@ impl CctpTransferStore for PgCctpTransferStore {
                 retry_count = $14,
                 version = version + 1,
                 updated_at = NOW(),
-                terminal_at = CASE WHEN $15 THEN NOW() ELSE terminal_at END
-            WHERE transfer_id = $1 AND version = $16
+                terminal_at = CASE
+                    WHEN $15 THEN NOW()
+                    WHEN $16 THEN NULL
+                    ELSE terminal_at
+                END
+            WHERE transfer_id = $1 AND version = $17
             "#,
         )
         .bind(transfer_id)
@@ -221,6 +246,7 @@ impl CctpTransferStore for PgCctpTransferStore {
         .bind(&patch.last_provider_code)
         .bind(retry_count as i32)
         .bind(terminal)
+        .bind(clear_terminal)
         .bind(expected_version)
         .execute(&self.pool)
         .await;
@@ -238,12 +264,62 @@ impl CctpTransferStore for PgCctpTransferStore {
             }
         }
     }
+
+    async fn record_verified_burn(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        check_str_len("tx_hash", tx_hash, MAX_TX_HASH_LEN)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query_as::<_, TransferRow>(
+            r#"SELECT * FROM cctp_transfers WHERE transfer_id = $1 FOR UPDATE"#,
+        )
+        .bind(transfer_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(current) = current else {
+            return Err(CctpStoreError::NotFound);
+        };
+        if current.version != expected_version {
+            return Err(CctpStoreError::VersionConflict);
+        }
+        let status = parse_status(&current.status)?;
+
+        if status != CctpTransferStatus::BurnPrepared {
+            return Err(CctpStoreError::InvalidTransition);
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE cctp_transfers SET
+                status = 'awaiting_attestation',
+                source_tx_hash = $2,
+                version = version + 1,
+                updated_at = NOW()
+            WHERE transfer_id = $1 AND version = $3
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(tx_hash)
+        .bind(expected_version)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        self.get(transfer_id).await?.ok_or(CctpStoreError::NotFound)
+    }
 }
 
 #[derive(Default)]
 pub struct InMemoryCctpTransferStore {
     transfers: Mutex<HashMap<Uuid, CctpTransfer>>,
     source_tx_hashes: Mutex<HashMap<String, Uuid>>,
+    message_nonces: Mutex<HashMap<(String, String), Uuid>>,
 }
 
 #[async_trait]
@@ -279,6 +355,8 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
             return Err(CctpStoreError::InvalidTransition);
         }
 
+        validate_patch(&patch)?;
+
         if let Some(hash) = &patch.source_tx_hash {
             let mut hashes = self.source_tx_hashes.lock().unwrap();
             if let Some(existing) = hashes.get(hash) {
@@ -297,6 +375,15 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
             transfer.iris_message_hash = Some(v);
         }
         if let Some(v) = patch.message_nonce {
+            let mut nonces = self.message_nonces.lock().unwrap();
+            let key = (transfer.source_chain_id.clone(), v.clone());
+            if let Some(existing) = nonces.get(&key) {
+                if *existing != transfer_id {
+                    return Err(CctpStoreError::InvalidTransition);
+                }
+            } else {
+                nonces.insert(key, transfer_id);
+            }
             transfer.message_nonce = Some(v);
         }
         if let Some(v) = patch.raw_message {
@@ -327,9 +414,47 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
         transfer.status = new_status;
         transfer.version += 1;
         transfer.updated_at = Utc::now();
-        if is_terminal(new_status) {
+        if patch.clear_terminal_at {
+            transfer.terminal_at = None;
+        } else if is_terminal(new_status) {
             transfer.terminal_at = Some(Utc::now());
         }
+        Ok(transfer.clone())
+    }
+
+    async fn record_verified_burn(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        check_str_len("tx_hash", tx_hash, MAX_TX_HASH_LEN)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+
+        let mut guard = self.transfers.lock().unwrap();
+        let transfer = guard
+            .get_mut(&transfer_id)
+            .ok_or(CctpStoreError::NotFound)?;
+        if transfer.version != expected_version {
+            return Err(CctpStoreError::VersionConflict);
+        }
+        if transfer.status != CctpTransferStatus::BurnPrepared {
+            return Err(CctpStoreError::InvalidTransition);
+        }
+
+        let mut hashes = self.source_tx_hashes.lock().unwrap();
+        if let Some(existing) = hashes.get(tx_hash) {
+            if *existing != transfer_id {
+                return Err(CctpStoreError::DuplicateSourceTxHash);
+            }
+        } else {
+            hashes.insert(tx_hash.to_string(), transfer_id);
+        }
+
+        transfer.source_tx_hash = Some(tx_hash.to_string());
+        transfer.status = CctpTransferStatus::AwaitingAttestation;
+        transfer.version += 1;
+        transfer.updated_at = Utc::now();
         Ok(transfer.clone())
     }
 }
@@ -373,8 +498,8 @@ struct TransferRow {
 }
 
 impl TransferRow {
-    fn into_transfer(self) -> CctpTransfer {
-        CctpTransfer {
+    fn try_into_transfer(self) -> Result<CctpTransfer, CctpStoreError> {
+        Ok(CctpTransfer {
             transfer_id: self.transfer_id,
             support_reference_id: self.support_reference_id,
             corridor_id: self.corridor_id,
@@ -395,7 +520,7 @@ impl TransferRow {
             max_fee: self.max_fee,
             fee_expires_at: self.fee_expires_at,
             quote_expires_at: self.quote_expires_at,
-            status: parse_status(&self.status),
+            status: parse_status(&self.status)?,
             source_tx_hash: self.source_tx_hash,
             destination_tx_hash: self.destination_tx_hash,
             iris_message_hash: self.iris_message_hash,
@@ -409,7 +534,7 @@ impl TransferRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             terminal_at: self.terminal_at,
-        }
+        })
     }
 }
 
@@ -458,21 +583,42 @@ fn parse_finality(s: &str) -> CctpFinality {
     }
 }
 
-fn parse_status(s: &str) -> CctpTransferStatus {
+fn parse_status(s: &str) -> Result<CctpTransferStatus, CctpStoreError> {
     match s {
-        "burn_prepared" => CctpTransferStatus::BurnPrepared,
-        "burn_submitted" => CctpTransferStatus::BurnSubmitted,
-        "awaiting_attestation" => CctpTransferStatus::AwaitingAttestation,
-        "attestation_ready" => CctpTransferStatus::AttestationReady,
-        "mint_prepared" => CctpTransferStatus::MintPrepared,
-        "mint_submitted" => CctpTransferStatus::MintSubmitted,
-        "completed" => CctpTransferStatus::Completed,
-        "attestation_failed" => CctpTransferStatus::AttestationFailed,
-        "mint_failed_retryable" => CctpTransferStatus::MintFailedRetryable,
-        "cancelled" => CctpTransferStatus::Cancelled,
-        "provider_killed" => CctpTransferStatus::ProviderKilled,
-        _ => CctpTransferStatus::Created,
+        "created" => Ok(CctpTransferStatus::Created),
+        "burn_prepared" => Ok(CctpTransferStatus::BurnPrepared),
+        "burn_submitted" => Ok(CctpTransferStatus::BurnSubmitted),
+        "awaiting_attestation" => Ok(CctpTransferStatus::AwaitingAttestation),
+        "attestation_ready" => Ok(CctpTransferStatus::AttestationReady),
+        "mint_prepared" => Ok(CctpTransferStatus::MintPrepared),
+        "mint_submitted" => Ok(CctpTransferStatus::MintSubmitted),
+        "completed" => Ok(CctpTransferStatus::Completed),
+        "attestation_failed" => Ok(CctpTransferStatus::AttestationFailed),
+        "mint_failed_retryable" => Ok(CctpTransferStatus::MintFailedRetryable),
+        "cancelled" => Ok(CctpTransferStatus::Cancelled),
+        "provider_killed" => Ok(CctpTransferStatus::ProviderKilled),
+        other => Err(CctpStoreError::InvalidStatus(other.to_string())),
     }
+}
+
+fn validate_patch(patch: &TransferPatch) -> Result<(), CctpStoreError> {
+    if let Some(raw) = &patch.raw_message {
+        check_byte_len("raw_message", raw, MAX_RAW_MESSAGE_BYTES)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+    }
+    if let Some(att) = &patch.attestation {
+        check_byte_len("attestation", att, MAX_ATTESTATION_BYTES)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+    }
+    if let Some(hash) = &patch.source_tx_hash {
+        check_str_len("source_tx_hash", hash, MAX_TX_HASH_LEN)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+    }
+    if let Some(nonce) = &patch.message_nonce {
+        check_str_len("message_nonce", nonce, MAX_MESSAGE_NONCE_LEN)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

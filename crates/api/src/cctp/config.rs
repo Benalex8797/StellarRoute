@@ -12,6 +12,7 @@ pub const STELLAR_TESTNET_DOMAIN: u32 = 27;
 pub const SEPOLIA_DOMAIN: u32 = 0;
 pub const STELLAR_TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 pub const DEFAULT_IRIS_SANDBOX_URL: &str = "https://iris-api-sandbox.circle.com";
+pub const IRIS_SANDBOX_HOST: &str = "iris-api-sandbox.circle.com";
 
 pub const STELLAR_TOKEN_MESSENGER: &str =
     "CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP";
@@ -28,7 +29,7 @@ pub const SEPOLIA_USDC: &str = "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238";
 pub const FINALITY_STANDARD: u32 = 2000;
 pub const FINALITY_FAST: u32 = 1000;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CctpConfig {
     pub enabled: bool,
     pub iris_base_url: String,
@@ -47,7 +48,7 @@ pub struct CctpConfig {
     pub contracts: CctpContractAddresses,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CctpContractAddresses {
     pub stellar_token_messenger: String,
     pub stellar_message_transmitter: String,
@@ -56,6 +57,27 @@ pub struct CctpContractAddresses {
     pub sepolia_token_messenger: String,
     pub sepolia_message_transmitter: String,
     pub sepolia_usdc: String,
+}
+
+impl fmt::Debug for CctpConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CctpConfig")
+            .field("enabled", &self.enabled)
+            .field("iris_base_url", &redact_url(&self.iris_base_url))
+            .field("stellar_domain", &self.stellar_domain)
+            .field("sepolia_domain", &self.sepolia_domain)
+            .field("stellar_rpc_url", &redact_url(&self.stellar_rpc_url))
+            .field(
+                "stellar_horizon_url",
+                &redact_url(&self.stellar_horizon_url),
+            )
+            .field("sepolia_rpc_url", &redact_url(&self.sepolia_rpc_url))
+            .field("amount_cap", &self.amount_cap)
+            .field("quote_ttl_secs", &self.quote_ttl_secs)
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .field("poll_timeout_secs", &self.poll_timeout_secs)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,8 +212,9 @@ impl CctpConfig {
             return Err(CctpConfigError::WrongDomainPair);
         }
 
+        validate_iris_url(&self.iris_base_url)?;
+
         for url in [
-            &self.iris_base_url,
             &self.stellar_rpc_url,
             &self.stellar_horizon_url,
             &self.sepolia_rpc_url,
@@ -228,16 +251,92 @@ impl CctpConfig {
     pub fn provider_id(&self) -> &'static str {
         CCTP_PROVIDER_ID
     }
+
+    pub fn request_url_matches_allowed_host(
+        &self,
+        url: &str,
+        allowed_host: &str,
+    ) -> Result<(), CctpConfigError> {
+        let parsed = parse_service_url(url)?;
+        if parsed.host != allowed_host.to_ascii_lowercase() {
+            return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+        }
+        if parsed.scheme != "https" {
+            return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+        }
+        if parsed.path.contains('?') || url.contains('?') {
+            return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+        }
+        Ok(())
+    }
 }
 
-fn validate_https_url(url: &str) -> Result<(), CctpConfigError> {
-    if is_production() && !url.starts_with("https://") {
+fn validate_iris_url(url: &str) -> Result<(), CctpConfigError> {
+    let parsed = parse_service_url(url)?;
+    if parsed.host != IRIS_SANDBOX_HOST {
         return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
     }
-    if !url.starts_with("https://") && !url.starts_with("http://") {
+    if parsed.scheme != "https" {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+    }
+    if parsed.path != "/" && !parsed.path.starts_with("/v2") {
         return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
     }
     Ok(())
+}
+
+fn validate_https_url(url: &str) -> Result<(), CctpConfigError> {
+    let parsed = parse_service_url(url)?;
+    if is_production() && parsed.scheme != "https" {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+    }
+    if parsed.scheme != "https" && parsed.scheme != "http" {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedServiceUrl {
+    pub scheme: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+}
+
+pub fn parse_service_url(url_str: &str) -> Result<ParsedServiceUrl, CctpConfigError> {
+    let trimmed = url_str.trim();
+    if trimmed.contains('#') || trimmed.contains('@') {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url_str)));
+    }
+    let (scheme, rest) = trimmed
+        .split_once("//")
+        .map(|(s, r)| (s.trim_end_matches(':').to_ascii_lowercase(), r))
+        .unwrap_or(("".into(), trimmed));
+    if scheme != "https" && scheme != "http" {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url_str)));
+    }
+    let (host_part, path) = rest
+        .split_once('/')
+        .map(|(h, p)| (h, format!("/{}", p.split('?').next().unwrap_or(p))))
+        .unwrap_or((rest, "/".into()));
+    if host_part.contains('?') {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url_str)));
+    }
+    let (host, port) = if let Some((h, p)) = host_part.rsplit_once(':') {
+        let port = p
+            .parse::<u16>()
+            .map_err(|_| CctpConfigError::NonHttpsUrl(redact_url(url_str)))?;
+        (h.to_ascii_lowercase(), Some(port))
+    } else {
+        (host_part.to_ascii_lowercase(), None)
+    };
+    Ok(ParsedServiceUrl {
+        scheme,
+        host,
+        port,
+        path,
+    })
 }
 
 fn validate_stellar_contract(addr: &str) -> Result<(), CctpConfigError> {
@@ -314,11 +413,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_evil_iris_host_variants() {
+        for url in [
+            "https://evil.com",
+            "https://iris-api-sandbox.circle.com.evil.com",
+            "http://iris-api-sandbox.circle.com",
+            "https://user:pass@iris-api-sandbox.circle.com",
+            "https://iris-api-sandbox.circle.com?token=secret",
+        ] {
+            let mut cfg = CctpConfig::default_testnet();
+            cfg.iris_base_url = url.into();
+            assert!(cfg.validate().is_err(), "must reject {url}");
+        }
+    }
+
+    #[test]
     fn env_parsing_respects_cctp_enabled() {
-        let _guard = std::sync::Mutex::new(());
+        let previous = std::env::var("CCTP_ENABLED").ok();
         std::env::set_var("CCTP_ENABLED", "true");
         let cfg = CctpConfig::from_env().expect("valid env config");
         assert!(cfg.enabled);
-        std::env::remove_var("CCTP_ENABLED");
+        match previous {
+            Some(v) => std::env::set_var("CCTP_ENABLED", v),
+            None => std::env::remove_var("CCTP_ENABLED"),
+        }
     }
 }
