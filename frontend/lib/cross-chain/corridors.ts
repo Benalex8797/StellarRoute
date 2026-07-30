@@ -144,6 +144,8 @@ export function findCorridorById(id: CorridorId): CorridorDefinition {
   return corridor;
 }
 
+export const UNMATCHED_CORRIDOR_ID = 'unmatched' as const;
+
 export function findCorridorForChains(
   sourceChainId: ChainDisplayId,
   destChainId: ChainDisplayId

@@ -15,8 +15,12 @@ export function formatChainPairLabel(
   return `${source} → ${dest}`;
 }
 
-export function corridorStatusCopy(executable: boolean): string {
-  return executable
-    ? 'Executable corridor'
-    : 'Coming soon — preview only';
+export function corridorStatusCopy(
+  executable: boolean,
+  uncatalogued = false
+): string {
+  if (uncatalogued) {
+    return 'Unsupported pair';
+  }
+  return executable ? 'Executable corridor' : 'Coming soon — preview only';
 }

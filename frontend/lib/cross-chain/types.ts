@@ -16,7 +16,16 @@ export type CorridorId =
   | 'bitcoin-to-stellar'
   | 'tron-to-stellar';
 
+/** Explicit id when source/destination pair is not in the catalog. */
+export type UnmatchedCorridorId = 'unmatched';
+
+export type CorridorSelectionId = CorridorId | UnmatchedCorridorId;
+
 export type CorridorAvailability = 'executable' | 'coming_soon';
+
+export type ResolvedCorridorAvailability =
+  | CorridorAvailability
+  | 'unsupported';
 
 export type CrossChainProtocol = 'stellar-native' | 'cctp-preview';
 
