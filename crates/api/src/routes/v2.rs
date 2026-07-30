@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::Json;
 use std::sync::Arc;
 
-use crate::cctp::gate::{any_direction_executable, supported_corridors};
+use crate::cctp::gate::{bridge_settlement_publicly_executable, supported_corridors_with_gates};
 use crate::error::{ApiError, Result};
 use crate::middleware::RequestId;
 use crate::models::compat::{chain_asset_to_v2, parse_asset_input};
@@ -36,8 +36,20 @@ pub async fn api_v2_info(
     let (corridors, executable) = if let Some(ctx) = &state.cctp {
         if ctx.config.enabled {
             (
-                supported_corridors(&ctx.runtime, &ctx.config),
-                any_direction_executable(&ctx.runtime, &ctx.config),
+                supported_corridors_with_gates(
+                    &ctx.runtime,
+                    &ctx.config,
+                    &state.kill_switch,
+                    &state.external_dependency_health,
+                )
+                .await,
+                bridge_settlement_publicly_executable(
+                    &ctx.runtime,
+                    &ctx.config,
+                    &state.kill_switch,
+                    &state.external_dependency_health,
+                )
+                .await,
             )
         } else {
             (vec![], false)

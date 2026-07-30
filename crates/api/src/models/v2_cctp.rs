@@ -271,10 +271,12 @@ impl CctpQuoteRequest {
                         return Err(CctpValidationError::InvalidSender);
                     }
                 }
-                if let Some(submitter) = &self.mint_submitter {
-                    if !is_valid_stellar_account(submitter) {
-                        return Err(CctpValidationError::InvalidMintSubmitter);
-                    }
+                let submitter = self
+                    .mint_submitter
+                    .as_deref()
+                    .ok_or(CctpValidationError::InvalidMintSubmitter)?;
+                if !is_valid_stellar_account(submitter) {
+                    return Err(CctpValidationError::InvalidMintSubmitter);
                 }
                 if self.finality == CctpFinality::Fast {
                     return Err(CctpValidationError::InvalidFinality);
@@ -500,6 +502,11 @@ mod tests {
             ),
         };
 
+        let mint_submitter = match direction {
+            CctpDirection::EvmToStellar => Some(VALID_STELLAR.to_string()),
+            CctpDirection::StellarToEvm => None,
+        };
+
         CctpQuoteRequest {
             corridor_id: CCTP_TESTNET_CORRIDOR_ID.into(),
             provider: CCTP_PROVIDER_ID.into(),
@@ -511,7 +518,7 @@ mod tests {
             amount: "10.0".into(),
             recipient,
             sender: None,
-            mint_submitter: None,
+            mint_submitter,
             finality,
         }
     }

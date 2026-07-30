@@ -119,6 +119,8 @@ async fn burn_prepared_evm() -> (Arc<dyn CctpTransferStore>, uuid::Uuid) {
         burn_payload_hash: None,
         burn_prepare_step: None,
         access_token_hash: None,
+        last_polled_at: None,
+        poll_lease_until: None,
     };
     let id = transfer.transfer_id;
     store.insert(&transfer).await.unwrap();
@@ -267,6 +269,8 @@ async fn unverified_hash_does_not_set_verified_at_via_store_direct() {
         burn_payload_hash: None,
         burn_prepare_step: None,
         access_token_hash: None,
+        last_polled_at: None,
+        poll_lease_until: None,
     };
     let id = t.transfer_id;
     store.insert(&t).await.unwrap();

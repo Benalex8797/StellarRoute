@@ -167,6 +167,8 @@ async fn prepared_transfer(
             burn_payload_hash: None,
             burn_prepare_step: None,
             access_token_hash: None,
+            last_polled_at: None,
+            poll_lease_until: None,
         },
         &cfg,
         TX_HASH,

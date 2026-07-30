@@ -1,9 +1,8 @@
 //! HTTP execution gate, redacted wire mapping, and service error translation.
 
-use chrono::Utc;
 use uuid::Uuid;
 
-use crate::cctp::access::{access_tokens_match, validate_access_token_format};
+use crate::cctp::access::{hash_access_token, validate_access_token_format};
 use crate::cctp::builders::BurnPrepareStep;
 use crate::cctp::config::CctpConfig;
 use crate::cctp::readiness::CctpRuntime;
@@ -11,7 +10,9 @@ use crate::cctp::service::{CctpService, CctpServiceError};
 use crate::cctp::store::CctpTransfer;
 use crate::cctp::transitions::is_recoverable_failure;
 use crate::cctp::verifiers::VerifierError;
+use crate::dependency_health::ExternalDependencyHealth;
 use crate::error::ApiError;
+use crate::kill_switch::KillSwitchManager;
 use crate::metrics;
 use crate::models::v2_cctp::SupportedCorridor;
 use crate::models::v2_cctp::{
@@ -22,9 +23,13 @@ use crate::models::v2_cctp::{
     SEPOLIA_USDC_CANONICAL, STELLAR_TESTNET_CHAIN_ID, STELLAR_TESTNET_USDC_ASSET,
     STELLAR_TESTNET_USDC_CANONICAL,
 };
+use stellarroute_routing::health::policy::OverrideDirective;
 
 pub const REATTEST_MAX_ATTEMPTS: u32 = 5;
 pub const REATTEST_COOLDOWN_SECS: i64 = 60;
+pub const CCTP_CHAIN_KILL_STELLAR: &str = "cctp:chain:stellar-testnet";
+pub const CCTP_CHAIN_KILL_SEPOLIA: &str = "cctp:chain:sepolia";
+pub const POLL_LEASE_SECS: i64 = 15;
 
 /// Direction-specific executability — all mandatory prepare+verify components ready.
 pub fn direction_executable(
@@ -38,6 +43,46 @@ pub fn direction_executable(
 pub fn any_direction_executable(runtime: &CctpRuntime, config: &CctpConfig) -> bool {
     direction_executable(runtime, config, CctpDirection::StellarToEvm)
         || direction_executable(runtime, config, CctpDirection::EvmToStellar)
+}
+
+/// Runtime public executability including kill switches and dependency health.
+pub async fn bridge_settlement_publicly_executable(
+    runtime: &CctpRuntime,
+    config: &CctpConfig,
+    kill_switch: &KillSwitchManager,
+    dependency_health: &ExternalDependencyHealth,
+) -> bool {
+    if !config.enabled || !config.is_configured() {
+        return false;
+    }
+    if dependency_health.guard_live_path().is_err() {
+        return false;
+    }
+    for direction in [CctpDirection::StellarToEvm, CctpDirection::EvmToStellar] {
+        if direction_executable(runtime, config, direction)
+            && !chain_killed(kill_switch, direction).await
+        {
+            return true;
+        }
+    }
+    false
+}
+
+pub async fn supported_corridors_with_gates(
+    runtime: &CctpRuntime,
+    config: &CctpConfig,
+    kill_switch: &KillSwitchManager,
+    dependency_health: &ExternalDependencyHealth,
+) -> Vec<SupportedCorridor> {
+    let deps_ok = dependency_health.guard_live_path().is_ok();
+    let mut out = Vec::new();
+    for direction in [CctpDirection::StellarToEvm, CctpDirection::EvmToStellar] {
+        let mut corridor = corridor_descriptor(direction, runtime, config);
+        corridor.executable =
+            corridor.executable && deps_ok && !chain_killed(kill_switch, direction).await;
+        out.push(corridor);
+    }
+    out
 }
 
 pub fn supported_corridors(runtime: &CctpRuntime, config: &CctpConfig) -> Vec<SupportedCorridor> {
@@ -101,6 +146,8 @@ fn sepolia_usdc_asset() -> crate::models::v2_cctp::CctpChainAsset {
 pub async fn ensure_public_gate(
     service: &CctpService,
     direction: CctpDirection,
+    kill_switch: &KillSwitchManager,
+    dependency_health: &ExternalDependencyHealth,
 ) -> Result<(), ApiError> {
     let config = &service.config;
     if !config.enabled {
@@ -121,6 +168,28 @@ pub async fn ensure_public_gate(
             "Circle CCTP provider is temporarily unavailable".into(),
         ));
     }
+    if chain_killed(kill_switch, direction).await {
+        metrics::record_cctp_endpoint_outcome("gate", "chain_killed");
+        return Err(ApiError::ProviderKilled(
+            "CCTP corridor chain is temporarily unavailable".into(),
+        ));
+    }
+    if let Err(err) = dependency_health.guard_live_path() {
+        metrics::record_cctp_endpoint_outcome("gate", "dependency_unhealthy");
+        return Err(err);
+    }
+    if direction == CctpDirection::StellarToEvm && dependency_health.soroban_breaker_is_open() {
+        metrics::record_cctp_endpoint_outcome("gate", "soroban_unhealthy");
+        return Err(ApiError::DependencyUnavailable(
+            "Stellar RPC dependency is temporarily unavailable".into(),
+        ));
+    }
+    if direction == CctpDirection::EvmToStellar && dependency_health.soroban_breaker_is_open() {
+        metrics::record_cctp_endpoint_outcome("gate", "soroban_unhealthy");
+        return Err(ApiError::DependencyUnavailable(
+            "Stellar RPC dependency is temporarily unavailable".into(),
+        ));
+    }
     if !direction_executable(&service.runtime, config, direction) {
         metrics::record_cctp_endpoint_outcome("gate", "direction_not_ready");
         return Err(ApiError::CctpNotEnabled(
@@ -130,49 +199,36 @@ pub async fn ensure_public_gate(
     Ok(())
 }
 
-pub fn verify_transfer_access(
-    transfer: &CctpTransfer,
-    presented_token: Option<&str>,
-) -> Result<(), ApiError> {
-    let Some(hash) = transfer.access_token_hash.as_deref() else {
-        metrics::record_cctp_endpoint_outcome("access", "missing_binding");
-        return Err(ApiError::Unauthorized(
-            "Transfer access token required".into(),
-        ));
+async fn chain_killed(kill_switch: &KillSwitchManager, direction: CctpDirection) -> bool {
+    let state = kill_switch.get_state().await;
+    let key = match direction {
+        CctpDirection::StellarToEvm => CCTP_CHAIN_KILL_STELLAR,
+        CctpDirection::EvmToStellar => CCTP_CHAIN_KILL_SEPOLIA,
     };
-    let Some(token) = presented_token else {
-        metrics::record_cctp_endpoint_outcome("access", "missing_header");
-        return Err(ApiError::Unauthorized(
-            "Transfer access token required".into(),
-        ));
-    };
-    if validate_access_token_format(token).is_err() || !access_tokens_match(hash, token) {
-        metrics::record_cctp_endpoint_outcome("access", "invalid");
-        return Err(ApiError::Unauthorized(
-            "Invalid transfer access token".into(),
-        ));
-    }
-    Ok(())
+    matches!(state.venues.get(key), Some(OverrideDirective::ForceExclude))
 }
 
-pub fn ensure_reattest_allowed(transfer: &CctpTransfer) -> Result<(), ApiError> {
-    if !is_recoverable_failure(transfer.status) {
-        return Err(ApiError::Validation(
-            "Re-attestation is only allowed from attestation_failed state".into(),
-        ));
+pub fn uniform_transfer_not_found(transfer_id: Uuid) -> ApiError {
+    metrics::record_cctp_endpoint_outcome("access", "not_found");
+    ApiError::TransferNotFound {
+        transfer_id: transfer_id.to_string(),
     }
-    if transfer.retry_count >= REATTEST_MAX_ATTEMPTS {
-        return Err(ApiError::Validation(
-            "Re-attestation attempt limit reached".into(),
-        ));
-    }
-    let cooldown_deadline = transfer.updated_at + chrono::Duration::seconds(REATTEST_COOLDOWN_SECS);
-    if Utc::now() < cooldown_deadline {
-        return Err(ApiError::Validation(
-            "Re-attestation cooldown active; retry later".into(),
-        ));
-    }
-    Ok(())
+}
+
+pub fn hash_presented_access_token(
+    transfer_id: Uuid,
+    token: Option<&str>,
+) -> Result<String, ApiError> {
+    let token = token.ok_or_else(|| uniform_transfer_not_found(transfer_id))?;
+    validate_access_token_format(token).map_err(|_| uniform_transfer_not_found(transfer_id))?;
+    Ok(hash_access_token(token))
+}
+
+pub fn map_reattest_denied(transfer_id: Uuid) -> ApiError {
+    let _ = transfer_id;
+    ApiError::Validation(
+        "Re-attestation is not allowed (cooldown, attempt limit, or invalid state)".into(),
+    )
 }
 
 pub fn map_service_error(err: CctpServiceError, transfer_id: Option<Uuid>) -> ApiError {
@@ -465,6 +521,8 @@ mod tests {
             burn_payload_hash: None,
             burn_prepare_step: None,
             access_token_hash: Some(hash),
+            last_polled_at: None,
+            poll_lease_until: None,
         }
     }
 

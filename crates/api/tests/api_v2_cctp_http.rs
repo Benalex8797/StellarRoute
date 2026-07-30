@@ -9,7 +9,7 @@ use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use stellarroute_api::{
     cctp::{
-        access::{generate_access_token, TRANSFER_ACCESS_HEADER},
+        access::{generate_ephemeral_access_token, test_access_token_key, TRANSFER_ACCESS_HEADER},
         bootstrap::CctpHttpContext,
         config::CctpConfig,
         idempotency::InMemoryCctpQuoteIdempotencyStore,
@@ -104,9 +104,11 @@ fn enabled_test_context() -> Arc<CctpHttpContext> {
     cfg.enabled = true;
     let runtime = CctpRuntime::production_defaults();
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let idempotency = Arc::new(InMemoryCctpQuoteIdempotencyStore::default());
+    idempotency.bind_transfer_store(store.clone());
     let service = Arc::new(CctpService {
         config: cfg.clone(),
-        store,
+        store: store.clone(),
         prepare_lock: Arc::new(InMemoryCctpPrepareLockStore::default()),
         iris: Arc::new(MockIris),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
@@ -116,7 +118,8 @@ fn enabled_test_context() -> Arc<CctpHttpContext> {
         config: cfg,
         service,
         runtime,
-        idempotency: Arc::new(InMemoryCctpQuoteIdempotencyStore::default()),
+        idempotency,
+        access_token_key: test_access_token_key(),
     })
 }
 
@@ -242,6 +245,8 @@ async fn quote_response_includes_access_token_when_executable() {
     let mut cfg = CctpConfig::default_testnet();
     cfg.enabled = true;
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let idempotency = Arc::new(InMemoryCctpQuoteIdempotencyStore::default());
+    idempotency.bind_transfer_store(store.clone());
     let runtime = CctpRuntime {
         stellar_burn_builder: Arc::new(NotReadyStellarBurnBuilder),
         evm_burn_builder: Arc::new(NotReadyEvmBurnBuilder),
@@ -261,19 +266,20 @@ async fn quote_response_includes_access_token_when_executable() {
     };
     let service = Arc::new(CctpService {
         config: cfg.clone(),
-        store,
+        store: store.clone(),
         prepare_lock: Arc::new(InMemoryCctpPrepareLockStore::default()),
         iris: Arc::new(MockIris),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
         runtime: runtime.clone(),
     });
     let _ = test_access_token_hash();
-    let _ = generate_access_token();
+    let _ = generate_ephemeral_access_token();
     let ctx = Arc::new(CctpHttpContext {
         config: cfg,
         service,
         runtime,
-        idempotency: Arc::new(InMemoryCctpQuoteIdempotencyStore::default()),
+        idempotency,
+        access_token_key: test_access_token_key(),
     });
     let router = router_with_cctp(Some(ctx)).await;
     let (status, body) = post_json(

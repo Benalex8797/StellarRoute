@@ -74,6 +74,8 @@ fn sample_burn_transfer() -> CctpTransfer {
         burn_payload_hash: None,
         burn_prepare_step: None,
         access_token_hash: None,
+        last_polled_at: None,
+        poll_lease_until: None,
     }
 }
 

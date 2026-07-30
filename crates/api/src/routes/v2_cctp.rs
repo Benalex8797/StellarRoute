@@ -9,14 +9,19 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use crate::cctp::access::{generate_access_token, TRANSFER_ACCESS_HEADER};
+use crate::cctp::access::{
+    generate_ephemeral_access_token, hash_access_token, TRANSFER_ACCESS_HEADER,
+};
+use crate::cctp::gate::{ensure_public_gate, map_reattest_denied};
 use crate::cctp::gate::{
-    ensure_public_gate, ensure_reattest_allowed, map_service_error, to_prepare_burn_response,
+    hash_presented_access_token, map_service_error, to_prepare_burn_response,
     to_prepare_mint_response, to_quote_response, to_reattest_response, to_status_response,
-    to_submit_burn_response, to_submit_mint_response, verify_transfer_access,
+    to_submit_burn_response, to_submit_mint_response, uniform_transfer_not_found, POLL_LEASE_SECS,
+    REATTEST_COOLDOWN_SECS, REATTEST_MAX_ATTEMPTS,
 };
 use crate::cctp::idempotency::{
-    hash_quote_request, normalize_idempotency_key, CctpIdempotencyError, IDEMPOTENCY_HEADER,
+    canonical_quote_request_hash, lease_owner_hash_from_nonce, new_lease_owner_nonce,
+    normalize_idempotency_key, CctpIdempotencyError, IdempotencyState, IDEMPOTENCY_HEADER,
 };
 use crate::error::{ApiError, Result};
 use crate::metrics;
@@ -96,13 +101,34 @@ async fn load_authorized_transfer(
     headers: &HeaderMap,
 ) -> Result<crate::cctp::store::CctpTransfer> {
     let ctx = require_cctp(state)?;
+    let token_hash = hash_presented_access_token(transfer_id, access_token_from_headers(headers))?;
     let transfer = ctx
         .service
-        .get_transfer(transfer_id)
+        .store
+        .get_authorized(transfer_id, &token_hash)
         .await
-        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
-    verify_transfer_access(&transfer, access_token_from_headers(headers))?;
+        .map_err(|e| {
+            map_service_error(
+                crate::cctp::service::CctpServiceError::Store(e),
+                Some(transfer_id),
+            )
+        })?
+        .ok_or_else(|| uniform_transfer_not_found(transfer_id))?;
     Ok(transfer)
+}
+
+async fn gate_for_direction(
+    state: &AppState,
+    direction: crate::models::v2_cctp::CctpDirection,
+) -> Result<()> {
+    let ctx = require_cctp(state)?;
+    ensure_public_gate(
+        &ctx.service,
+        direction,
+        &state.kill_switch,
+        &state.external_dependency_health,
+    )
+    .await
 }
 
 /// `POST /api/v2/bridge/cctp/quote`
@@ -115,6 +141,7 @@ async fn load_authorized_transfer(
         (status = 200, description = "CCTP fee quote", body = CctpQuoteResponse),
         (status = 400, description = "Invalid request"),
         (status = 409, description = "Idempotency key conflict"),
+        (status = 425, description = "Idempotent quote in progress"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -128,77 +155,124 @@ pub async fn cctp_quote(
     body.validate().map_err(map_validation)?;
 
     let ctx = require_cctp(&state)?;
-    ensure_public_gate(&ctx.service, body.direction).await?;
+    gate_for_direction(&state, body.direction).await?;
 
-    let request_bytes = serde_json::to_vec(&body)
-        .map_err(|e| ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string()))))?;
-    let request_hash = hash_quote_request(&request_bytes).map_err(|e| match e {
-        CctpIdempotencyError::RequestTooLarge => {
-            ApiError::Validation("quote request body too large".into())
-        }
-        other => ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(other.to_string()))),
-    })?;
+    let request_hash =
+        canonical_quote_request_hash(&serde_json::to_value(&body).map_err(|e| {
+            ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string())))
+        })?)
+        .map_err(|e| match e {
+            CctpIdempotencyError::RequestTooLarge => {
+                ApiError::Validation("quote request body too large".into())
+            }
+            other => ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(other.to_string()))),
+        })?;
+
+    let _ = ctx.idempotency.cleanup_expired(32).await;
 
     if let Some(raw_key) = idempotency_key_from_headers(&headers) {
         let key = normalize_idempotency_key(raw_key)
             .map_err(|_| ApiError::Validation("idempotency key exceeds maximum length".into()))?;
-        if let Some((stored_hash, record)) =
-            ctx.idempotency.lookup(&key).await.map_err(|e| {
-                ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string())))
-            })?
+        let lease_owner = lease_owner_hash_from_nonce(&new_lease_owner_nonce());
+        let expires_at =
+            chrono::Utc::now() + chrono::Duration::seconds(ctx.config.quote_ttl_secs as i64);
+
+        let claim = match ctx
+            .idempotency
+            .claim_quote(&key, &request_hash, &lease_owner, expires_at)
+            .await
         {
-            if stored_hash != request_hash {
+            Ok(c) => c,
+            Err(CctpIdempotencyError::Conflict) => {
                 metrics::record_cctp_endpoint_outcome("quote", "idempotency_conflict");
                 return Err(ApiError::Conflict {
                     message: "Idempotency key reused with different quote request".into(),
-                    quote_id: record.transfer_id.to_string(),
+                    quote_id: String::new(),
                     tx_hash: String::new(),
                     status: "idempotency_conflict".into(),
                 });
             }
-            let response: CctpQuoteResponse =
-                serde_json::from_str(&record.response_json).map_err(|e| {
-                    ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string())))
-                })?;
+            Err(CctpIdempotencyError::PendingInProgress) => {
+                metrics::record_cctp_endpoint_outcome("quote", "idempotency_pending");
+                return Err(ApiError::TooEarly(
+                    "An idempotent quote with this key is still in progress".into(),
+                ));
+            }
+            Err(e) => {
+                return Err(ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(
+                    e.to_string()
+                ))));
+            }
+        };
+
+        if claim.state == IdempotencyState::Completed {
+            let transfer = ctx
+                .service
+                .get_transfer(claim.transfer_id)
+                .await
+                .map_err(|e| map_service_error(e, Some(claim.transfer_id)))?;
+            let access_token = ctx.access_token_key.derive_idempotent_token(
+                &key,
+                &request_hash,
+                claim.transfer_id,
+            );
             metrics::record_cctp_endpoint_outcome("quote", "idempotent_hit");
             return Ok(Json(ApiResponse::with_version(
                 2,
-                response,
+                to_quote_response(&transfer, &access_token),
                 request_id.as_str(),
             )));
         }
+
+        let access_token =
+            ctx.access_token_key
+                .derive_idempotent_token(&key, &request_hash, claim.transfer_id);
+        let access_hash = hash_access_token(&access_token);
+        let transfer = ctx
+            .service
+            .build_quote_transfer(&body, claim.transfer_id, access_hash)
+            .await
+            .map_err(|e| map_service_error(e, Some(claim.transfer_id)))?;
+
+        ctx.idempotency
+            .finalize_quote(&key, &lease_owner, &transfer)
+            .await
+            .map_err(|e| match e {
+                CctpIdempotencyError::PendingInProgress => ApiError::TooEarly(
+                    "An idempotent quote with this key is still in progress".into(),
+                ),
+                CctpIdempotencyError::Conflict => ApiError::Conflict {
+                    message: "Idempotency key reused with different quote request".into(),
+                    quote_id: claim.transfer_id.to_string(),
+                    tx_hash: String::new(),
+                    status: "idempotency_conflict".into(),
+                },
+                other => {
+                    ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(other.to_string())))
+                }
+            })?;
+
+        metrics::record_cctp_endpoint_outcome("quote", "success");
+        metrics::record_cctp_iris_latency(started.elapsed(), "quote");
+        return Ok(Json(ApiResponse::with_version(
+            2,
+            to_quote_response(&transfer, &access_token),
+            request_id.as_str(),
+        )));
     }
 
-    let (access_token, access_hash) = generate_access_token();
+    let (access_token, access_hash) = generate_ephemeral_access_token();
     let transfer = ctx
         .service
         .quote_core(&body, access_hash)
         .await
         .map_err(|e| map_service_error(e, None))?;
-    let response = to_quote_response(&transfer, &access_token);
-
-    if let Some(raw_key) = idempotency_key_from_headers(&headers) {
-        let key = normalize_idempotency_key(raw_key)
-            .map_err(|_| ApiError::Validation("idempotency key exceeds maximum length".into()))?;
-        let response_json = serde_json::to_string(&response)
-            .map_err(|e| ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string()))))?;
-        let _ = ctx
-            .idempotency
-            .insert(
-                &key,
-                &request_hash,
-                transfer.transfer_id,
-                &response_json,
-                transfer.quote_expires_at,
-            )
-            .await;
-    }
 
     metrics::record_cctp_endpoint_outcome("quote", "success");
     metrics::record_cctp_iris_latency(started.elapsed(), "quote");
     Ok(Json(ApiResponse::with_version(
         2,
-        response,
+        to_quote_response(&transfer, &access_token),
         request_id.as_str(),
     )))
 }
@@ -212,7 +286,7 @@ pub async fn cctp_quote(
     responses(
         (status = 200, description = "Prepared burn wallet payload", body = CctpPrepareBurnResponse),
         (status = 400, description = "Invalid transfer ID"),
-        (status = 401, description = "Invalid transfer access token"),
+        (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -223,10 +297,10 @@ pub async fn cctp_prepare_burn(
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpPrepareBurnResponse>>> {
     let transfer_id = parse_transfer_id_param(&transfer_id)?;
-    let ctx = require_cctp(&state)?;
     let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
-    ensure_public_gate(&ctx.service, transfer.direction).await?;
+    gate_for_direction(&state, transfer.direction).await?;
 
+    let ctx = require_cctp(&state)?;
     let _ = ctx
         .service
         .prepare_burn(transfer_id)
@@ -261,7 +335,7 @@ pub async fn cctp_prepare_burn(
     responses(
         (status = 200, description = "Burn or approval tx hash recorded", body = CctpSubmitBurnResponse),
         (status = 400, description = "Invalid transfer ID or tx_hash"),
-        (status = 401, description = "Invalid transfer access token"),
+        (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -274,10 +348,10 @@ pub async fn cctp_submit_burn(
 ) -> Result<Json<ApiResponse<CctpSubmitBurnResponse>>> {
     let transfer_id = parse_transfer_id_param(&transfer_id)?;
     validate_submit_tx_hash(&body.tx_hash)?;
-    let ctx = require_cctp(&state)?;
     let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
-    ensure_public_gate(&ctx.service, transfer.direction).await?;
+    gate_for_direction(&state, transfer.direction).await?;
 
+    let ctx = require_cctp(&state)?;
     let updated = if transfer.burn_prepare_step.as_deref() == Some("approval")
         && transfer.source_approval_verified_at.is_none()
     {
@@ -308,7 +382,6 @@ pub async fn cctp_submit_burn(
     responses(
         (status = 200, description = "Transfer saga status", body = CctpTransferStatusResponse),
         (status = 400, description = "Invalid transfer ID"),
-        (status = 401, description = "Invalid transfer access token"),
         (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
@@ -320,13 +393,17 @@ pub async fn cctp_get_transfer(
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpTransferStatusResponse>>> {
     let transfer_id = parse_transfer_id_param(&transfer_id)?;
-    let ctx = require_cctp(&state)?;
     let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
-    ensure_public_gate(&ctx.service, transfer.direction).await?;
+    gate_for_direction(&state, transfer.direction).await?;
 
+    let ctx = require_cctp(&state)?;
     let polled = ctx
         .service
-        .poll_one_transfer(transfer_id)
+        .poll_one_transfer_with_lease(
+            transfer_id,
+            POLL_LEASE_SECS,
+            ctx.config.poll_interval_secs as i64,
+        )
         .await
         .map_err(|e| map_service_error(e, Some(transfer_id)))?;
 
@@ -347,7 +424,7 @@ pub async fn cctp_get_transfer(
     responses(
         (status = 200, description = "Prepared mint wallet payload", body = CctpPrepareMintResponse),
         (status = 400, description = "Invalid transfer ID"),
-        (status = 401, description = "Invalid transfer access token"),
+        (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -358,9 +435,8 @@ pub async fn cctp_prepare_mint(
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpPrepareMintResponse>>> {
     let transfer_id = parse_transfer_id_param(&transfer_id)?;
-    let ctx = require_cctp(&state)?;
     let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
-    ensure_public_gate(&ctx.service, transfer.direction).await?;
+    gate_for_direction(&state, transfer.direction).await?;
 
     if transfer.status != CctpTransferStatus::AttestationReady
         && transfer.status != CctpTransferStatus::MintFailedRetryable
@@ -371,6 +447,7 @@ pub async fn cctp_prepare_mint(
         ));
     }
 
+    let ctx = require_cctp(&state)?;
     let bundle = ctx
         .service
         .prepare_mint(transfer_id)
@@ -400,7 +477,7 @@ pub async fn cctp_prepare_mint(
     responses(
         (status = 200, description = "Mint tx hash recorded", body = CctpSubmitMintResponse),
         (status = 400, description = "Invalid transfer ID or tx_hash"),
-        (status = 401, description = "Invalid transfer access token"),
+        (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -413,10 +490,10 @@ pub async fn cctp_submit_mint(
 ) -> Result<Json<ApiResponse<CctpSubmitMintResponse>>> {
     let transfer_id = parse_transfer_id_param(&transfer_id)?;
     validate_submit_tx_hash(&body.tx_hash)?;
-    let ctx = require_cctp(&state)?;
     let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
-    ensure_public_gate(&ctx.service, transfer.direction).await?;
+    gate_for_direction(&state, transfer.direction).await?;
 
+    let ctx = require_cctp(&state)?;
     let updated = ctx
         .service
         .record_mint_submission(transfer_id, &body.tx_hash)
@@ -440,7 +517,7 @@ pub async fn cctp_submit_mint(
     responses(
         (status = 200, description = "Attestation re-poll requested", body = CctpReattestResponse),
         (status = 400, description = "Invalid transfer ID"),
-        (status = 401, description = "Invalid transfer access token"),
+        (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -451,16 +528,21 @@ pub async fn cctp_reattest(
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpReattestResponse>>> {
     let transfer_id = parse_transfer_id_param(&transfer_id)?;
-    let ctx = require_cctp(&state)?;
-    let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
-    ensure_public_gate(&ctx.service, transfer.direction).await?;
-    ensure_reattest_allowed(&transfer)?;
+    let _transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
+    gate_for_direction(&state, _transfer.direction).await?;
 
-    let updated = ctx
+    let ctx = require_cctp(&state)?;
+    let updated = match ctx
         .service
-        .reattest(transfer_id)
+        .reattest_with_claim(transfer_id, REATTEST_MAX_ATTEMPTS, REATTEST_COOLDOWN_SECS)
         .await
-        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+    {
+        Ok(t) => t,
+        Err(crate::cctp::service::CctpServiceError::InvalidState) => {
+            return Err(map_reattest_denied(transfer_id));
+        }
+        Err(e) => return Err(map_service_error(e, Some(transfer_id))),
+    };
 
     metrics::record_cctp_endpoint_outcome("reattest", "success");
     Ok(Json(ApiResponse::with_version(

@@ -687,6 +687,13 @@ lazy_static! {
         &["direction", "outcome"]
     )
     .expect("Can't create CCTP_DIRECTION_READINESS counter");
+
+    pub static ref CCTP_POLL_LEASE_OUTCOMES: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_poll_lease_outcomes_total",
+        "CCTP status poll lease outcomes",
+        &["outcome"]
+    )
+    .expect("Can't create CCTP_POLL_LEASE_OUTCOMES counter");
 }
 
 /// Record a swap prepare outcome.
@@ -838,4 +845,8 @@ pub fn record_cctp_direction_readiness(direction: &str, outcome: &str) {
     CCTP_DIRECTION_READINESS
         .with_label_values(&[direction, outcome])
         .inc();
+}
+
+pub fn record_cctp_poll_lease(outcome: &str) {
+    CCTP_POLL_LEASE_OUTCOMES.with_label_values(&[outcome]).inc();
 }

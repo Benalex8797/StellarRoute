@@ -40,6 +40,7 @@ const sampleQuoteRequest: CctpQuoteRequest = {
   },
   amount: '100.000000',
   recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+  mint_submitter: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
   finality: 'standard',
 };
 
@@ -115,6 +116,70 @@ describe('CCTP SDK contract', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://api.test/api/v2');
     expect(init.method).toBe('GET');
+  });
+
+  it('cctpQuote propagates idempotency and access headers on happy path', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            v: 2,
+            data: {
+              transfer_id: TRANSFER_ID,
+              access_token: 'token-a',
+              corridor_id: CCTP_TESTNET_CORRIDOR_ID,
+              provider: CCTP_PROVIDER_ID,
+              direction: 'evm_to_stellar',
+              source_amount: '1',
+              destination_amount: '1',
+              fee_quote: {},
+              expires_at: 1,
+              finality: 'standard',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            v: 2,
+            data: {
+              transfer_id: TRANSFER_ID,
+              access_token: 'token-a',
+              corridor_id: CCTP_TESTNET_CORRIDOR_ID,
+              provider: CCTP_PROVIDER_ID,
+              direction: 'evm_to_stellar',
+              source_amount: '1',
+              destination_amount: '1',
+              fee_quote: {},
+              expires_at: 1,
+              finality: 'standard',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    const opts = {
+      idempotencyKey: 'idem-sdk-1',
+      accessToken: 'token-a',
+    };
+    await client.cctpQuote(sampleQuoteRequest, opts);
+    await client.cctpGetTransfer(TRANSFER_ID, opts);
+
+    const quoteInit = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(quoteInit.headers).toMatchObject({
+      'idempotency-key': 'idem-sdk-1',
+    });
+    const statusInit = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(statusInit.headers).toMatchObject({
+      'x-cctp-transfer-access': 'token-a',
+    });
+    expect(JSON.stringify(fetchMock.mock.results)).not.toContain('token-a');
   });
 
   it('cctpQuote POSTs quote body and surfaces nested 503 error', async () => {
