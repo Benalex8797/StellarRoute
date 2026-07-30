@@ -4,10 +4,14 @@ import {
   STELLAR_TESTNET_PASSPHRASE,
 } from './types';
 import { SEPOLIA_CCTP_CONTRACTS } from './constants';
+import { MAX_EVM_CALLDATA_BYTES } from './evm-execution';
 
 export type PayloadValidationResult =
   | { ok: true }
   | { ok: false; code: string; message: string };
+
+const MAX_EVM_GAS = BigInt(2_000_000);
+const MAX_EVM_FEE_WEI = BigInt('5000000000000000000'); // 5 ETH upper guard
 
 export function validatePreparedPayload(
   payload: PreparedWalletPayload,
@@ -77,13 +81,86 @@ export function validatePreparedPayload(
     };
   }
 
-  if (!/^\d+$/.test(payload.value ?? '0')) {
+  const dataBytes = (payload.data.length - 2) / 2;
+  if (dataBytes > MAX_EVM_CALLDATA_BYTES) {
     return {
       ok: false,
       code: 'validation_error',
-      message: 'Prepared EVM value is malformed.',
+      message: 'Prepared EVM calldata exceeds allowed length.',
     };
   }
 
+  const valueCheck = validateEvmNumericField(payload.value ?? '0', 'value');
+  if (!valueCheck.ok) return valueCheck;
+  if ('value' in valueCheck && valueCheck.value > BigInt(0)) {
+    return {
+      ok: false,
+      code: 'validation_error',
+      message: 'Prepared EVM transaction must not carry native value.',
+    };
+  }
+
+  if (payload.gas) {
+    const gasCheck = validateEvmNumericField(payload.gas, 'gas');
+    if (!gasCheck.ok) return gasCheck;
+    if ('value' in gasCheck && gasCheck.value > MAX_EVM_GAS) {
+      return {
+        ok: false,
+        code: 'validation_error',
+        message: 'Prepared EVM gas exceeds allowed upper bound.',
+      };
+    }
+  }
+
+  for (const field of [
+    payload.gas_price,
+    payload.max_fee_per_gas,
+    payload.max_priority_fee_per_gas,
+  ]) {
+    if (!field) continue;
+    const feeCheck = validateEvmNumericField(field, 'fee');
+    if (!feeCheck.ok) return feeCheck;
+    if ('value' in feeCheck && feeCheck.value > MAX_EVM_FEE_WEI) {
+      return {
+        ok: false,
+        code: 'validation_error',
+        message: 'Prepared EVM fee fields exceed allowed upper bound.',
+      };
+    }
+  }
+
   return { ok: true };
+}
+
+function validateEvmNumericField(
+  raw: string,
+  label: string,
+): PayloadValidationResult | { ok: true; value: bigint } {
+  if (raw.startsWith('0x')) {
+    try {
+      return { ok: true, value: BigInt(raw) };
+    } catch {
+      return {
+        ok: false,
+        code: 'validation_error',
+        message: `Prepared EVM ${label} is malformed.`,
+      };
+    }
+  }
+  if (!/^\d+$/.test(raw)) {
+    return {
+      ok: false,
+      code: 'validation_error',
+      message: `Prepared EVM ${label} is malformed.`,
+    };
+  }
+  try {
+    return { ok: true, value: BigInt(raw) };
+  } catch {
+    return {
+      ok: false,
+      code: 'validation_error',
+      message: `Prepared EVM ${label} is malformed.`,
+    };
+  }
 }

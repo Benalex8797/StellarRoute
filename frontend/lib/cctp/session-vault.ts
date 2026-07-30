@@ -132,3 +132,29 @@ export function redactSecretsForLogs(value: unknown): string {
     .replace(/"access_token"\s*:\s*"[^"]+"/gi, '"access_token":"[redacted]"')
     .replace(/"accessToken"\s*:\s*"[^"]+"/gi, '"accessToken":"[redacted]"');
 }
+
+/**
+ * Session vault stores transfer access tokens in sessionStorage only.
+ * Any XSS on this origin can exfiltrate in-flight CCTP sessions — deploy a
+ * strict Content-Security-Policy and avoid inline script on swap surfaces.
+ */
+export const CCTP_SESSION_VAULT_SECURITY_NOTE =
+  'CCTP access tokens live in sessionStorage and are cleared on terminal status.';
+
+export function sessionRecoveryMatchesInputs(
+  record: CctpSessionRecord,
+  input: {
+    sourceChainId: string;
+    destChainId: string;
+    amount: string;
+    recipient: string;
+  },
+): boolean {
+  const r = record.recovery;
+  return (
+    r.sourceChainId === input.sourceChainId &&
+    r.destChainId === input.destChainId &&
+    r.amount === input.amount &&
+    r.recipient === input.recipient
+  );
+}

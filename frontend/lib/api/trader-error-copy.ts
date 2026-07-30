@@ -186,6 +186,25 @@ const API_ERROR_COPY: Record<ApiErrorCode, TraderErrorCopy> = {
     recoveryAction: 'Switch networks in your wallet and try again.',
     ctaLabel: 'Switch network',
   },
+  idempotency_conflict: {
+    headline: 'Quote already in progress',
+    explanation:
+      'This idempotency key was reused with different transfer inputs.',
+    recoveryAction: 'Start a new quote or wait for the prior attempt to finish.',
+    ctaLabel: 'New quote',
+  },
+  reattest_cooldown: {
+    headline: 'Re-attestation cooling down',
+    explanation: 'A re-attestation was requested recently.',
+    recoveryAction: 'Wait for the cooldown before retrying.',
+    ctaLabel: 'Wait',
+  },
+  reattest_conflict: {
+    headline: 'Re-attestation in progress',
+    explanation: 'Another re-attestation claim is already active.',
+    recoveryAction: 'Wait and check transfer status.',
+    ctaLabel: 'Check status',
+  },
   unknown_error: DEFAULT_COPY,
 };
 

@@ -1,13 +1,12 @@
 import {
-  sendWithChainWallet,
   signWithChainWallet,
-  type SendTransactionRequest,
   type SignTransactionRequest,
 } from '@/lib/wallet/adapters';
 import { submitToHorizon } from '@/lib/wallet/submit';
 import type { WalletNetwork } from '@/lib/wallet/types';
 import type { PreparedWalletPayload } from './types';
 import { validatePreparedPayload } from './payload-validation';
+import { executeEvmPreparedPayload } from './evm-execution';
 
 export interface WalletExecutionResult {
   txHash: string;
@@ -19,6 +18,7 @@ export async function executePreparedPayload(input: {
   evmAdapterId?: string;
   walletNetwork?: WalletNetwork | null;
   expiresAtSec?: number;
+  signal?: AbortSignal;
 }): Promise<WalletExecutionResult> {
   const validation = validatePreparedPayload(input.payload, {
     expiresAtSec: input.expiresAtSec,
@@ -51,6 +51,7 @@ export async function executePreparedPayload(input: {
     } catch (submitErr) {
       const recovered = await recoverHorizonByHash(
         signed.signedXdr,
+        input.payload.network_passphrase,
         input.walletNetwork ?? 'testnet',
       );
       if (recovered) return { txHash: recovered };
@@ -61,36 +62,23 @@ export async function executePreparedPayload(input: {
   if (!input.evmAdapterId) {
     throw new Error('Connect an EVM wallet on Sepolia to sign.');
   }
-  const sendReq: SendTransactionRequest = {
-    kind: 'evm_transaction',
-    transaction: {
-      chainId: input.payload.chain_id,
-      to: input.payload.to,
-      data: input.payload.data,
-      value: input.payload.value ?? '0x0',
-      gas: input.payload.gas,
-      gasPrice: input.payload.gas_price,
-      maxFeePerGas: input.payload.max_fee_per_gas,
-      maxPriorityFeePerGas: input.payload.max_priority_fee_per_gas,
-    },
-  };
-  const sent = await sendWithChainWallet(input.evmAdapterId, sendReq);
-  if (sent.kind !== 'evm_transaction' || !sent.hash) {
-    throw new Error('EVM wallet did not return a transaction hash.');
-  }
-  return { txHash: sent.hash };
+  const { txHash } = await executeEvmPreparedPayload({
+    payload: input.payload,
+    evmAdapterId: input.evmAdapterId,
+    expiresAtSec: input.expiresAtSec,
+    signal: input.signal,
+  });
+  return { txHash };
 }
 
 async function recoverHorizonByHash(
   signedXdr: string,
+  networkPassphrase: string,
   network: WalletNetwork | null,
 ): Promise<string | null> {
   try {
     const { TransactionBuilder } = await import('@stellar/stellar-base');
-    const tx = TransactionBuilder.fromXDR(
-      signedXdr,
-      'Test SDF Network ; September 2015',
-    );
+    const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
     const hash = tx.hash().toString('hex');
     const { getHorizonUrl } = await import('@/lib/wallet/submit');
     const horizonUrl = getHorizonUrl(network);
@@ -102,7 +90,7 @@ async function recoverHorizonByHash(
       return body.hash ?? hash;
     }
   } catch {
-    // recovery failed
+    // recovery failed — do not resubmit blindly
   }
   return null;
 }

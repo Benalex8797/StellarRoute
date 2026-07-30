@@ -32,6 +32,19 @@ vi.mock('@/hooks/useApiV2Readiness', () => ({
   })),
 }));
 
+vi.mock('@/hooks/useCrossChainWalletRoles', () => ({
+  useCrossChainWalletRoles: vi.fn(() => ({
+    direction: null,
+    destRecipientAddress: '',
+    isMuxedRecipient: false,
+    showMintSubmitterChip: false,
+    sourceChipBinding: null,
+    destChipBinding: null,
+    mintSubmitterChipBinding: null,
+    sagaWallets: { recipient: '' },
+  })),
+}));
+
 vi.mock('@/hooks/useCctpSaga', () => ({
   useCctpSaga: vi.fn(() => ({
     stage: 'idle',
@@ -39,12 +52,15 @@ vi.mock('@/hooks/useCctpSaga', () => ({
     transferStatus: null,
     error: null,
     busy: false,
+    inputsLocked: false,
+    resumeMismatch: false,
     sessionPublic: null,
     primaryAction: { label: 'Get CCTP quote', disabled: false, action: 'quote' },
     runPrimaryAction: vi.fn(),
     requestQuote: vi.fn(),
     reconcileOnLoad: vi.fn(),
     resetSaga: vi.fn(),
+    reattestCooldownUntil: null,
   })),
 }));
 

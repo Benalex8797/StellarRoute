@@ -13,6 +13,7 @@ interface DestinationAddressFieldProps {
   value: string;
   onChange: (value: string) => void;
   validation: RecipientValidationResult;
+  disabled?: boolean;
 }
 
 export function DestinationAddressField({
@@ -22,6 +23,7 @@ export function DestinationAddressField({
   value,
   onChange,
   validation,
+  disabled = false,
 }: DestinationAddressFieldProps) {
   return (
     <div className="space-y-3 rounded-2xl border border-border/40 bg-muted/20 p-4">
@@ -32,6 +34,7 @@ export function DestinationAddressField({
           onCheckedChange={(checked) => onEnabledChange(checked === true)}
           className="mt-1 min-h-11 min-w-11"
           aria-label="Use custom destination recipient"
+          disabled={disabled}
         />
         <div className="space-y-1 min-w-0 flex-1">
           <Label htmlFor="recipient-override" className="text-sm font-semibold">
@@ -57,6 +60,7 @@ export function DestinationAddressField({
             className="min-h-11 font-mono text-sm"
             aria-invalid={!validation.valid}
             data-testid="destination-recipient-input"
+            disabled={disabled}
           />
           {!validation.valid && (
             <p role="alert" className="text-xs text-destructive">

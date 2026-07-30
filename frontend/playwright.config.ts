@@ -65,6 +65,16 @@ export default defineConfig({
       },
       testMatch: "**/optimistic-swap-pipeline.spec.ts",
     },
+    {
+      name: "cctp-swap",
+      timeout: 90_000,
+      use: {
+        ...devices["Desktop Chrome"],
+        trace: "retain-on-failure",
+        screenshot: "only-on-failure",
+      },
+      testMatch: "**/cctp-swap-flow.spec.ts",
+    },
   ],
   /* Start the Next.js dev server before running tests */
   webServer: {

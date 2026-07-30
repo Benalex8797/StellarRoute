@@ -8,9 +8,10 @@ import { useCorridorCatalog } from '@/hooks/useCorridorCatalog';
 interface CorridorTabsProps {
   activeId: CorridorSelectionId;
   onSelect: (id: CorridorId) => void;
+  disabled?: boolean;
 }
 
-export function CorridorTabs({ activeId, onSelect }: CorridorTabsProps) {
+export function CorridorTabs({ activeId, onSelect, disabled }: CorridorTabsProps) {
   const { corridors } = useCorridorCatalog();
   const isUnmatched = activeId === UNMATCHED_CORRIDOR_ID;
 
@@ -35,6 +36,7 @@ export function CorridorTabs({ activeId, onSelect }: CorridorTabsProps) {
               aria-selected={selected}
               aria-controls={`corridor-panel-${corridor.id}`}
               onClick={() => onSelect(corridor.id)}
+              disabled={disabled}
               className={cn(
                 'min-h-11 rounded-xl border px-3 py-2 text-left transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

@@ -101,7 +101,37 @@ export function mapCctpError(err: unknown): CctpTraderError {
           message: 'Circle is still attesting your burn. This can take a few minutes.',
           requestId,
         };
+      case 'idempotency_conflict':
+        return {
+          kind: 'nonretryable',
+          title: 'Quote already in progress',
+          message:
+            'This idempotency key was used with different transfer inputs. Start a new quote or wait for the prior attempt to finish.',
+          requestId,
+          action: 'New quote',
+        };
+      case 'reattest_cooldown':
+      case 'reattest_conflict':
+        return {
+          kind: 'retryable',
+          title: 'Re-attestation cooling down',
+          message:
+            'A re-attestation was requested recently. Wait for the cooldown before retrying.',
+          requestId,
+          action: 'Wait and retry',
+        };
       default:
+        if (err.status === 409) {
+          return {
+            kind: 'nonretryable',
+            title: 'Request conflict',
+            message:
+              err.message ||
+              'This transfer step conflicts with an in-flight operation. Reconcile status before retrying.',
+            requestId,
+            action: 'Check status',
+          };
+        }
         if (err.status === 503) {
           return {
             kind: 'dependency_unavailable',

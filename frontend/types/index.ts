@@ -191,7 +191,10 @@ export type ApiErrorCode =
   | 'provider_killed'
   | 'payload_expired'
   | 'attestation_pending'
-  | 'network_mismatch';
+  | 'network_mismatch'
+  | 'idempotency_conflict'
+  | 'reattest_cooldown'
+  | 'reattest_conflict';
 
 export interface ApiError {
   error: ApiErrorCode;

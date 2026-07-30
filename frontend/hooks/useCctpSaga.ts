@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChainDisplayId } from '@/lib/cross-chain/types';
 import { StellarRouteApiError } from '@/lib/api/client';
-import { StrKey } from '@stellar/stellar-base';
 import { buildCctpQuoteRequest } from '@/lib/cctp/corridor-bridge';
 import { getCctpApiClient } from '@/lib/cctp/client';
 import { mapCctpError, type CctpTraderError } from '@/lib/cctp/errors';
@@ -13,6 +12,7 @@ import {
   loadCctpSession,
   purgeCctpSessionIfTerminal,
   saveCctpSession,
+  sessionRecoveryMatchesInputs,
   type CctpSessionRecord,
 } from '@/lib/cctp/session-vault';
 import { executePreparedPayload } from '@/lib/cctp/wallet-execution';
@@ -33,11 +33,13 @@ export type CctpSagaStage =
   | 'awaiting_attestation'
   | 'completed'
   | 'failed'
-  | 'unavailable';
+  | 'unavailable'
+  | 'resume_pending';
 
 export interface CctpWalletRoles {
   sourceStellarAdapterId?: string;
   sourceEvmAdapterId?: string;
+  evmDestinationAdapterId?: string;
   mintSubmitterStellarAdapterId?: string;
   sourceAddress?: string;
   recipient: string;
@@ -54,7 +56,16 @@ export interface UseCctpSagaInput {
   wallets: CctpWalletRoles;
   bridgeReady: boolean;
   quoteInputsKey: string;
+  /** True when EVM is the burn source (ERC-20 approval may be required). */
+  evmSourceBurn?: boolean;
 }
+
+const TERMINAL_STAGES = new Set<CctpSagaStage>([
+  'idle',
+  'completed',
+  'failed',
+  'unavailable',
+]);
 
 export function useCctpSaga(input: UseCctpSagaInput) {
   const client = useMemo(() => getCctpApiClient(), []);
@@ -66,8 +77,14 @@ export function useCctpSaga(input: UseCctpSagaInput) {
   const [session, setSession] = useState<CctpSessionRecord | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [approvalComplete, setApprovalComplete] = useState(false);
+  const [resumeMismatch, setResumeMismatch] = useState(false);
+  const [reattestCooldownUntil, setReattestCooldownUntil] = useState<number | null>(
+    null,
+  );
   const pollRef = useRef<StatusPollHandle | null>(null);
   const lastInputsKey = useRef<string | null>(null);
+  const walletRequestCount = useRef(0);
 
   const stopPoll = useCallback(() => {
     pollRef.current?.stop();
@@ -76,23 +93,39 @@ export function useCctpSaga(input: UseCctpSagaInput) {
 
   useEffect(() => () => stopPoll(), [stopPoll]);
 
+  const inputsLocked = useMemo(
+    () =>
+      Boolean(session) &&
+      !['idle', 'completed', 'failed', 'unavailable'].includes(stage),
+    [session, stage],
+  );
+
   useEffect(() => {
-    if (lastInputsKey.current !== null && lastInputsKey.current !== input.quoteInputsKey) {
+    if (
+      lastInputsKey.current !== null &&
+      lastInputsKey.current !== input.quoteInputsKey &&
+      !inputsLocked
+    ) {
       setIdempotencyKey(crypto.randomUUID());
       setQuote(null);
+      setApprovalComplete(false);
       if (stage === 'quoted') setStage('idle');
     }
     lastInputsKey.current = input.quoteInputsKey;
-  }, [input.quoteInputsKey, stage]);
+  }, [input.quoteInputsKey, inputsLocked, stage]);
 
   useEffect(() => {
     const loaded = loadCctpSession();
     if (!loaded.ok) return;
-    if (loaded.record.recovery.corridorId) {
+    if (!sessionRecoveryMatchesInputs(loaded.record, input)) {
       setSession(loaded.record);
-      setIdempotencyKey(loaded.record.idempotencyKey);
-      setStage('quoted');
+      setResumeMismatch(true);
+      setStage('resume_pending');
+      return;
     }
+    setSession(loaded.record);
+    setIdempotencyKey(loaded.record.idempotencyKey);
+    setStage('resume_pending');
   }, []);
 
   const accessOptions = useCallback(() => {
@@ -109,6 +142,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         stopPoll();
         clearCctpSession();
         setSession(null);
+        setApprovalComplete(false);
       }
     },
     [stopPoll],
@@ -143,6 +177,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     setBusy(true);
     setError(null);
     setStage('quoting');
+    setApprovalComplete(false);
     const key = idempotencyKey ?? crypto.randomUUID();
     setIdempotencyKey(key);
 
@@ -185,6 +220,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       });
       saveCctpSession(record);
       setSession(record);
+      setResumeMismatch(false);
       setStage('quoted');
     } catch (err) {
       setError(mapCctpError(err));
@@ -207,6 +243,11 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       return;
     }
     setSession(loaded.record);
+    if (!sessionRecoveryMatchesInputs(loaded.record, input)) {
+      setResumeMismatch(true);
+      setStage('resume_pending');
+      return;
+    }
     try {
       const status = await client.getTransfer(loaded.record.transferId, {
         accessToken: loaded.record.accessToken,
@@ -215,19 +256,34 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       if (!['completed', 'cancelled', 'provider_killed'].includes(status.status)) {
         startPoll(loaded.record.transferId, loaded.record.accessToken);
       }
+      setResumeMismatch(false);
     } catch {
       setError({
         kind: 'authorization_lost',
         title: 'Cannot resume transfer',
-        message: 'Start a new quote — the prior access token is no longer valid.',
+        message:
+          'Start a new quote — the prior access token is no longer valid.',
       });
       clearCctpSession();
       setSession(null);
       setStage('idle');
     }
-  }, [client, handleStatus, startPoll]);
+  }, [client, handleStatus, input, startPoll]);
 
-  const signPreparedBurnStep = useCallback(async () => {
+  const resolveEvmAdapterForPayload = useCallback(
+    (payloadType: string) => {
+      if (payloadType === 'evm_transaction') {
+        return (
+          input.wallets.sourceEvmAdapterId ??
+          input.wallets.evmDestinationAdapterId
+        );
+      }
+      return undefined;
+    },
+    [input.wallets],
+  );
+
+  const signApprovalStep = useCallback(async () => {
     if (!session) {
       setError({
         kind: 'authorization_lost',
@@ -240,32 +296,63 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     setError(null);
     try {
       const prepared = await client.prepareBurn(session.transferId, accessOptions());
-      const isApproval = prepared.approval_required === true;
-      setStage(isApproval ? 'sign_approval' : 'sign_burn');
+      if (!prepared.approval_required) {
+        setApprovalComplete(true);
+        setStage('quoted');
+        return;
+      }
+      setStage('sign_approval');
+      walletRequestCount.current += 1;
       const { txHash } = await executePreparedPayload({
         payload: prepared.payload,
         stellarAdapterId: input.wallets.sourceStellarAdapterId,
-        evmAdapterId: input.wallets.sourceEvmAdapterId,
+        evmAdapterId: resolveEvmAdapterForPayload(prepared.payload.type),
         expiresAtSec: prepared.expires_at,
         walletNetwork: 'testnet',
       });
       await client.submitBurn(session.transferId, { tx_hash: txHash }, accessOptions());
-      if (isApproval) {
-        const burnPrep = await client.prepareBurn(session.transferId, accessOptions());
-        setStage('sign_burn');
-        const burnExec = await executePreparedPayload({
-          payload: burnPrep.payload,
-          stellarAdapterId: input.wallets.sourceStellarAdapterId,
-          evmAdapterId: input.wallets.sourceEvmAdapterId,
-          expiresAtSec: burnPrep.expires_at,
-          walletNetwork: 'testnet',
+      setApprovalComplete(true);
+      setStage('quoted');
+    } catch (err) {
+      setError(mapCctpError(err));
+      setStage('failed');
+    } finally {
+      setBusy(false);
+    }
+  }, [accessOptions, client, input.wallets, resolveEvmAdapterForPayload, session]);
+
+  const signBurnStep = useCallback(async () => {
+    if (!session) {
+      setError({
+        kind: 'authorization_lost',
+        title: 'No active transfer',
+        message: 'Request a quote first.',
+      });
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const prepared = await client.prepareBurn(session.transferId, accessOptions());
+      if (prepared.approval_required) {
+        setError({
+          kind: 'nonretryable',
+          title: 'Approval still required',
+          message: 'Complete the USDC approval step before signing the burn.',
         });
-        await client.submitBurn(
-          session.transferId,
-          { tx_hash: burnExec.txHash },
-          accessOptions(),
-        );
+        setStage('quoted');
+        return;
       }
+      setStage('sign_burn');
+      walletRequestCount.current += 1;
+      const { txHash } = await executePreparedPayload({
+        payload: prepared.payload,
+        stellarAdapterId: input.wallets.sourceStellarAdapterId,
+        evmAdapterId: resolveEvmAdapterForPayload(prepared.payload.type),
+        expiresAtSec: prepared.expires_at,
+        walletNetwork: 'testnet',
+      });
+      await client.submitBurn(session.transferId, { tx_hash: txHash }, accessOptions());
       setStage('awaiting_attestation');
       startPoll(session.transferId, session.accessToken);
     } catch (err) {
@@ -274,7 +361,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     } finally {
       setBusy(false);
     }
-  }, [accessOptions, client, input.wallets, session, startPoll]);
+  }, [accessOptions, client, input.wallets, resolveEvmAdapterForPayload, session, startPoll]);
 
   const signPreparedMintStep = useCallback(async () => {
     if (!session) return;
@@ -283,12 +370,17 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     try {
       const prepared = await client.prepareMint(session.transferId, accessOptions());
       setStage('sign_mint');
+      walletRequestCount.current += 1;
+      const stellarMintId =
+        input.wallets.mintSubmitterStellarAdapterId ??
+        input.wallets.sourceStellarAdapterId;
+      const evmMintId = input.wallets.evmDestinationAdapterId;
       const { txHash } = await executePreparedPayload({
         payload: prepared.payload,
         stellarAdapterId:
-          input.wallets.mintSubmitterStellarAdapterId ??
-          input.wallets.sourceStellarAdapterId,
-        evmAdapterId: input.wallets.sourceEvmAdapterId,
+          prepared.payload.type === 'stellar_xdr' ? stellarMintId : undefined,
+        evmAdapterId:
+          prepared.payload.type === 'evm_transaction' ? evmMintId : undefined,
         expiresAtSec: prepared.expires_at,
         walletNetwork: 'testnet',
       });
@@ -304,6 +396,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
 
   const reattest = useCallback(async () => {
     if (!session) return;
+    if (reattestCooldownUntil && Date.now() < reattestCooldownUntil) return;
     setBusy(true);
     setError(null);
     try {
@@ -318,11 +411,22 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       });
       startPoll(session.transferId, session.accessToken);
     } catch (err) {
+      if (err instanceof StellarRouteApiError && err.status === 409) {
+        setReattestCooldownUntil(Date.now() + 30_000);
+      }
       setError(mapCctpError(err));
     } finally {
       setBusy(false);
     }
-  }, [accessOptions, client, handleStatus, quote, session, startPoll]);
+  }, [
+    accessOptions,
+    client,
+    handleStatus,
+    quote,
+    reattestCooldownUntil,
+    session,
+    startPoll,
+  ]);
 
   const resetSaga = useCallback(() => {
     stopPoll();
@@ -333,38 +437,83 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     setError(null);
     setStage('idle');
     setIdempotencyKey(null);
+    setApprovalComplete(false);
+    setResumeMismatch(false);
+    setReattestCooldownUntil(null);
+    walletRequestCount.current = 0;
   }, [stopPoll]);
+
+  const needsApprovalFirst =
+    input.evmSourceBurn === true && !approvalComplete;
 
   const primaryAction = useMemo(() => {
     if (!input.bridgeReady) {
       return { label: 'Bridge unavailable', disabled: true, action: 'none' as const };
     }
+    if (stage === 'resume_pending') {
+      return {
+        label: 'Resume transfer',
+        disabled: busy,
+        action: 'resume' as const,
+      };
+    }
     if (stage === 'idle' || stage === 'failed') {
       return { label: 'Get CCTP quote', disabled: busy, action: 'quote' as const };
     }
     if (stage === 'quoted') {
-      return { label: 'Sign burn on source chain', disabled: busy, action: 'burn' as const };
+      if (needsApprovalFirst) {
+        return {
+          label: 'Approve USDC spend',
+          disabled: busy,
+          action: 'approve' as const,
+        };
+      }
+      return {
+        label: 'Sign burn on source chain',
+        disabled: busy,
+        action: 'burn' as const,
+      };
     }
     if (
       transferStatus?.status === 'attestation_ready' ||
       transferStatus?.status === 'mint_prepared' ||
       transferStatus?.status === 'mint_failed_retryable'
     ) {
-      return { label: 'Sign mint on destination', disabled: busy, action: 'mint' as const };
+      return {
+        label: 'Sign mint on destination',
+        disabled: busy,
+        action: 'mint' as const,
+      };
     }
     if (transferStatus?.status === 'attestation_failed') {
-      return { label: 'Retry attestation', disabled: busy, action: 'reattest' as const };
+      const cooldownActive =
+        reattestCooldownUntil !== null && Date.now() < reattestCooldownUntil;
+      return {
+        label: cooldownActive ? 'Retry attestation (cooldown)' : 'Retry attestation',
+        disabled: busy || cooldownActive,
+        action: 'reattest' as const,
+      };
     }
     return { label: 'Waiting…', disabled: true, action: 'none' as const };
-  }, [busy, input.bridgeReady, stage, transferStatus?.status]);
+  }, [
+    busy,
+    input.bridgeReady,
+    needsApprovalFirst,
+    reattestCooldownUntil,
+    stage,
+    transferStatus?.status,
+  ]);
 
   const runPrimaryAction = useCallback(async () => {
     switch (primaryAction.action) {
       case 'quote':
         await requestQuote();
         break;
+      case 'approve':
+        await signApprovalStep();
+        break;
       case 'burn':
-        await signPreparedBurnStep();
+        await signBurnStep();
         break;
       case 'mint':
         await signPreparedMintStep();
@@ -372,14 +521,19 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       case 'reattest':
         await reattest();
         break;
+      case 'resume':
+        await reconcileOnLoad();
+        break;
       default:
         break;
     }
   }, [
     primaryAction.action,
     reattest,
+    reconcileOnLoad,
     requestQuote,
-    signPreparedBurnStep,
+    signApprovalStep,
+    signBurnStep,
     signPreparedMintStep,
   ]);
 
@@ -389,6 +543,8 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     transferStatus,
     error,
     busy,
+    inputsLocked,
+    resumeMismatch,
     sessionPublic: session
       ? { transferId: session.transferId, recovery: session.recovery }
       : null,
@@ -397,12 +553,11 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     requestQuote,
     reconcileOnLoad,
     resetSaga,
-    resolveMuxedMintSubmitter: (recipient: string, connectedG?: string) => {
-      if (StrKey.isValidMed25519PublicKey(recipient.trim())) {
-        return connectedG;
-      }
-      return connectedG;
-    },
+    reattestCooldownUntil,
+    getWalletRequestCount: () => walletRequestCount.current,
+    signApprovalStep,
+    signBurnStep,
+    signPreparedMintStep,
   };
 }
 
@@ -432,4 +587,8 @@ function mapStageFromStatus(
     default:
       break;
   }
+}
+
+export function isCctpSagaTerminal(stage: CctpSagaStage): boolean {
+  return TERMINAL_STAGES.has(stage);
 }

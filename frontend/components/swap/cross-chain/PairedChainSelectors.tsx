@@ -3,6 +3,7 @@
 import { cn } from '@/lib/utils';
 import type { ChainDisplayId } from '@/lib/cross-chain/types';
 import { CHAIN_DEFINITIONS } from '@/lib/cross-chain/corridors';
+import type { WalletChipBinding } from '@/lib/cross-chain/wallet-chip-types';
 import { ChainWalletChip } from './ChainWalletChip';
 import type { CrossChainWalletStoryState } from './crossChainStoryPresentation';
 
@@ -13,6 +14,10 @@ interface PairedChainSelectorsProps {
   onDestChange: (id: ChainDisplayId) => void;
   sourceWalletState?: CrossChainWalletStoryState;
   destWalletState?: CrossChainWalletStoryState;
+  sourceWalletBinding?: WalletChipBinding | null;
+  destWalletBinding?: WalletChipBinding | null;
+  mintSubmitterBinding?: WalletChipBinding | null;
+  inputsLocked?: boolean;
 }
 
 export function PairedChainSelectors({
@@ -22,6 +27,10 @@ export function PairedChainSelectors({
   onDestChange,
   sourceWalletState,
   destWalletState,
+  sourceWalletBinding,
+  destWalletBinding,
+  mintSubmitterBinding,
+  inputsLocked = false,
 }: PairedChainSelectorsProps) {
   return (
     <section
@@ -32,20 +41,52 @@ export function PairedChainSelectors({
       <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
         Route legs
       </p>
+      {inputsLocked && (
+        <p
+          className="text-xs text-muted-foreground"
+          role="status"
+          data-testid="cctp-inputs-locked-banner"
+        >
+          Transfer in progress — chain and amount inputs are locked. Use Start
+          new transfer to abandon.
+        </p>
+      )}
       <div className="grid gap-4 sm:grid-cols-2">
         <ChainLegColumn
           role="source"
           chainId={sourceChainId}
           onChange={onSourceChange}
           walletStoryState={sourceWalletState}
+          walletBinding={sourceWalletBinding}
+          inputsLocked={inputsLocked}
         />
         <ChainLegColumn
           role="destination"
           chainId={destChainId}
           onChange={onDestChange}
           walletStoryState={destWalletState}
+          walletBinding={destWalletBinding}
+          inputsLocked={inputsLocked}
         />
       </div>
+      {mintSubmitterBinding && (
+        <div
+          className="rounded-xl border border-border/40 bg-muted/10 p-3 space-y-2"
+          data-testid="stellar-mint-submitter-control"
+        >
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">
+            Stellar mint submitter / fee payer
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Muxed recipients cannot sign. Connect a Stellar G account to submit
+            the mint transaction.
+          </p>
+          <ChainWalletChip
+            binding={mintSubmitterBinding}
+            disabled={inputsLocked}
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -55,11 +96,15 @@ function ChainLegColumn({
   chainId,
   onChange,
   walletStoryState,
+  walletBinding,
+  inputsLocked,
 }: {
   role: 'source' | 'destination';
   chainId: ChainDisplayId;
   onChange: (id: ChainDisplayId) => void;
   walletStoryState?: CrossChainWalletStoryState;
+  walletBinding?: WalletChipBinding | null;
+  inputsLocked?: boolean;
 }) {
   const chain = CHAIN_DEFINITIONS[chainId];
   const legLabel = role === 'source' ? 'You send from' : 'You receive on';
@@ -73,7 +118,11 @@ function ChainLegColumn({
           </p>
           <p className="text-sm font-semibold text-foreground">{chain.label}</p>
         </div>
-        <ChainWalletChip chain={chain} storyState={walletStoryState} />
+        <ChainWalletChip
+          binding={walletBinding}
+          storyState={walletStoryState}
+          disabled={inputsLocked}
+        />
       </div>
       <ChainSelector
         value={chainId}
@@ -81,6 +130,7 @@ function ChainLegColumn({
         label={`${role === 'source' ? 'Source' : 'Destination'} chain`}
         name={`cross-chain-${role}`}
         role={role}
+        disabled={inputsLocked}
       />
     </div>
   );
@@ -100,15 +150,17 @@ function ChainSelector({
   label,
   name,
   role,
+  disabled,
 }: {
   value: ChainDisplayId;
   onChange: (id: ChainDisplayId) => void;
   label: string;
   name: string;
   role: 'source' | 'destination';
+  disabled?: boolean;
 }) {
   return (
-    <fieldset className="space-y-2">
+    <fieldset className="space-y-2" disabled={disabled}>
       <legend className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
         {label}
       </legend>
@@ -128,7 +180,8 @@ function ChainSelector({
                 'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring',
                 selected
                   ? 'border-primary/50 bg-primary/12 text-foreground'
-                  : 'border-border/50 bg-background/50 text-muted-foreground hover:bg-muted/40'
+                  : 'border-border/50 bg-background/50 text-muted-foreground hover:bg-muted/40',
+                disabled && 'pointer-events-none opacity-60',
               )}
             >
               <input
@@ -136,6 +189,7 @@ function ChainSelector({
                 name={name}
                 value={id}
                 checked={selected}
+                disabled={disabled}
                 onChange={() => onChange(id)}
                 className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                 data-testid={`chain-option-${role}-${id}`}

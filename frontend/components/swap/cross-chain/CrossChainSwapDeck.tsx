@@ -1,17 +1,15 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useEffect, useMemo } from 'react';
 import { NetworkMismatchBanner } from '@/components/shared/NetworkMismatchBanner';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
 import { useCrossChainSwapState } from '@/hooks/useCrossChainSwapState';
 import { useApiV2Readiness } from '@/hooks/useApiV2Readiness';
 import { useCctpSaga } from '@/hooks/useCctpSaga';
-import { useChainWallet } from '@/hooks/useChainWallet';
-import { useWallet } from '@/components/providers/wallet-provider';
+import { useCrossChainWalletRoles } from '@/hooks/useCrossChainWalletRoles';
 import { UNMATCHED_CORRIDOR_ID } from '@/lib/cross-chain/corridors';
 import { corridorStatusCopy } from '@/lib/cross-chain/format';
-import { resolveCctpDirection } from '@/lib/cctp/corridor-bridge';
 import { cn } from '@/lib/utils';
 import { CctpExecutionPanel } from './CctpExecutionPanel';
 import { CorridorTabs } from './CorridorTabs';
@@ -35,7 +33,7 @@ const SwapCard = dynamic(
         <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
       </div>
     ),
-  }
+  },
 );
 
 export interface CrossChainSwapDeckProps {
@@ -52,23 +50,14 @@ export function CrossChainSwapDeck({
   });
   const { enabled: routesBeta } = useFeatureFlag('routes_beta');
   const readiness = useApiV2Readiness({ refreshMs: 60_000 });
-  const stellarWallet = useWallet();
-  const sourceEvm = useChainWallet({
-    chainFamily: 'evm',
-    expectedNetwork: 'eip155:11155111',
-  });
-  const destStellarMint = useChainWallet({
-    chainFamily: 'stellar',
-    expectedNetwork: 'stellar:testnet',
-  });
+  const [confirmAbandon, setConfirmAbandon] = useState(false);
 
-  const cctpDirection = resolveCctpDirection(state.sourceChainId, state.destChainId);
-  const recipient =
-    state.useRecipientOverride && state.recipientOverride.trim()
-      ? state.recipientOverride.trim()
-      : state.destChain.chainFamily === 'stellar'
-        ? stellarWallet.address ?? ''
-        : sourceEvm.session?.account.address ?? '';
+  const walletRoles = useCrossChainWalletRoles({
+    sourceChainId: state.sourceChainId,
+    destChainId: state.destChainId,
+    recipientOverride: state.recipientOverride,
+    useRecipientOverride: state.useRecipientOverride,
+  });
 
   const quoteInputsKey = useMemo(
     () =>
@@ -76,17 +65,16 @@ export function CrossChainSwapDeck({
         state.sourceChainId,
         state.destChainId,
         state.sourceAmount,
-        recipient,
-        stellarWallet.address ?? '',
-        sourceEvm.session?.account.address ?? '',
+        walletRoles.destRecipientAddress,
+        walletRoles.sagaWallets.sourceAddress ?? '',
+        walletRoles.sagaWallets.mintSubmitter ?? '',
       ].join('|'),
     [
       state.sourceChainId,
       state.destChainId,
       state.sourceAmount,
-      recipient,
-      stellarWallet.address,
-      sourceEvm.session?.account.address,
+      walletRoles.destRecipientAddress,
+      walletRoles.sagaWallets,
     ],
   );
 
@@ -94,39 +82,23 @@ export function CrossChainSwapDeck({
     sourceChainId: state.sourceChainId,
     destChainId: state.destChainId,
     amount: state.sourceAmount || '0',
-    recipient,
-    sender:
-      state.sourceChain.chainFamily === 'stellar'
-        ? stellarWallet.address ?? undefined
-        : sourceEvm.session?.account.address,
-    mintSubmitter:
-      cctpDirection === 'evm_to_stellar'
-        ? destStellarMint.session?.account.address ?? stellarWallet.address ?? undefined
-        : undefined,
-    wallets: {
-      sourceStellarAdapterId:
-        state.sourceChain.chainFamily === 'stellar'
-          ? stellarWallet.walletId ?? undefined
-          : undefined,
-      sourceEvmAdapterId:
-        state.sourceChain.chainFamily === 'evm'
-          ? sourceEvm.session?.adapterId
-          : undefined,
-      mintSubmitterStellarAdapterId:
-        destStellarMint.session?.adapterId ?? stellarWallet.walletId ?? undefined,
-      recipient,
-      mintSubmitter:
-        destStellarMint.session?.account.address ?? stellarWallet.address ?? undefined,
-    },
-    bridgeReady: state.executable && Boolean(cctpDirection) && readiness.cctpGloballyReady,
+    recipient: walletRoles.destRecipientAddress,
+    sender: walletRoles.sagaWallets.sourceAddress,
+    mintSubmitter: walletRoles.sagaWallets.mintSubmitter,
+    wallets: walletRoles.sagaWallets,
+    bridgeReady:
+      state.executable &&
+      Boolean(walletRoles.direction) &&
+      readiness.cctpGloballyReady,
     quoteInputsKey,
+    evmSourceBurn: state.sourceChain.chainFamily === 'evm',
   });
 
   useEffect(() => {
-    if (state.executable && cctpDirection) {
+    if (state.executable && walletRoles.direction) {
       void saga.reconcileOnLoad();
     }
-  }, [state.executable, cctpDirection, saga.reconcileOnLoad]);
+  }, [state.executable, walletRoles.direction, saga.reconcileOnLoad]);
 
   const panelId =
     state.corridorId === UNMATCHED_CORRIDOR_ID
@@ -141,6 +113,15 @@ export function CrossChainSwapDeck({
     !state.isStellarNativeExecutable && !state.isUncatalogued;
   const showUnsupported =
     state.isUncatalogued || (!state.executable && !state.isStellarNativeExecutable);
+
+  const handleAbandon = () => {
+    if (!confirmAbandon) {
+      setConfirmAbandon(true);
+      return;
+    }
+    saga.resetSaga();
+    setConfirmAbandon(false);
+  };
 
   return (
     <div
@@ -160,7 +141,7 @@ export function CrossChainSwapDeck({
               'rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider',
               state.executable && !state.isUncatalogued
                 ? 'border-primary/40 bg-primary/10 text-primary'
-                : 'border-border/50 text-muted-foreground'
+                : 'border-border/50 text-muted-foreground',
             )}
             data-testid="corridor-status-badge"
           >
@@ -173,7 +154,11 @@ export function CrossChainSwapDeck({
         </p>
       </header>
 
-      <CorridorTabs activeId={state.corridorId} onSelect={state.selectCorridor} />
+      <CorridorTabs
+        activeId={state.corridorId}
+        onSelect={state.selectCorridor}
+        disabled={saga.inputsLocked}
+      />
 
       <PairedChainSelectors
         sourceChainId={state.sourceChainId}
@@ -182,6 +167,10 @@ export function CrossChainSwapDeck({
         onDestChange={state.selectDestChain}
         sourceWalletState={storyPresentation?.sourceWalletState}
         destWalletState={storyPresentation?.destWalletState}
+        sourceWalletBinding={walletRoles.sourceChipBinding}
+        destWalletBinding={walletRoles.destChipBinding}
+        mintSubmitterBinding={walletRoles.mintSubmitterChipBinding}
+        inputsLocked={saga.inputsLocked}
       />
 
       <div
@@ -218,8 +207,9 @@ export function CrossChainSwapDeck({
                     value={state.recipientOverride}
                     onChange={state.setRecipientOverride}
                     validation={state.recipientValidation}
+                    disabled={saga.inputsLocked}
                   />
-                  {state.executable && cctpDirection && (
+                  {state.executable && walletRoles.direction && (
                     <label className="block space-y-1">
                       <span className="text-xs font-medium text-muted-foreground">
                         USDC amount (source)
@@ -227,15 +217,16 @@ export function CrossChainSwapDeck({
                       <input
                         type="text"
                         inputMode="decimal"
-                        className="min-h-11 w-full rounded-xl border border-border/50 bg-background/60 px-3 font-mono text-sm"
+                        className="min-h-11 w-full rounded-xl border border-border/50 bg-background/60 px-3 font-mono text-sm disabled:opacity-60"
                         value={state.sourceAmount}
                         onChange={(e) => state.setSourceAmount(e.target.value)}
                         placeholder="0.00"
                         data-testid="cctp-source-amount"
+                        disabled={saga.inputsLocked}
                       />
                     </label>
                   )}
-                  {state.executable && cctpDirection && (
+                  {state.executable && walletRoles.direction && (
                     <CctpExecutionPanel
                       stage={saga.stage}
                       quote={saga.quote}
@@ -245,14 +236,22 @@ export function CrossChainSwapDeck({
                       primaryDisabled={
                         saga.primaryAction.disabled ||
                         !state.sourceAmount ||
-                        !recipient ||
+                        !walletRoles.destRecipientAddress ||
                         readiness.loading
                       }
                       onPrimary={() => void saga.runPrimaryAction()}
-                      onReset={saga.resetSaga}
+                      onReset={handleAbandon}
+                      resetLabel={
+                        confirmAbandon
+                          ? 'Confirm abandon transfer'
+                          : 'Start new transfer'
+                      }
                       bridgeUnavailable={
                         readiness.loaded && !readiness.cctpGloballyReady
                       }
+                      resumeMismatch={saga.resumeMismatch}
+                      sessionPublic={saga.sessionPublic}
+                      reattestCooldownUntil={saga.reattestCooldownUntil}
                     />
                   )}
                 </>

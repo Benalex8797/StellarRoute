@@ -1,9 +1,11 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { CctpTraderError } from '@/lib/cctp/errors';
 import type { CctpQuoteResponse, CctpTransferStatusResponse } from '@/lib/cctp/types';
 import type { CctpSagaStage } from '@/hooks/useCctpSaga';
+import type { CctpSessionRecoveryMeta } from '@/lib/cctp/session-vault';
 import { cn } from '@/lib/utils';
 
 interface CctpExecutionPanelProps {
@@ -15,7 +17,14 @@ interface CctpExecutionPanelProps {
   primaryDisabled: boolean;
   onPrimary: () => void;
   onReset?: () => void;
+  resetLabel?: string;
   bridgeUnavailable?: boolean;
+  resumeMismatch?: boolean;
+  sessionPublic?: {
+    transferId: string;
+    recovery: CctpSessionRecoveryMeta;
+  } | null;
+  reattestCooldownUntil?: number | null;
   className?: string;
 }
 
@@ -28,9 +37,32 @@ export function CctpExecutionPanel({
   primaryDisabled,
   onPrimary,
   onReset,
+  resetLabel = 'Start new quote',
   bridgeUnavailable,
+  resumeMismatch,
+  sessionPublic,
+  reattestCooldownUntil,
   className,
 }: CctpExecutionPanelProps) {
+  const [cooldownSec, setCooldownSec] = useState(0);
+
+  useEffect(() => {
+    if (!reattestCooldownUntil) {
+      setCooldownSec(0);
+      return;
+    }
+    const tick = () => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((reattestCooldownUntil - Date.now()) / 1000),
+      );
+      setCooldownSec(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [reattestCooldownUntil]);
+
   return (
     <section
       className={cn(
@@ -45,6 +77,21 @@ export function CctpExecutionPanel({
           CCTP is not executable on this API right now. Check status and retry
           when the corridor shows live.
         </p>
+      )}
+
+      {resumeMismatch && sessionPublic && (
+        <div
+          className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm space-y-1"
+          data-testid="cctp-resume-card"
+        >
+          <p className="font-medium">Resume prior transfer</p>
+          <p className="text-muted-foreground">
+            A saved transfer exists for {sessionPublic.recovery.amount} USDC (
+            {sessionPublic.recovery.sourceChainId} →{' '}
+            {sessionPublic.recovery.destChainId}). Current form inputs differ —
+            reconcile with the server before continuing.
+          </p>
+        </div>
       )}
 
       {quote && (
@@ -72,13 +119,22 @@ export function CctpExecutionPanel({
 
       {transferStatus && (
         <p className="text-sm" role="status" data-testid="cctp-saga-status">
-          Status: <span className="font-medium">{formatStatus(stage, transferStatus.status)}</span>
+          Status:{' '}
+          <span className="font-medium">
+            {formatStatus(stage, transferStatus.status)}
+          </span>
           {transferStatus.support_reference_id && (
             <span className="text-muted-foreground">
               {' '}
               · Ref {transferStatus.support_reference_id}
             </span>
           )}
+        </p>
+      )}
+
+      {cooldownSec > 0 && (
+        <p className="text-xs text-muted-foreground" role="status">
+          Re-attestation available in {cooldownSec}s
         </p>
       )}
 
@@ -103,11 +159,23 @@ export function CctpExecutionPanel({
         >
           {primaryLabel}
         </Button>
-        {(stage === 'failed' || stage === 'completed') && onReset && (
-          <Button type="button" variant="outline" className="min-h-11" onClick={onReset}>
-            Start new quote
-          </Button>
-        )}
+        {onReset &&
+          (stage === 'failed' ||
+            stage === 'completed' ||
+            stage === 'awaiting_attestation' ||
+            stage === 'sign_mint' ||
+            stage === 'resume_pending' ||
+            Boolean(transferStatus)) && (
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-11"
+              onClick={onReset}
+              data-testid="cctp-abandon-cta"
+            >
+              {resetLabel}
+            </Button>
+          )}
       </div>
     </section>
   );
