@@ -163,4 +163,79 @@ describe('assessWalletRoleBindings', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.issue.code).toBe('source_adapter_missing');
   });
+
+  it('rejects stellar payload network mismatch', () => {
+    const stellarBindings = buildWalletRoleBindings({
+      direction: 'stellar_to_evm',
+      sourceChainId: 'stellar:testnet',
+      destChainId: 'eip155:11155111',
+      sender: STELLAR_G,
+      recipient: EVM_SOURCE,
+    })!;
+    const result = assessWalletRoleBindings({
+      bindings: stellarBindings,
+      wallets: {
+        recipient: EVM_SOURCE,
+        sourceStellarAdapterId: 'freighter',
+        sourceAddress: STELLAR_G,
+      },
+      intent: 'source_burn',
+      payload: {
+        type: 'stellar_xdr',
+        network_passphrase: 'Public Global Stellar Network ; September 2015',
+        xdr_envelope: 'AAAA',
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issue.code).toBe('source_network_mismatch');
+  });
+
+  it('rejects evm mint payload on wrong chain', () => {
+    const stellarBindings = buildWalletRoleBindings({
+      direction: 'stellar_to_evm',
+      sourceChainId: 'stellar:testnet',
+      destChainId: 'eip155:11155111',
+      sender: STELLAR_G,
+      recipient: EVM_SOURCE,
+    })!;
+    const result = assessWalletRoleBindings({
+      bindings: stellarBindings,
+      wallets: {
+        recipient: EVM_SOURCE,
+        evmDestinationAdapterId: 'evm:test',
+      },
+      intent: 'evm_mint',
+      payload: {
+        type: 'evm_transaction',
+        chain_id: 'eip155:1',
+        to: EVM_SOURCE,
+        data: '0x',
+        value: '0',
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issue.code).toBe('evm_mint_network_mismatch');
+  });
+
+  it('rejects evm source payload from mismatch when source is exposed', () => {
+    const result = assessWalletRoleBindings({
+      bindings: evmBindings,
+      wallets: {
+        recipient: STELLAR_G,
+        sourceEvmAdapterId: 'evm:test',
+        sourceAddress: EVM_SOURCE,
+      },
+      intent: 'source_burn',
+      payload: {
+        type: 'evm_transaction',
+        chain_id: 'eip155:11155111',
+        to: EVM_SOURCE,
+        data: '0x',
+        value: '0',
+        from: EVM_OTHER,
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issue.code).toBe('source_burn_mismatch');
+  });
 });

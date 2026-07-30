@@ -38,6 +38,8 @@ export type PreparedWalletPayload =
       type: 'stellar_xdr';
       network_passphrase: string;
       xdr_envelope: string;
+      source?: string;
+      from?: string;
     }
   | {
       type: 'evm_transaction';
@@ -49,6 +51,8 @@ export type PreparedWalletPayload =
       gas_price?: string;
       max_fee_per_gas?: string;
       max_priority_fee_per_gas?: string;
+      source?: string;
+      from?: string;
     };
 
 export interface CctpStatusDetails {

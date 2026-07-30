@@ -1,5 +1,8 @@
 import { StrKey } from '@stellar/stellar-base';
 import type { CctpDirection, PreparedWalletPayload } from './types';
+import {
+  STELLAR_TESTNET_PASSPHRASE,
+} from './types';
 import type { CctpWalletRoles } from '@/hooks/useCctpSaga';
 
 export const WALLET_BINDINGS_SCHEMA_VERSION = 1;
@@ -166,13 +169,98 @@ function mismatch(
   };
 }
 
+function payloadSourceAddress(payload: PreparedWalletPayload): string | undefined {
+  return payload.source ?? payload.from;
+}
+
+function validatePayloadAgainstBindings(input: {
+  bindings: CctpWalletRoleBindings;
+  payload: PreparedWalletPayload;
+  intent: WalletSigningIntent;
+}): WalletRoleMismatch | null {
+  const { bindings, payload, intent } = input;
+  const needsSourceBurn =
+    intent === 'resume' ||
+    intent === 'source_approval' ||
+    intent === 'source_burn';
+  const needsStellarMint = intent === 'stellar_mint';
+  const needsEvmMint = intent === 'evm_mint';
+
+  if (payload.type === 'stellar_xdr') {
+    if (payload.network_passphrase !== STELLAR_TESTNET_PASSPHRASE) {
+      return mismatch(
+        'source_network_mismatch',
+        'source_burn',
+        'Prepared Stellar network does not match this transfer.',
+        bindings.sourceBurn.chainId,
+      );
+    }
+    if (needsSourceBurn && bindings.sourceBurn.adapterFamily === 'stellar') {
+      const source = payloadSourceAddress(payload);
+      if (
+        source &&
+        !addressesEqualStellarG(source, bindings.sourceBurn.address)
+      ) {
+        return mismatch(
+          'source_burn_mismatch',
+          'source_burn',
+          'Connect the original Stellar source wallet to continue.',
+          bindings.sourceBurn.address,
+          source,
+        );
+      }
+    }
+    return null;
+  }
+
+  if (needsEvmMint && bindings.evmMintSubmitter) {
+    if (payload.chain_id !== bindings.evmMintSubmitter.chainId) {
+      return mismatch(
+        'evm_mint_network_mismatch',
+        'evm_mint_submitter',
+        'Prepared EVM mint network does not match this transfer.',
+        bindings.evmMintSubmitter.chainId,
+        payload.chain_id,
+      );
+    }
+  }
+
+  if (needsSourceBurn && bindings.sourceBurn.adapterFamily === 'evm') {
+    if (payload.chain_id !== bindings.sourceBurn.chainId) {
+      return mismatch(
+        'source_network_mismatch',
+        'source_burn',
+        'Prepared EVM network does not match this transfer.',
+        bindings.sourceBurn.chainId,
+        payload.chain_id,
+      );
+    }
+    const source = payloadSourceAddress(payload);
+    if (source && !addressesEqualEvm(source, bindings.sourceBurn.address)) {
+      return mismatch(
+        'source_burn_mismatch',
+        'source_burn',
+        'Connect the original EVM source wallet to continue.',
+        bindings.sourceBurn.address,
+        source,
+      );
+    }
+  }
+
+  if (needsStellarMint || needsEvmMint) {
+    return null;
+  }
+
+  return null;
+}
+
 export function assessWalletRoleBindings(input: {
   bindings: CctpWalletRoleBindings | undefined;
   wallets: CctpWalletRoles;
   intent: WalletSigningIntent;
   payload?: PreparedWalletPayload | null;
 }): { ok: true } | { ok: false; issue: WalletRoleMismatch } {
-  const { bindings, wallets, intent } = input;
+  const { bindings, wallets, intent, payload } = input;
   if (!bindings) {
     return {
       ok: false,
@@ -182,6 +270,17 @@ export function assessWalletRoleBindings(input: {
         'This saved transfer predates wallet verification. Start a new quote to continue.',
       ),
     };
+  }
+
+  if (payload) {
+    const payloadIssue = validatePayloadAgainstBindings({
+      bindings,
+      payload,
+      intent,
+    });
+    if (payloadIssue) {
+      return { ok: false, issue: payloadIssue };
+    }
   }
 
   if (bindings.recipient.kind === 'stellar_m') {
