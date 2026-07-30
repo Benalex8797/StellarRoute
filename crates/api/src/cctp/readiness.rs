@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::cctp::approval::{EvmApprovalVerifier, StellarApprovalVerifier};
 use crate::cctp::attestation::AttestationVerifier;
+use crate::cctp::builders::evm::{ProductionEvmCctpBuilder, SharedProductionEvmBuilder};
 use crate::cctp::builders::{
     EvmCctpBurnBuilder, EvmCctpMintBuilder, StellarCctpBurnBuilder, StellarCctpMintBuilder,
 };
@@ -23,6 +24,8 @@ pub enum ReadinessComponent {
     EvmBurnVerifier,
     StellarMintVerifier,
     EvmMintVerifier,
+    EvmApprovalVerifier,
+    StellarApprovalVerifier,
     AttestationVerifier,
 }
 
@@ -79,17 +82,24 @@ impl CctpRuntime {
         }
     }
 
-    /// Wire production EVM RPC verifiers when `sepolia_rpc_url` is configured.
+    /// Wire production EVM RPC builders/verifiers when `sepolia_rpc_url` is configured.
+    /// Stellar + attestation remain NotReady; `is_public_executable` stays false.
     pub fn from_config(config: &CctpConfig) -> Self {
         let mut runtime = Self::production_defaults();
-        if let Ok(v) = crate::cctp::evm_approval_verifier::EvmRpcApprovalVerifier::new(config) {
-            runtime.evm_approval_verifier = Arc::new(v);
-        }
-        if let Ok(v) = crate::cctp::evm_burn_verifier::EvmRpcBurnVerifier::new(config) {
-            runtime.evm_burn_verifier = Arc::new(v);
-        }
-        if let Ok(v) = crate::cctp::evm_mint_verifier::EvmRpcMintVerifier::new(config) {
-            runtime.evm_mint_verifier = Arc::new(v);
+        if !config.sepolia_rpc_url.trim().is_empty() {
+            let shared =
+                SharedProductionEvmBuilder(Arc::new(ProductionEvmCctpBuilder::from_config(config)));
+            runtime.evm_burn_builder = Arc::new(shared.clone());
+            runtime.evm_mint_builder = Arc::new(shared);
+            if let Ok(v) = crate::cctp::evm_approval_verifier::EvmRpcApprovalVerifier::new(config) {
+                runtime.evm_approval_verifier = Arc::new(v);
+            }
+            if let Ok(v) = crate::cctp::evm_burn_verifier::EvmRpcBurnVerifier::new(config) {
+                runtime.evm_burn_verifier = Arc::new(v);
+            }
+            if let Ok(v) = crate::cctp::evm_mint_verifier::EvmRpcMintVerifier::new(config) {
+                runtime.evm_mint_verifier = Arc::new(v);
+            }
         }
         runtime
     }
@@ -117,6 +127,9 @@ impl CctpRuntime {
                 if !self.stellar_burn_verifier.is_ready() {
                     missing.push(ReadinessComponent::StellarBurnVerifier);
                 }
+                if !self.stellar_approval_verifier.is_ready() {
+                    missing.push(ReadinessComponent::StellarApprovalVerifier);
+                }
                 if !self.evm_mint_builder.is_ready() {
                     missing.push(ReadinessComponent::EvmMintBuilder);
                 }
@@ -130,6 +143,9 @@ impl CctpRuntime {
                 }
                 if !self.evm_burn_verifier.is_ready() {
                     missing.push(ReadinessComponent::EvmBurnVerifier);
+                }
+                if !self.evm_approval_verifier.is_ready() {
+                    missing.push(ReadinessComponent::EvmApprovalVerifier);
                 }
                 if !self.stellar_mint_builder.is_ready() {
                     missing.push(ReadinessComponent::StellarMintBuilder);
@@ -156,6 +172,51 @@ impl CctpRuntime {
             && self.evm_burn_verifier.is_ready()
             && self.stellar_mint_verifier.is_ready()
             && self.evm_mint_verifier.is_ready()
+            && self.evm_approval_verifier.is_ready()
+            && self.stellar_approval_verifier.is_ready()
             && self.attestation_verifier.is_ready()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_defaults_all_not_ready() {
+        let rt = CctpRuntime::production_defaults();
+        assert!(!rt.evm_burn_builder.is_ready());
+        assert!(!rt.evm_mint_builder.is_ready());
+        assert!(!rt.evm_burn_verifier.is_ready());
+        assert!(!rt.evm_approval_verifier.is_ready());
+        assert!(!rt.is_public_executable(&CctpConfig::default_testnet()));
+    }
+
+    #[test]
+    fn from_config_wires_evm_when_rpc_present() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
+        let rt = CctpRuntime::from_config(&cfg);
+        assert!(rt.evm_burn_builder.is_ready());
+        assert!(rt.evm_mint_builder.is_ready());
+        assert!(rt.evm_burn_verifier.is_ready());
+        assert!(rt.evm_mint_verifier.is_ready());
+        assert!(rt.evm_approval_verifier.is_ready());
+        assert!(!rt.stellar_burn_builder.is_ready());
+        assert!(!rt.is_public_executable(&cfg));
+    }
+
+    #[test]
+    fn evm_to_stellar_assess_requires_approval_verifier() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
+        let rt = CctpRuntime::from_config(&cfg);
+        let readiness = rt.assess(CctpDirection::EvmToStellar);
+        assert!(!readiness
+            .missing
+            .contains(&ReadinessComponent::EvmApprovalVerifier));
+        assert!(readiness
+            .missing
+            .contains(&ReadinessComponent::StellarMintVerifier));
     }
 }

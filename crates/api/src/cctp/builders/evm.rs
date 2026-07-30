@@ -235,6 +235,38 @@ impl Default for ProductionEvmCctpBuilder {
     }
 }
 
+/// Share one `ProductionEvmCctpBuilder` across burn + mint trait objects.
+#[derive(Clone)]
+pub struct SharedProductionEvmBuilder(pub std::sync::Arc<ProductionEvmCctpBuilder>);
+
+#[async_trait]
+impl EvmCctpBurnBuilder for SharedProductionEvmBuilder {
+    fn is_ready(&self) -> bool {
+        EvmCctpBurnBuilder::is_ready(self.0.as_ref())
+    }
+    async fn prepare_burn(
+        &self,
+        transfer: &CctpTransfer,
+        config: &CctpConfig,
+    ) -> Result<PreparedBurnBundle, BuilderError> {
+        self.0.prepare_burn(transfer, config).await
+    }
+}
+
+#[async_trait]
+impl EvmCctpMintBuilder for SharedProductionEvmBuilder {
+    fn is_ready(&self) -> bool {
+        EvmCctpMintBuilder::is_ready(self.0.as_ref())
+    }
+    async fn prepare_mint(
+        &self,
+        transfer: &CctpTransfer,
+        config: &CctpConfig,
+    ) -> Result<PreparedMintBundle, BuilderError> {
+        self.0.prepare_mint(transfer, config).await
+    }
+}
+
 #[async_trait]
 impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
     fn is_ready(&self) -> bool {
