@@ -179,6 +179,45 @@ Public executability (quote + mutations + `/api/v2` metadata) requires, per dire
 - `evm_to_stellar`: Sepolia **and** Stellar chain kills off + EVM RPC (source) **and** Soroban
   (destination) dependency breakers closed.
 
+## RPC environment contract (configured-ready)
+
+| Variable | Precedence / rule |
+|----------|-------------------|
+| `CCTP_STELLAR_RPC_URL` | Primary Soroban RPC for CCTP runtime **and** dependency-health Soroban breaker |
+| `STELLAR_RPC_URL` | Alias when CCTP-specific name unset |
+| `SOROBAN_RPC_URL` | Alias when both above unset |
+| *(default)* | `https://soroban-testnet.stellar.org` when all unset (testnet policy) |
+| `CCTP_SEPOLIA_RPC_URL` | Primary Sepolia JSON-RPC when `CCTP_ENABLED=true` |
+| `SEPOLIA_RPC_URL` | Alias when CCTP-specific name unset |
+| `CCTP_*_RPC_FALLBACK_URLS` | Explicit comma-separated failover lists only (max 8 URLs per chain) |
+
+Rules:
+
+- `CCTP_ENABLED=true` **requires** an explicit Sepolia RPC URL (`CCTP_SEPOLIA_RPC_URL` or
+  `SEPOLIA_RPC_URL`). There is no silent fallback to `https://rpc.sepolia.org`.
+- URLs must be HTTPS (non-test builds), credential-free, and logged by **host only**.
+- Stellar network passphrase must remain the public Testnet value; Sepolia chain id `11155111`
+  (`0xaa36a7`) is validated on live probes.
+
+### Browser auth / CORS (production)
+
+- Global `REQUIRE_AUTH=true` does **not** block `/api/v2/bridge/cctp/*`. Quote stays public and
+  rate-limited; transfer routes still require `x-cctp-transfer-access` (uniform `404` on failure).
+- Strict CORS allowlists must include the deployed frontend origin and allow headers:
+  `Content-Type`, `Idempotency-Key`, `x-cctp-transfer-access`, `x-request-id`.
+- Browser clients also need `PUBLIC_GET_ROUTES=/api/v2` (or an integrator API key) to read
+  corridor metadata while `REQUIRE_AUTH=true`; CCTP quote/transfer routes are exempt separately.
+
+### Local configured-ready proof
+
+Opt-in script (loopback only, sanitized output):
+
+```bash
+./scripts/cctp-configured-ready-proof.sh
+```
+
+Writes `docs/readiness/evidence/cctp-configured-ready-proof.json` on success (no tokens/XDR/HMAC).
+
 ## Verification
 
 ```bash
