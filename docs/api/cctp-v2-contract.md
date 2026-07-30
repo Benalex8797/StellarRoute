@@ -5,15 +5,15 @@ contract for the first Circle CCTP corridor. A **backend core** (config, Postgre
 saga store, Iris client, encoding, attestation/burn verifier seams, internal
 service) exists on the feature branch but **public execution remains disabled**.
 
-## Status (non-executable)
+## Status (execution gate)
 
-- `GET /api/v2` keeps `bridge_settlement_executable: false`.
-- `supported_corridors` remains an empty array until backend health gates execution.
-- All CCTP handlers return typed **`503 cctp_not_enabled`** — no fake quotes,
-  prepares, or transfer status payloads.
-- Internal saga can advance through quote → burn_prepared → awaiting_attestation →
-  attestation_ready when test verifiers are injected; wallet transaction builders
-  and mint submission are **not implemented**.
+- Default: `CCTP_ENABLED=false` → all handlers return typed **`503 cctp_not_enabled`**.
+- When explicitly enabled **and** direction-specific readiness passes (builders, verifiers,
+  attestation, Iris, PG store, kill-switch), handlers execute the non-custodial saga.
+- `GET /api/v2` lists corridor metadata with per-direction `executable` flags.
+- Quote returns a one-time `access_token` (SHA-256 hash stored server-side). Mutations and
+  status require header `x-cctp-transfer-access`.
+- Quote supports `Idempotency-Key` (byte-identical replay returns cached response).
 - `/api/v1/swap/*` remains classic Stellar XDR only and is unchanged.
 - **Finality:** v1 corridor is **standard-only** both directions (`fast` rejected on wire).
 

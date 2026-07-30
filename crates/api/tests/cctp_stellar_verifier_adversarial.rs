@@ -94,6 +94,7 @@ async fn not_ready_stellar_burn_verifier_does_not_mutate_store() {
         approval_expiration_ledger: None,
         burn_payload_hash: None,
         burn_prepare_step: None,
+        access_token_hash: None,
     };
     let id = transfer.transfer_id;
     store.insert(&transfer).await.unwrap();

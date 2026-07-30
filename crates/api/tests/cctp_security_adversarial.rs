@@ -124,7 +124,13 @@ fn base_service(
 }
 
 async fn quoted_prepared(service: &CctpService, direction: CctpDirection) -> CctpTransfer {
-    let transfer = service.quote_core(&sample_quote(direction)).await.unwrap();
+    let transfer = service
+        .quote_core(
+            &sample_quote(direction),
+            stellarroute_api::cctp::access::test_access_token_hash(),
+        )
+        .await
+        .unwrap();
     service.prepare_burn(transfer.transfer_id).await.unwrap()
 }
 
@@ -169,7 +175,10 @@ async fn not_ready_burn_verifier_blocks_record_burn() {
         Arc::new(NotReadyAttestationVerifier),
     );
     let transfer = service
-        .quote_core(&sample_quote(CctpDirection::StellarToEvm))
+        .quote_core(
+            &sample_quote(CctpDirection::StellarToEvm),
+            stellarroute_api::cctp::access::test_access_token_hash(),
+        )
         .await
         .unwrap();
     store
@@ -608,7 +617,10 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
 
     let prepared = quoted_prepared(&service, CctpDirection::StellarToEvm).await;
     let created = service
-        .quote_core(&sample_quote(CctpDirection::StellarToEvm))
+        .quote_core(
+            &sample_quote(CctpDirection::StellarToEvm),
+            stellarroute_api::cctp::access::test_access_token_hash(),
+        )
         .await
         .unwrap();
     let awaiting = service
@@ -644,7 +656,10 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
 
     assert!(matches!(
         killed_service
-            .quote_core(&sample_quote(CctpDirection::StellarToEvm))
+            .quote_core(
+                &sample_quote(CctpDirection::StellarToEvm),
+                stellarroute_api::cctp::access::test_access_token_hash()
+            )
             .await,
         Err(CctpServiceError::ProviderKilled)
     ));
@@ -940,5 +955,6 @@ fn sample_transfer_stub(direction: CctpDirection) -> CctpTransfer {
         approval_expiration_ledger: None,
         burn_payload_hash: None,
         burn_prepare_step: None,
+        access_token_hash: None,
     }
 }

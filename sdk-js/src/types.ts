@@ -133,6 +133,8 @@ export interface CctpQuoteRequest {
    * Invalid sender returns `validation_error` (HTTP 400).
    */
   sender?: string;
+  /** Required for `evm_to_stellar` — Stellar G-address fee-payer for mint preparation. */
+  mint_submitter?: string;
   finality: CctpFinality;
 }
 
@@ -146,7 +148,19 @@ export interface CctpQuoteResponse {
   fee_quote: CctpFeeQuote;
   expires_at: number;
   finality: CctpFinality;
+  /** One-time bearer token for transfer mutations/status (store securely). */
+  access_token: string;
 }
+
+/** Optional auth/idempotency headers for CCTP transfer calls. */
+export interface CctpCallOptions {
+  accessToken?: string;
+  idempotencyKey?: string;
+  signal?: AbortSignal;
+}
+
+export const CCTP_TRANSFER_ACCESS_HEADER = 'x-cctp-transfer-access';
+export const CCTP_IDEMPOTENCY_HEADER = 'idempotency-key';
 
 export interface CctpTransferStatusResponse {
   transfer_id: string;

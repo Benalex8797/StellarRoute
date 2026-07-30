@@ -85,7 +85,13 @@ async fn quote_core_creates_transfer_when_enabled() {
         runtime: stellarroute_api::cctp::readiness::CctpRuntime::production_defaults(),
     };
 
-    let transfer = service.quote_core(&sample_quote_request()).await.unwrap();
+    let transfer = service
+        .quote_core(
+            &sample_quote_request(),
+            stellarroute_api::cctp::access::test_access_token_hash(),
+        )
+        .await
+        .unwrap();
     assert_eq!(transfer.status, CctpTransferStatus::Created);
     assert!(!service.config.is_executable());
 }
@@ -125,7 +131,10 @@ async fn provider_kill_switch_blocks_new_quote() {
     };
 
     let err = service
-        .quote_core(&sample_quote_request())
+        .quote_core(
+            &sample_quote_request(),
+            stellarroute_api::cctp::access::test_access_token_hash(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(

@@ -166,6 +166,7 @@ async fn prepared_transfer(
             approval_expiration_ledger: None,
             burn_payload_hash: None,
             burn_prepare_step: None,
+            access_token_hash: None,
         },
         &cfg,
         TX_HASH,
@@ -190,7 +191,13 @@ async fn prepared_transfer(
         ),
     };
     let service = base_service(store.clone(), stellar, evm);
-    let transfer = service.quote_core(&sample_quote(direction)).await.unwrap();
+    let transfer = service
+        .quote_core(
+            &sample_quote(direction),
+            stellarroute_api::cctp::access::test_access_token_hash(),
+        )
+        .await
+        .unwrap();
     service.prepare_burn(transfer.transfer_id).await.unwrap()
 }
 

@@ -73,6 +73,7 @@ fn sample_burn_transfer() -> CctpTransfer {
         approval_expiration_ledger: None,
         burn_payload_hash: None,
         burn_prepare_step: None,
+        access_token_hash: None,
     }
 }
 

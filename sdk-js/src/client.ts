@@ -28,6 +28,7 @@ import type {
   SupportedCorridor,
   CctpQuoteRequest,
   CctpQuoteResponse,
+  CctpCallOptions,
   CctpTransferStatusResponse,
   CctpPrepareBurnResponse,
   CctpSubmitBurnRequest,
@@ -37,7 +38,13 @@ import type {
   CctpSubmitMintResponse,
   CctpReattestResponse,
 } from './types.js';
-import { DEFAULT_STALENESS_CONFIG, isQuoteStale, isQuoteExpired } from './types.js';
+import {
+  DEFAULT_STALENESS_CONFIG,
+  isQuoteStale,
+  isQuoteExpired,
+  CCTP_TRANSFER_ACCESS_HEADER,
+  CCTP_IDEMPOTENCY_HEADER,
+} from './types.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -795,14 +802,19 @@ export class StellarRouteClient {
    */
   async cctpQuote(
     request: CctpQuoteRequest,
-    signal?: AbortSignal,
+    options?: CctpCallOptions,
   ): Promise<CctpQuoteResponse> {
+    const headers: Record<string, string> = {};
+    if (options?.idempotencyKey) {
+      headers[CCTP_IDEMPOTENCY_HEADER] = options.idempotencyKey;
+    }
     const body = await this.request<unknown>(
       '/api/v2/bridge/cctp/quote',
-      signal,
+      options?.signal,
       this.retries,
       'POST',
       request,
+      headers,
     );
     return unwrapApiData<CctpQuoteResponse>(body);
   }
@@ -812,14 +824,15 @@ export class StellarRouteClient {
    */
   async cctpPrepareBurn(
     transferId: string,
-    signal?: AbortSignal,
+    options?: CctpCallOptions,
   ): Promise<CctpPrepareBurnResponse> {
     const body = await this.request<unknown>(
       `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/prepare-burn`,
-      signal,
+      options?.signal,
       this.retries,
       'POST',
       {},
+      cctpAccessHeaders(options),
     );
     return unwrapApiData<CctpPrepareBurnResponse>(body);
   }
@@ -830,14 +843,15 @@ export class StellarRouteClient {
   async cctpSubmitBurn(
     transferId: string,
     request: CctpSubmitBurnRequest,
-    signal?: AbortSignal,
+    options?: CctpCallOptions,
   ): Promise<CctpSubmitBurnResponse> {
     const body = await this.request<unknown>(
       `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/submit-burn`,
-      signal,
+      options?.signal,
       this.retries,
       'POST',
       request,
+      cctpAccessHeaders(options),
     );
     return unwrapApiData<CctpSubmitBurnResponse>(body);
   }
@@ -847,11 +861,15 @@ export class StellarRouteClient {
    */
   async cctpGetTransfer(
     transferId: string,
-    signal?: AbortSignal,
+    options?: CctpCallOptions,
   ): Promise<CctpTransferStatusResponse> {
     const body = await this.request<unknown>(
       `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}`,
-      signal,
+      options?.signal,
+      this.retries,
+      'GET',
+      undefined,
+      cctpAccessHeaders(options),
     );
     return unwrapApiData<CctpTransferStatusResponse>(body);
   }
@@ -861,14 +879,15 @@ export class StellarRouteClient {
    */
   async cctpPrepareMint(
     transferId: string,
-    signal?: AbortSignal,
+    options?: CctpCallOptions,
   ): Promise<CctpPrepareMintResponse> {
     const body = await this.request<unknown>(
       `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/prepare-mint`,
-      signal,
+      options?.signal,
       this.retries,
       'POST',
       {},
+      cctpAccessHeaders(options),
     );
     return unwrapApiData<CctpPrepareMintResponse>(body);
   }
@@ -879,14 +898,15 @@ export class StellarRouteClient {
   async cctpSubmitMint(
     transferId: string,
     request: CctpSubmitMintRequest,
-    signal?: AbortSignal,
+    options?: CctpCallOptions,
   ): Promise<CctpSubmitMintResponse> {
     const body = await this.request<unknown>(
       `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/submit-mint`,
-      signal,
+      options?.signal,
       this.retries,
       'POST',
       request,
+      cctpAccessHeaders(options),
     );
     return unwrapApiData<CctpSubmitMintResponse>(body);
   }
@@ -896,14 +916,15 @@ export class StellarRouteClient {
    */
   async cctpReattest(
     transferId: string,
-    signal?: AbortSignal,
+    options?: CctpCallOptions,
   ): Promise<CctpReattestResponse> {
     const body = await this.request<unknown>(
       `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/reattest`,
-      signal,
+      options?.signal,
       this.retries,
       'POST',
       {},
+      cctpAccessHeaders(options),
     );
     return unwrapApiData<CctpReattestResponse>(body);
   }
@@ -916,6 +937,7 @@ export class StellarRouteClient {
     attemptsLeft = this.retries,
     method: 'GET' | 'POST' = 'GET',
     body?: unknown,
+    extraHeaders?: Record<string, string>,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
@@ -930,6 +952,7 @@ export class StellarRouteClient {
         headers: {
           Accept: 'application/json',
           ...this.extraHeaders,
+          ...extraHeaders,
         },
         signal: controller.signal,
       };
@@ -969,7 +992,7 @@ export class StellarRouteClient {
             ? retryAfterSec * 1_000
             : backoffMs(this.retries - attemptsLeft);
           await sleep(delayMs);
-          return this.request<T>(path, signal, attemptsLeft - 1, method, body);
+          return this.request<T>(path, signal, attemptsLeft - 1, method, body, extraHeaders);
         }
 
         throw new StellarRouteApiError(response.status, code, message, details);
@@ -994,6 +1017,13 @@ export class StellarRouteClient {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+function cctpAccessHeaders(
+  options?: CctpCallOptions,
+): Record<string, string> | undefined {
+  if (!options?.accessToken) return undefined;
+  return { [CCTP_TRANSFER_ACCESS_HEADER]: options.accessToken };
+}
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
