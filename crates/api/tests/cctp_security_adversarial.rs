@@ -779,6 +779,82 @@ async fn prepare_burn_rejects_expired_quote() {
     assert!(matches!(err, CctpServiceError::QuoteExpired));
 }
 
+#[tokio::test]
+async fn fee_expired_blocks_prepare_burn() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let iris = Arc::new(MockIris {
+        fees: IrisFeeQuote {
+            standard_fee: Some("1".into()),
+            fast_fee: None,
+        },
+        poll_outcome: IrisPollOutcome::Pending,
+    });
+    let service = base_service(
+        store.clone(),
+        iris,
+        Arc::new(FakeBurnVerifier {
+            facts: fake_facts(
+                &sample_transfer_stub(CctpDirection::StellarToEvm),
+                &CctpConfig::default_testnet(),
+                TX_HASH,
+            ),
+            ready: true,
+        }),
+        Arc::new(NotReadyEvmBurnVerifier),
+        Arc::new(NotReadyAttestationVerifier),
+    );
+    let mut transfer = sample_transfer_stub(CctpDirection::StellarToEvm);
+    transfer.fee_expires_at = Some(Utc::now() - Duration::minutes(1));
+    transfer.max_fee = Some("1".into());
+    store.insert(&transfer).await.unwrap();
+    let err = service
+        .prepare_burn(transfer.transfer_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CctpServiceError::FeeExpired));
+    let unchanged = store.get(transfer.transfer_id).await.unwrap().unwrap();
+    assert_eq!(unchanged.status, CctpTransferStatus::Created);
+}
+
+#[tokio::test]
+async fn fee_expired_blocks_record_burn() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let iris = Arc::new(MockIris {
+        fees: IrisFeeQuote {
+            standard_fee: Some("1".into()),
+            fast_fee: None,
+        },
+        poll_outcome: IrisPollOutcome::Pending,
+    });
+    let facts = fake_facts(
+        &sample_transfer_stub(CctpDirection::StellarToEvm),
+        &CctpConfig::default_testnet(),
+        TX_HASH,
+    );
+    let service = base_service(
+        store.clone(),
+        iris,
+        Arc::new(FakeBurnVerifier {
+            facts: facts.clone(),
+            ready: true,
+        }),
+        Arc::new(NotReadyEvmBurnVerifier),
+        Arc::new(NotReadyAttestationVerifier),
+    );
+    let mut prepared = sample_transfer_stub(CctpDirection::StellarToEvm);
+    prepared.status = CctpTransferStatus::BurnPrepared;
+    prepared.fee_expires_at = Some(Utc::now() - Duration::minutes(1));
+    prepared.max_fee = Some("1".into());
+    store.insert(&prepared).await.unwrap();
+    let err = service
+        .record_burn_submission(prepared.transfer_id, TX_HASH)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CctpServiceError::FeeExpired));
+    let unchanged = store.get(prepared.transfer_id).await.unwrap().unwrap();
+    assert_eq!(unchanged.status, CctpTransferStatus::BurnPrepared);
+}
+
 fn sample_transfer_stub(direction: CctpDirection) -> CctpTransfer {
     let now = Utc::now();
     CctpTransfer {
@@ -820,6 +896,7 @@ fn sample_transfer_stub(direction: CctpDirection) -> CctpTransfer {
         quote_expires_at: now + Duration::minutes(5),
         status: CctpTransferStatus::Created,
         source_tx_hash: None,
+        source_approval_tx_hash: None,
         destination_tx_hash: None,
         iris_message_hash: None,
         message_nonce: None,
