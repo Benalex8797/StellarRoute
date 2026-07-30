@@ -63,6 +63,20 @@ pub struct CctpTransfer {
     pub burn_prepare_step: Option<String>,
     /// SHA-256 hex digest of the one-time transfer access token.
     pub access_token_hash: Option<String>,
+    pub last_polled_at: Option<DateTime<Utc>>,
+    pub poll_lease_until: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollLeaseOutcome {
+    Acquired,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReattestClaimOutcome {
+    Claimed,
+    NotAllowed,
 }
 
 #[derive(Debug, Error)]
@@ -90,6 +104,29 @@ pub trait CctpTransferStore: Send + Sync {
     async fn insert(&self, transfer: &CctpTransfer) -> Result<(), CctpStoreError>;
 
     async fn get(&self, transfer_id: Uuid) -> Result<Option<CctpTransfer>, CctpStoreError>;
+
+    /// Uniform lookup: returns `None` for missing transfer or wrong access token hash.
+    async fn get_authorized(
+        &self,
+        transfer_id: Uuid,
+        access_token_hash: &str,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError>;
+
+    /// Atomically acquire poll lease or skip when another holder is active / interval not elapsed.
+    async fn try_acquire_poll_lease(
+        &self,
+        transfer_id: Uuid,
+        lease_secs: i64,
+        min_interval_secs: i64,
+    ) -> Result<Option<(CctpTransfer, PollLeaseOutcome)>, CctpStoreError>;
+
+    /// Atomically claim reattest slot (cooldown + max attempts + state).
+    async fn try_claim_reattest(
+        &self,
+        transfer_id: Uuid,
+        max_attempts: u32,
+        cooldown_secs: i64,
+    ) -> Result<Option<(CctpTransfer, ReattestClaimOutcome)>, CctpStoreError>;
 
     async fn transition(
         &self,
@@ -234,6 +271,97 @@ impl CctpTransferStore for PgCctpTransferStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|r| r.try_into_transfer()).transpose()?)
+    }
+
+    async fn get_authorized(
+        &self,
+        transfer_id: Uuid,
+        access_token_hash: &str,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError> {
+        let row = sqlx::query_as::<_, TransferRow>(
+            r#"
+            SELECT * FROM cctp_transfers
+            WHERE transfer_id = $1 AND access_token_hash = $2
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(access_token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_into_transfer()).transpose()?)
+    }
+
+    async fn try_acquire_poll_lease(
+        &self,
+        transfer_id: Uuid,
+        lease_secs: i64,
+        min_interval_secs: i64,
+    ) -> Result<Option<(CctpTransfer, PollLeaseOutcome)>, CctpStoreError> {
+        let row = sqlx::query_as::<_, TransferRow>(
+            r#"
+            UPDATE cctp_transfers
+            SET poll_lease_until = NOW() + ($2 * INTERVAL '1 second'),
+                last_polled_at = NOW(),
+                updated_at = NOW()
+            WHERE transfer_id = $1
+              AND (poll_lease_until IS NULL OR poll_lease_until <= NOW())
+              AND (
+                last_polled_at IS NULL
+                OR last_polled_at <= NOW() - ($3 * INTERVAL '1 second')
+              )
+            RETURNING *
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(lease_secs)
+        .bind(min_interval_secs)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(r) = row {
+            return Ok(Some((r.try_into_transfer()?, PollLeaseOutcome::Acquired)));
+        }
+
+        let current = self.get(transfer_id).await?;
+        Ok(current.map(|t| (t, PollLeaseOutcome::Skipped)))
+    }
+
+    async fn try_claim_reattest(
+        &self,
+        transfer_id: Uuid,
+        max_attempts: u32,
+        cooldown_secs: i64,
+    ) -> Result<Option<(CctpTransfer, ReattestClaimOutcome)>, CctpStoreError> {
+        let row = sqlx::query_as::<_, TransferRow>(
+            r#"
+            UPDATE cctp_transfers
+            SET retry_count = retry_count + 1,
+                status = 'awaiting_attestation',
+                updated_at = NOW(),
+                terminal_at = NULL,
+                version = version + 1
+            WHERE transfer_id = $1
+              AND status = 'attestation_failed'
+              AND retry_count < $2
+              AND updated_at <= NOW() - ($3 * INTERVAL '1 second')
+            RETURNING *
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(max_attempts as i32)
+        .bind(cooldown_secs)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(r) = row {
+            return Ok(Some((
+                r.try_into_transfer()?,
+                ReattestClaimOutcome::Claimed,
+            )));
+        }
+
+        let current = self.get(transfer_id).await?;
+        Ok(current.map(|t| (t, ReattestClaimOutcome::NotAllowed)))
     }
 
     async fn transition(
@@ -514,6 +642,73 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
 
     async fn get(&self, transfer_id: Uuid) -> Result<Option<CctpTransfer>, CctpStoreError> {
         Ok(self.transfers.lock().unwrap().get(&transfer_id).cloned())
+    }
+
+    async fn get_authorized(
+        &self,
+        transfer_id: Uuid,
+        access_token_hash: &str,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError> {
+        let guard = self.transfers.lock().unwrap();
+        let Some(transfer) = guard.get(&transfer_id) else {
+            return Ok(None);
+        };
+        if transfer.access_token_hash.as_deref() != Some(access_token_hash) {
+            return Ok(None);
+        }
+        Ok(Some(transfer.clone()))
+    }
+
+    async fn try_acquire_poll_lease(
+        &self,
+        transfer_id: Uuid,
+        lease_secs: i64,
+        min_interval_secs: i64,
+    ) -> Result<Option<(CctpTransfer, PollLeaseOutcome)>, CctpStoreError> {
+        use chrono::Duration;
+        let mut guard = self.transfers.lock().unwrap();
+        let Some(transfer) = guard.get_mut(&transfer_id) else {
+            return Ok(None);
+        };
+        let now = Utc::now();
+        let lease_active = transfer.poll_lease_until.is_some_and(|u| u > now);
+        let interval_ok = transfer
+            .last_polled_at
+            .map(|t| t + Duration::seconds(min_interval_secs) <= now)
+            .unwrap_or(true);
+        if lease_active || !interval_ok {
+            return Ok(Some((transfer.clone(), PollLeaseOutcome::Skipped)));
+        }
+        transfer.poll_lease_until = Some(now + Duration::seconds(lease_secs));
+        transfer.last_polled_at = Some(now);
+        transfer.updated_at = now;
+        Ok(Some((transfer.clone(), PollLeaseOutcome::Acquired)))
+    }
+
+    async fn try_claim_reattest(
+        &self,
+        transfer_id: Uuid,
+        max_attempts: u32,
+        cooldown_secs: i64,
+    ) -> Result<Option<(CctpTransfer, ReattestClaimOutcome)>, CctpStoreError> {
+        use chrono::Duration;
+        let mut guard = self.transfers.lock().unwrap();
+        let Some(transfer) = guard.get_mut(&transfer_id) else {
+            return Ok(None);
+        };
+        let now = Utc::now();
+        if transfer.status != CctpTransferStatus::AttestationFailed
+            || transfer.retry_count >= max_attempts
+            || transfer.updated_at + Duration::seconds(cooldown_secs) > now
+        {
+            return Ok(Some((transfer.clone(), ReattestClaimOutcome::NotAllowed)));
+        }
+        transfer.retry_count += 1;
+        transfer.status = CctpTransferStatus::AwaitingAttestation;
+        transfer.terminal_at = None;
+        transfer.version += 1;
+        transfer.updated_at = now;
+        Ok(Some((transfer.clone(), ReattestClaimOutcome::Claimed)))
     }
 
     async fn transition(
@@ -799,6 +994,8 @@ struct TransferRow {
     burn_payload_hash: Option<String>,
     burn_prepare_step: Option<String>,
     access_token_hash: Option<String>,
+    last_polled_at: Option<DateTime<Utc>>,
+    poll_lease_until: Option<DateTime<Utc>>,
 }
 
 impl TransferRow {
@@ -848,25 +1045,27 @@ impl TransferRow {
             burn_payload_hash: self.burn_payload_hash,
             burn_prepare_step: self.burn_prepare_step,
             access_token_hash: self.access_token_hash,
+            last_polled_at: self.last_polled_at,
+            poll_lease_until: self.poll_lease_until,
         })
     }
 }
 
-fn direction_str(d: CctpDirection) -> &'static str {
+pub(crate) fn direction_str(d: CctpDirection) -> &'static str {
     match d {
         CctpDirection::StellarToEvm => "stellar_to_evm",
         CctpDirection::EvmToStellar => "evm_to_stellar",
     }
 }
 
-fn finality_str(f: CctpFinality) -> &'static str {
+pub(crate) fn finality_str(f: CctpFinality) -> &'static str {
     match f {
         CctpFinality::Standard => "standard",
         CctpFinality::Fast => "fast",
     }
 }
 
-fn status_str(s: CctpTransferStatus) -> &'static str {
+pub(crate) fn status_str(s: CctpTransferStatus) -> &'static str {
     match s {
         CctpTransferStatus::Created => "created",
         CctpTransferStatus::BurnPrepared => "burn_prepared",
@@ -988,6 +1187,8 @@ mod tests {
             burn_payload_hash: None,
             burn_prepare_step: None,
             access_token_hash: None,
+            last_polled_at: None,
+            poll_lease_until: None,
         }
     }
 
@@ -1130,6 +1331,8 @@ mod tests {
             burn_payload_hash: None,
             burn_prepare_step: None,
             access_token_hash: None,
+            last_polled_at: None,
+            poll_lease_until: None,
         };
         let err = row.try_into_transfer().unwrap_err();
         assert!(matches!(err, CctpStoreError::InvalidDirection(_)));

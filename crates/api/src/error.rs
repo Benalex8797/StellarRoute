@@ -80,6 +80,10 @@ pub enum ApiError {
         status: String,
     },
 
+    /// Idempotent operation still in progress — client should retry shortly.
+    #[error("Too early: {0}")]
+    TooEarly(String),
+
     /// Classic prepare only supports PathPaymentStrictSend; AMM/Soroban is gated.
     #[error("Unsupported execution mode: {0}")]
     UnsupportedExecutionMode(String),
@@ -249,6 +253,7 @@ impl IntoResponse for ApiError {
                 let body = Json(ApiResponse::new(payload, "system"));
                 return (StatusCode::CONFLICT, body).into_response();
             }
+            ApiError::TooEarly(msg) => (StatusCode::TOO_EARLY, ApiErrorCode::Conflict, msg),
             ApiError::UnsupportedExecutionMode(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ApiErrorCode::UnsupportedExecutionMode,

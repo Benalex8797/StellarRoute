@@ -338,6 +338,24 @@ impl CctpService {
         request: &CctpQuoteRequest,
         access_token_hash: String,
     ) -> Result<CctpTransfer, CctpServiceError> {
+        let transfer = self
+            .build_quote_transfer(request, Uuid::new_v4(), access_token_hash)
+            .await?;
+        self.store
+            .insert(&transfer)
+            .await
+            .map_err(CctpServiceError::Store)?;
+        metrics::record_cctp_transition("created");
+        Ok(transfer)
+    }
+
+    /// Build transfer row without persisting (idempotent finalize path).
+    pub async fn build_quote_transfer(
+        &self,
+        request: &CctpQuoteRequest,
+        transfer_id: Uuid,
+        access_token_hash: String,
+    ) -> Result<CctpTransfer, CctpServiceError> {
         if !self.config.enabled {
             return Err(CctpServiceError::NotEnabled);
         }
@@ -382,7 +400,7 @@ impl CctpService {
 
         let max_fee = fees.standard_fee.clone();
         let now = Utc::now();
-        let transfer_id = Uuid::new_v4();
+
         let support_id = format!("cctp-{}", transfer_id);
 
         let destination_amount = match request.direction {
@@ -440,14 +458,70 @@ impl CctpService {
             burn_payload_hash: None,
             burn_prepare_step: None,
             access_token_hash: Some(access_token_hash),
+            last_polled_at: None,
+            poll_lease_until: None,
         };
 
-        self.store
-            .insert(&transfer)
-            .await
-            .map_err(CctpServiceError::Store)?;
-        metrics::record_cctp_transition("created");
         Ok(transfer)
+    }
+
+    pub async fn poll_one_transfer_with_lease(
+        &self,
+        transfer_id: Uuid,
+        lease_secs: i64,
+        min_interval_secs: i64,
+    ) -> Result<CctpTransfer, CctpServiceError> {
+        let Some((transfer, outcome)) = self
+            .store
+            .try_acquire_poll_lease(transfer_id, lease_secs, min_interval_secs)
+            .await
+            .map_err(CctpServiceError::Store)?
+        else {
+            return Err(CctpServiceError::NotFound);
+        };
+        crate::metrics::record_cctp_poll_lease(match outcome {
+            crate::cctp::store::PollLeaseOutcome::Acquired => "acquired",
+            crate::cctp::store::PollLeaseOutcome::Skipped => "skipped",
+        });
+        if outcome == crate::cctp::store::PollLeaseOutcome::Skipped {
+            return Ok(transfer);
+        }
+        self.poll_one_transfer(transfer_id).await
+    }
+
+    pub async fn reattest_with_claim(
+        &self,
+        transfer_id: Uuid,
+        max_attempts: u32,
+        cooldown_secs: i64,
+    ) -> Result<CctpTransfer, CctpServiceError> {
+        let Some((transfer, outcome)) = self
+            .store
+            .try_claim_reattest(transfer_id, max_attempts, cooldown_secs)
+            .await
+            .map_err(CctpServiceError::Store)?
+        else {
+            return Err(CctpServiceError::NotFound);
+        };
+        if outcome != crate::cctp::store::ReattestClaimOutcome::Claimed {
+            return Err(CctpServiceError::InvalidState);
+        }
+
+        if let Some(nonce) = transfer.message_nonce.as_ref() {
+            self.iris
+                .reattest(nonce)
+                .await
+                .map_err(|e| CctpServiceError::Iris(e.to_string()))?;
+        } else if transfer.source_tx_hash.is_none() {
+            return Err(CctpServiceError::InvalidState);
+        }
+
+        metrics::record_cctp_transition("reattest_awaiting");
+        self.store
+            .get(transfer_id)
+            .await
+            .map_err(CctpServiceError::Store)?
+            .ok_or(CctpServiceError::NotFound)
     }
 
     pub async fn record_burn_submission(
