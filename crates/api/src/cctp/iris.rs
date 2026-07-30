@@ -11,7 +11,10 @@ use crate::cctp::bounds::{
     check_str_len, MAX_ATTESTATION_BYTES, MAX_IRIS_JSON_BYTES, MAX_RAW_MESSAGE_BYTES,
     MAX_TX_HASH_LEN,
 };
-use crate::cctp::config::{parse_service_url, redact_url, CctpConfig, IRIS_SANDBOX_HOST};
+use crate::cctp::config::{
+    corridor_min_finality, parse_service_url, redact_url, CctpConfig, IRIS_SANDBOX_HOST,
+};
+use crate::models::v2_cctp::CctpFinality;
 
 const USER_AGENT: &str = "stellarroute-api/cctp-core/1.0";
 
@@ -167,13 +170,11 @@ fn is_local_test_host(host: &str) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
-struct FeesResponse {
-    #[serde(default)]
-    standard_fee: Option<String>,
-    #[serde(default)]
-    fast_fee: Option<String>,
-    #[serde(default)]
-    minimum_fee: Option<String>,
+struct FeeTierResponse {
+    #[serde(rename = "finalityThreshold")]
+    finality_threshold: u32,
+    #[serde(rename = "minimumFee")]
+    minimum_fee: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,10 +266,20 @@ impl IrisClient for ReqwestIrisClient {
         if !resp.status().is_success() {
             return Err(IrisError::Http(format!("status {}", resp.status())));
         }
-        let body: FeesResponse = self.read_bounded_json(resp).await?;
+        let tiers: Vec<FeeTierResponse> = self.read_bounded_json(resp).await?;
+        let standard_threshold = corridor_min_finality(CctpFinality::Standard);
+        let fast_threshold = corridor_min_finality(CctpFinality::Fast);
+        let standard_fee = tiers
+            .iter()
+            .find(|t| t.finality_threshold == standard_threshold)
+            .map(|t| t.minimum_fee.to_string());
+        let fast_fee = tiers
+            .iter()
+            .find(|t| t.finality_threshold == fast_threshold)
+            .map(|t| t.minimum_fee.to_string());
         Ok(IrisFeeQuote {
-            standard_fee: body.standard_fee.or(body.minimum_fee),
-            fast_fee: body.fast_fee,
+            standard_fee,
+            fast_fee,
         })
     }
 
@@ -363,8 +374,30 @@ impl IrisClient for ReqwestIrisClient {
 mod tests {
     use super::*;
     use crate::cctp::config::CctpConfig;
-    use wiremock::matchers::{method, path_regex};
+    use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn fetch_burn_fees_parses_circle_tier_array() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v2/burn/USDC/fees/27/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"finalityThreshold": 1000, "minimumFee": 1},
+                {"finalityThreshold": 2000, "minimumFee": 0}
+            ])))
+            .mount(&server)
+            .await;
+
+        let cfg = CctpConfig {
+            iris_base_url: server.uri(),
+            ..CctpConfig::default_testnet()
+        };
+        let client = ReqwestIrisClient::from_config(&cfg).unwrap();
+        let fees = client.fetch_burn_fees(27, 0).await.unwrap();
+        assert_eq!(fees.standard_fee.as_deref(), Some("0"));
+        assert_eq!(fees.fast_fee.as_deref(), Some("1"));
+    }
 
     #[tokio::test]
     async fn poll_pending_then_complete() {
