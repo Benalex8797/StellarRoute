@@ -24,10 +24,48 @@ pub struct VerifiedBurnFacts {
 pub enum VerifierError {
     #[error("not ready")]
     NotReady,
+    #[error("transient: {0}")]
+    Transient(String),
     #[error("tx not found")]
     TxNotFound,
     #[error("verification failed: {0}")]
     Failed(String),
+}
+
+/// Outcome of destination mint verification — only `FailedRetryable` may transition retry state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MintVerifyOutcome {
+    Pending,
+    Succeeded,
+    FailedRetryable { reason: String },
+    NonceUsed,
+}
+
+/// Cryptographic/on-chain facts bound to a mint submission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedMintFacts {
+    pub tx_hash: String,
+    pub destination_chain_id: String,
+    pub contract_address: String,
+    pub function_selector: String,
+    pub message_hash: [u8; 32],
+    pub attestation_hash: [u8; 32],
+    pub nonce: String,
+    pub payload_hash: String,
+    pub outcome: MintVerifyOutcome,
+    pub recipient_evidence: Option<String>,
+}
+
+impl VerifiedMintFacts {
+    pub fn submission_ok(&self) -> bool {
+        !self.payload_hash.is_empty()
+            && matches!(
+                self.outcome,
+                MintVerifyOutcome::Pending
+                    | MintVerifyOutcome::Succeeded
+                    | MintVerifyOutcome::NonceUsed
+            )
+    }
 }
 
 #[async_trait]
@@ -49,6 +87,7 @@ pub struct VerifiedMintSubmission {
     pub message_bound: bool,
     pub attestation_bound: bool,
     pub nonce_used: Option<bool>,
+    pub payload_hash: String,
 }
 
 #[async_trait]
@@ -60,13 +99,14 @@ pub trait StellarMintVerifier: Send + Sync {
         message: &[u8],
         attestation: &[u8],
         nonce: &str,
-    ) -> Result<VerifiedMintSubmission, VerifierError>;
+        expected_payload_hash: &str,
+    ) -> Result<VerifiedMintFacts, VerifierError>;
     async fn verify_mint_completion(
         &self,
         tx_hash: &str,
         nonce: &str,
         recipient: &str,
-    ) -> Result<bool, VerifierError>;
+    ) -> Result<MintVerifyOutcome, VerifierError>;
 }
 
 #[async_trait]
@@ -78,13 +118,14 @@ pub trait EvmMintVerifier: Send + Sync {
         message: &[u8],
         attestation: &[u8],
         nonce: &str,
-    ) -> Result<VerifiedMintSubmission, VerifierError>;
+        expected_payload_hash: &str,
+    ) -> Result<VerifiedMintFacts, VerifierError>;
     async fn verify_mint_completion(
         &self,
         tx_hash: &str,
         nonce: &str,
         recipient: &str,
-    ) -> Result<bool, VerifierError>;
+    ) -> Result<MintVerifyOutcome, VerifierError>;
 }
 
 /// Production placeholder — Stellar Soroban burn event parsing deferred.
@@ -126,7 +167,8 @@ impl StellarMintVerifier for NotReadyStellarMintVerifier {
         _: &[u8],
         _: &[u8],
         _: &str,
-    ) -> Result<VerifiedMintSubmission, VerifierError> {
+        _: &str,
+    ) -> Result<VerifiedMintFacts, VerifierError> {
         Err(VerifierError::NotReady)
     }
     async fn verify_mint_completion(
@@ -134,7 +176,7 @@ impl StellarMintVerifier for NotReadyStellarMintVerifier {
         _: &str,
         _: &str,
         _: &str,
-    ) -> Result<bool, VerifierError> {
+    ) -> Result<MintVerifyOutcome, VerifierError> {
         Err(VerifierError::NotReady)
     }
 }
@@ -151,7 +193,8 @@ impl EvmMintVerifier for NotReadyEvmMintVerifier {
         _: &[u8],
         _: &[u8],
         _: &str,
-    ) -> Result<VerifiedMintSubmission, VerifierError> {
+        _: &str,
+    ) -> Result<VerifiedMintFacts, VerifierError> {
         Err(VerifierError::NotReady)
     }
     async fn verify_mint_completion(
@@ -159,7 +202,7 @@ impl EvmMintVerifier for NotReadyEvmMintVerifier {
         _: &str,
         _: &str,
         _: &str,
-    ) -> Result<bool, VerifierError> {
+    ) -> Result<MintVerifyOutcome, VerifierError> {
         Err(VerifierError::NotReady)
     }
 }
@@ -242,4 +285,96 @@ pub fn facts_match(expected: &VerifiedBurnFacts, actual: &VerifiedBurnFacts) -> 
         return Err("hook_data".into());
     }
     Ok(())
+}
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(data))
+}
+
+/// Deterministic fake for mint service-path tests.
+pub struct FakeMintVerifier {
+    pub facts: VerifiedMintFacts,
+    pub completion: MintVerifyOutcome,
+    pub ready: bool,
+}
+
+#[async_trait]
+impl StellarMintVerifier for FakeMintVerifier {
+    fn is_ready(&self) -> bool {
+        self.ready
+    }
+    async fn verify_mint_submission(
+        &self,
+        tx_hash: &str,
+        _message: &[u8],
+        _attestation: &[u8],
+        nonce: &str,
+        expected_payload_hash: &str,
+    ) -> Result<VerifiedMintFacts, VerifierError> {
+        if !self.ready {
+            return Err(VerifierError::NotReady);
+        }
+        if self.facts.tx_hash != tx_hash || self.facts.nonce != nonce {
+            return Err(VerifierError::Failed("mint submission mismatch".into()));
+        }
+        if self.facts.payload_hash != expected_payload_hash {
+            return Err(VerifierError::Failed("payload hash mismatch".into()));
+        }
+        Ok(self.facts.clone())
+    }
+    async fn verify_mint_completion(
+        &self,
+        tx_hash: &str,
+        _nonce: &str,
+        _recipient: &str,
+    ) -> Result<MintVerifyOutcome, VerifierError> {
+        if !self.ready {
+            return Err(VerifierError::NotReady);
+        }
+        if self.facts.tx_hash != tx_hash {
+            return Err(VerifierError::Failed("tx_hash mismatch".into()));
+        }
+        Ok(self.completion.clone())
+    }
+}
+
+#[async_trait]
+impl EvmMintVerifier for FakeMintVerifier {
+    fn is_ready(&self) -> bool {
+        self.ready
+    }
+    async fn verify_mint_submission(
+        &self,
+        tx_hash: &str,
+        _message: &[u8],
+        _attestation: &[u8],
+        nonce: &str,
+        expected_payload_hash: &str,
+    ) -> Result<VerifiedMintFacts, VerifierError> {
+        if !self.ready {
+            return Err(VerifierError::NotReady);
+        }
+        if self.facts.tx_hash != tx_hash || self.facts.nonce != nonce {
+            return Err(VerifierError::Failed("mint submission mismatch".into()));
+        }
+        if self.facts.payload_hash != expected_payload_hash {
+            return Err(VerifierError::Failed("payload hash mismatch".into()));
+        }
+        Ok(self.facts.clone())
+    }
+    async fn verify_mint_completion(
+        &self,
+        tx_hash: &str,
+        _nonce: &str,
+        _recipient: &str,
+    ) -> Result<MintVerifyOutcome, VerifierError> {
+        if !self.ready {
+            return Err(VerifierError::NotReady);
+        }
+        if self.facts.tx_hash != tx_hash {
+            return Err(VerifierError::Failed("tx_hash mismatch".into()));
+        }
+        Ok(self.completion.clone())
+    }
 }
