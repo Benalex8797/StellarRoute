@@ -239,7 +239,7 @@ impl CctpConfig {
         self.validate().is_ok()
     }
 
-    /// Public corridor executability — always false until transaction builders land.
+    /// Public corridor executability — requires all readiness components.
     pub fn is_executable(&self) -> bool {
         false
     }

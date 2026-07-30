@@ -1,4 +1,4 @@
-//! Source-chain burn verification traits (production parsers deferred).
+//! Source-chain burn verification and destination mint verification traits.
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -42,7 +42,52 @@ pub trait EvmBurnVerifier: Send + Sync {
     async fn verify_burn(&self, tx_hash: &str) -> Result<VerifiedBurnFacts, VerifierError>;
 }
 
-/// Production placeholder — event parsing lands with transaction-builder task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedMintSubmission {
+    pub tx_hash: String,
+    pub targets_expected_contract: bool,
+    pub message_bound: bool,
+    pub attestation_bound: bool,
+    pub nonce_used: Option<bool>,
+}
+
+#[async_trait]
+pub trait StellarMintVerifier: Send + Sync {
+    fn is_ready(&self) -> bool;
+    async fn verify_mint_submission(
+        &self,
+        tx_hash: &str,
+        message: &[u8],
+        attestation: &[u8],
+        nonce: &str,
+    ) -> Result<VerifiedMintSubmission, VerifierError>;
+    async fn verify_mint_completion(
+        &self,
+        tx_hash: &str,
+        nonce: &str,
+        recipient: &str,
+    ) -> Result<bool, VerifierError>;
+}
+
+#[async_trait]
+pub trait EvmMintVerifier: Send + Sync {
+    fn is_ready(&self) -> bool;
+    async fn verify_mint_submission(
+        &self,
+        tx_hash: &str,
+        message: &[u8],
+        attestation: &[u8],
+        nonce: &str,
+    ) -> Result<VerifiedMintSubmission, VerifierError>;
+    async fn verify_mint_completion(
+        &self,
+        tx_hash: &str,
+        nonce: &str,
+        recipient: &str,
+    ) -> Result<bool, VerifierError>;
+}
+
+/// Production placeholder — Stellar Soroban burn event parsing deferred.
 pub struct NotReadyStellarBurnVerifier;
 
 #[async_trait]
@@ -65,6 +110,56 @@ impl EvmBurnVerifier for NotReadyEvmBurnVerifier {
     }
 
     async fn verify_burn(&self, _tx_hash: &str) -> Result<VerifiedBurnFacts, VerifierError> {
+        Err(VerifierError::NotReady)
+    }
+}
+
+pub struct NotReadyStellarMintVerifier;
+#[async_trait]
+impl StellarMintVerifier for NotReadyStellarMintVerifier {
+    fn is_ready(&self) -> bool {
+        false
+    }
+    async fn verify_mint_submission(
+        &self,
+        _: &str,
+        _: &[u8],
+        _: &[u8],
+        _: &str,
+    ) -> Result<VerifiedMintSubmission, VerifierError> {
+        Err(VerifierError::NotReady)
+    }
+    async fn verify_mint_completion(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<bool, VerifierError> {
+        Err(VerifierError::NotReady)
+    }
+}
+
+pub struct NotReadyEvmMintVerifier;
+#[async_trait]
+impl EvmMintVerifier for NotReadyEvmMintVerifier {
+    fn is_ready(&self) -> bool {
+        false
+    }
+    async fn verify_mint_submission(
+        &self,
+        _: &str,
+        _: &[u8],
+        _: &[u8],
+        _: &str,
+    ) -> Result<VerifiedMintSubmission, VerifierError> {
+        Err(VerifierError::NotReady)
+    }
+    async fn verify_mint_completion(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<bool, VerifierError> {
         Err(VerifierError::NotReady)
     }
 }
