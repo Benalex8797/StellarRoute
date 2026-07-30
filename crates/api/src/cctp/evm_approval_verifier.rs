@@ -43,6 +43,7 @@ pub struct EvmRpcApprovalVerifier {
     usdc: Address,
     token_messenger: Address,
     min_confirmations: u64,
+    probe_ok: bool,
 }
 
 impl EvmRpcApprovalVerifier {
@@ -72,7 +73,18 @@ impl EvmRpcApprovalVerifier {
             usdc,
             token_messenger,
             min_confirmations,
+            probe_ok: false,
         })
+    }
+
+    pub async fn try_new(config: &CctpConfig) -> Result<Self, VerifierError> {
+        let probe = crate::cctp::evm_readiness_probes::probe_sepolia_with_failover(config).await;
+        if !probe.all_ok() {
+            return Err(VerifierError::NotReady);
+        }
+        let mut verifier = Self::with_confirmations(config, DEFAULT_MIN_CONFIRMATIONS)?;
+        verifier.probe_ok = true;
+        Ok(verifier)
     }
 
     async fn confirmations_ok(&self, receipt: &EthReceipt) -> Result<(), VerifierError> {
@@ -98,7 +110,7 @@ impl EvmRpcApprovalVerifier {
 #[async_trait]
 impl EvmApprovalVerifier for EvmRpcApprovalVerifier {
     fn is_ready(&self) -> bool {
-        self.rpc.is_ready()
+        self.probe_ok
     }
 
     async fn verify_approval(

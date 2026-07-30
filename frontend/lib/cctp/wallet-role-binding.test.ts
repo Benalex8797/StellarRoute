@@ -238,4 +238,28 @@ describe('assessWalletRoleBindings', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.issue.code).toBe('source_burn_mismatch');
   });
+
+  it('rejects stellar mint payload with wrong submitter source', () => {
+    const result = assessWalletRoleBindings({
+      bindings: evmBindings,
+      wallets: {
+        recipient: STELLAR_G,
+        sourceEvmAdapterId: 'evm:test',
+        sourceAddress: EVM_SOURCE,
+        mintSubmitter: STELLAR_G,
+        mintSubmitterStellarAdapterId: 'freighter',
+      },
+      intent: 'stellar_mint',
+      payload: {
+        type: 'stellar_xdr',
+        network_passphrase: 'Test SDF Network ; September 2015',
+        xdr_envelope: 'AAAA',
+        source: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issue.code).toBe('stellar_mint_submitter_mismatch');
+    }
+  });
 });

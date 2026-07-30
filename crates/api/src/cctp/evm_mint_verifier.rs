@@ -87,6 +87,7 @@ pub struct EvmRpcMintVerifier {
     rpc: EvmRpcClient,
     message_transmitter: Address,
     min_confirmations: u64,
+    probe_ok: bool,
 }
 
 impl EvmRpcMintVerifier {
@@ -109,7 +110,29 @@ impl EvmRpcMintVerifier {
             rpc,
             message_transmitter,
             min_confirmations,
+            probe_ok: false,
         })
+    }
+
+    pub async fn try_new(config: &CctpConfig) -> Result<Self, VerifierError> {
+        let probe = crate::cctp::evm_readiness_probes::probe_sepolia_with_failover(config).await;
+        if !probe.all_ok() {
+            return Err(VerifierError::NotReady);
+        }
+        let mut verifier = Self::with_confirmations(config, DEFAULT_MIN_CONFIRMATIONS)?;
+        verifier.probe_ok = true;
+        Ok(verifier)
+    }
+
+    /// Wiremock/unit tests bypass live Sepolia probes but still exercise verifier logic.
+    #[cfg(test)]
+    pub fn with_confirmations_for_test(
+        config: &CctpConfig,
+        min_confirmations: u64,
+    ) -> Result<Self, VerifierError> {
+        let mut verifier = Self::with_confirmations(config, min_confirmations)?;
+        verifier.probe_ok = true;
+        Ok(verifier)
     }
 
     fn hash32(data: &[u8]) -> [u8; 32] {
@@ -290,7 +313,7 @@ impl EvmRpcMintVerifier {
 #[async_trait]
 impl EvmMintVerifier for EvmRpcMintVerifier {
     fn is_ready(&self) -> bool {
-        self.rpc.is_ready()
+        self.probe_ok
     }
 
     async fn verify_mint_submission(
@@ -462,7 +485,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let attestation = vec![0xab; 65];
         let receive_call = IMessageTransmitterV2::receiveMessageCall {
@@ -588,7 +611,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
         let caller: Address = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
@@ -634,7 +657,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
         let caller: Address = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
@@ -679,7 +702,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
         let mut wrong_nonce = fields.nonce;
@@ -726,7 +749,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
         let mut wrong_sender = fields.sender;
@@ -773,7 +796,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
         let mut wrong_body = fields.message_body.clone();
@@ -820,7 +843,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
         let caller: Address = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
@@ -870,7 +893,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let tx_hash = "0x8888888888888888888888888888888888888888888888888888888888888888";
         let err = verifier
@@ -891,7 +914,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let tx_hash = "0x9999999999999999999999999999999999999999999999999999999999999999";
         Mock::given(method("POST"))
@@ -934,7 +957,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let tx_hash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -988,7 +1011,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let tx_hash = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
@@ -1047,7 +1070,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcMintVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcMintVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
         let message = sample_cctp_message();
         let fields = EvmRpcMintVerifier::parse_message_fields(&message).unwrap();
         let caller: Address = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"

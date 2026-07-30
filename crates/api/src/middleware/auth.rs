@@ -85,8 +85,56 @@ fn is_always_exempt(path: &str) -> bool {
     ALWAYS_EXEMPT_PREFIXES.iter().any(|p| path.starts_with(p))
 }
 
-fn is_cctp_bridge_exempt(path: &str) -> bool {
-    path == "/api/v2/bridge/cctp/quote" || path.starts_with("/api/v2/bridge/cctp/")
+fn is_public_v2_metadata(method: &axum::http::Method, path: &str) -> bool {
+    method == axum::http::Method::GET && path == "/api/v2"
+}
+
+const CCTP_BRIDGE_PREFIX: &str = "/api/v2/bridge/cctp/";
+const CCTP_QUOTE_PATH: &str = "/api/v2/bridge/cctp/quote";
+
+fn is_valid_uuid(segment: &str) -> bool {
+    if segment.len() != 36 {
+        return false;
+    }
+    let bytes = segment.as_bytes();
+    bytes[8] == b'-'
+        && bytes[13] == b'-'
+        && bytes[18] == b'-'
+        && bytes[23] == b'-'
+        && segment.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+fn is_cctp_bridge_exempt(method: &axum::http::Method, path: &str) -> bool {
+    if path.contains("..") || path.contains("//") || path.contains('%') || path.contains('.') {
+        return false;
+    }
+    if *method == axum::http::Method::POST && path == CCTP_QUOTE_PATH {
+        return true;
+    }
+    if !path.starts_with(CCTP_BRIDGE_PREFIX) {
+        return false;
+    }
+    let rest = &path[CCTP_BRIDGE_PREFIX.len()..];
+    if rest.is_empty() || rest.starts_with('/') {
+        return false;
+    }
+    if rest == "quote" {
+        return false;
+    }
+    let (uuid_part, suffix) = match rest.split_once('/') {
+        None => (rest, ""),
+        Some((id, suf)) => (id, suf),
+    };
+    if !is_valid_uuid(uuid_part) {
+        return false;
+    }
+    match suffix {
+        "" => *method == axum::http::Method::GET,
+        "prepare-burn" | "submit-burn" | "prepare-mint" | "submit-mint" | "reattest" => {
+            *method == axum::http::Method::POST
+        }
+        _ => false,
+    }
 }
 
 /// Parse `PUBLIC_GET_ROUTES` as a CSV allowlist of route path prefixes that
@@ -200,7 +248,11 @@ where
                 return inner.call(req).await;
             }
 
-            if is_cctp_bridge_exempt(req.uri().path()) {
+            if is_public_v2_metadata(req.method(), req.uri().path()) {
+                return inner.call(req).await;
+            }
+
+            if is_cctp_bridge_exempt(req.method(), req.uri().path()) {
                 return inner.call(req).await;
             }
 
@@ -369,15 +421,60 @@ mod tests {
 
     #[test]
     fn cctp_bridge_paths_are_auth_exempt() {
-        assert!(is_cctp_bridge_exempt("/api/v2/bridge/cctp/quote"));
+        use axum::http::Method;
         assert!(is_cctp_bridge_exempt(
+            &Method::POST,
+            "/api/v2/bridge/cctp/quote"
+        ));
+        assert!(is_cctp_bridge_exempt(
+            &Method::GET,
             "/api/v2/bridge/cctp/550e8400-e29b-41d4-a716-446655440000"
         ));
         assert!(is_cctp_bridge_exempt(
+            &Method::POST,
             "/api/v2/bridge/cctp/550e8400-e29b-41d4-a716-446655440000/prepare-burn"
         ));
-        assert!(!is_cctp_bridge_exempt("/api/v2"));
-        assert!(!is_cctp_bridge_exempt("/api/v2/assets/canonicalize"));
-        assert!(!is_cctp_bridge_exempt("/api/v1/admin/kill-switch"));
+        assert!(!is_cctp_bridge_exempt(&Method::GET, "/api/v2"));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::GET,
+            "/api/v2/assets/canonicalize"
+        ));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::GET,
+            "/api/v1/admin/kill-switch"
+        ));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::GET,
+            "/api/v2/bridge/cctp/../admin"
+        ));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::GET,
+            "/api/v2/bridge/cctp//550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::GET,
+            "/api/v2/bridge/cctp/%2e%2e/admin"
+        ));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::GET,
+            "/api/v2/bridge/cctp/not-a-uuid/prepare-burn"
+        ));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::GET,
+            "/api/v2/bridge/cctp/550e8400-e29b-41d4-a716-446655440000/extra"
+        ));
+        assert!(!is_cctp_bridge_exempt(
+            &Method::POST,
+            "/api/v2/bridge/cctp/550e8400-e29b-41d4-a716-446655440000"
+        ));
+    }
+
+    #[test]
+    fn public_v2_metadata_is_auth_exempt() {
+        use axum::http::Method;
+        assert!(is_public_v2_metadata(&Method::GET, "/api/v2"));
+        assert!(!is_public_v2_metadata(&Method::POST, "/api/v2"));
+        assert!(!is_public_v2_metadata(&Method::GET, "/api/v2/"));
+        assert!(!is_public_v2_metadata(&Method::GET, "/api/v2/assets"));
     }
 }

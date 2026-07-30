@@ -711,7 +711,7 @@ mod tests {
                 _: u32,
             ) -> Result<IrisFeeQuote, crate::cctp::iris::IrisError> {
                 Ok(IrisFeeQuote {
-                    standard_fee: Some("1".into()),
+                    standard_fee: "1".into(),
                     fast_fee: None,
                 })
             }
@@ -773,6 +773,53 @@ mod tests {
                 recipient_evidence: None,
             },
             completion: crate::cctp::verifiers::MintVerifyOutcome::Pending,
+            ready: true,
+        });
+        struct ReadyEvmBurnBuilder;
+        #[async_trait::async_trait]
+        impl crate::cctp::builders::EvmCctpBurnBuilder for ReadyEvmBurnBuilder {
+            fn is_ready(&self) -> bool {
+                true
+            }
+            async fn prepare_burn(
+                &self,
+                _: &CctpTransfer,
+                _: &CctpConfig,
+            ) -> Result<
+                crate::cctp::builders::PreparedBurnBundle,
+                crate::cctp::builders::BuilderError,
+            > {
+                Err(crate::cctp::builders::BuilderError::NotReady)
+            }
+        }
+        runtime.evm_burn_builder = Arc::new(ReadyEvmBurnBuilder);
+        runtime.evm_burn_verifier = Arc::new(crate::cctp::verifiers::FakeBurnVerifier {
+            facts: crate::cctp::verifiers::VerifiedBurnFacts {
+                tx_hash: "burn".into(),
+                source_chain_id: SEPOLIA_CHAIN_ID.into(),
+                source_domain: 0,
+                destination_domain: 27,
+                sender: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+                amount_cctp_subunits: 1,
+                burn_token_bytes32: [0; 32],
+                mint_recipient_bytes32: [0; 32],
+                destination_caller_bytes32: [0; 32],
+                min_finality_threshold: 2000,
+                hook_data: None,
+                token_messenger_bytes32: [0; 32],
+                block_or_ledger: None,
+            },
+            ready: true,
+        });
+        runtime.evm_approval_verifier = Arc::new(crate::cctp::approval::FakeApprovalVerifier {
+            facts: crate::cctp::approval::VerifiedApprovalFacts {
+                tx_hash: "approve".into(),
+                owner: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+                token_contract: cfg.contracts.sepolia_usdc.clone(),
+                spender_contract: cfg.contracts.sepolia_token_messenger.clone(),
+                amount: 1,
+                chain_id: SEPOLIA_CHAIN_ID.into(),
+            },
             ready: true,
         });
         let service = CctpService {

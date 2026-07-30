@@ -38,7 +38,7 @@ impl IrisClient for MockIris {
     ) -> Result<stellarroute_api::cctp::iris::IrisFeeQuote, stellarroute_api::cctp::iris::IrisError>
     {
         Ok(IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         })
     }
@@ -166,4 +166,51 @@ async fn adjacent_v2_post_still_requires_api_key() {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["error"], "unauthorized");
+}
+
+#[tokio::test]
+async fn get_api_v2_metadata_is_public_without_api_key() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let router = authed_router(Some(enabled_test_context())).await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn cctp_bridge_traversal_paths_stay_protected() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let router = authed_router(Some(enabled_test_context())).await;
+    for path in [
+        "/api/v2/bridge/cctp/../admin",
+        "/api/v2/bridge/cctp/%2e%2e/admin",
+        "/api/v2/bridge/cctp/not-a-uuid/prepare-burn",
+        "/api/v2/bridge/cctp/550e8400-e29b-41d4-a716-446655440000/extra",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "expected 401 for {path}"
+        );
+    }
 }

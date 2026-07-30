@@ -619,10 +619,10 @@ fn fully_ready_cctp_router(
         readiness::CctpRuntime,
         service::CctpService,
         store::{CctpTransferStore, InMemoryCctpTransferStore},
-        verifiers::{FakeMintVerifier, MintVerifyOutcome, VerifiedMintFacts},
+        verifiers::{FakeBurnVerifier, FakeMintVerifier, MintVerifyOutcome, VerifiedMintFacts},
     };
     use stellarroute_api::dependency_health::ExternalDependencyHealth;
-    use stellarroute_api::models::v2_cctp::STELLAR_TESTNET_CHAIN_ID;
+    use stellarroute_api::models::v2_cctp::{SEPOLIA_CHAIN_ID, STELLAR_TESTNET_CHAIN_ID};
     use stellarroute_api::state::{AppState, DatabasePools};
 
     struct ReadyStellarMintBuilder;
@@ -669,6 +669,51 @@ fn fully_ready_cctp_router(
         completion: MintVerifyOutcome::Pending,
         ready: true,
     });
+    struct ReadyEvmBurnBuilder;
+    #[async_trait::async_trait]
+    impl stellarroute_api::cctp::builders::EvmCctpBurnBuilder for ReadyEvmBurnBuilder {
+        fn is_ready(&self) -> bool {
+            true
+        }
+        async fn prepare_burn(
+            &self,
+            _: &stellarroute_api::cctp::store::CctpTransfer,
+            _: &CctpConfig,
+        ) -> Result<stellarroute_api::cctp::builders::PreparedBurnBundle, BuilderError> {
+            Err(BuilderError::NotReady)
+        }
+    }
+    runtime.evm_burn_builder = Arc::new(ReadyEvmBurnBuilder);
+    runtime.evm_burn_verifier = Arc::new(FakeBurnVerifier {
+        facts: stellarroute_api::cctp::verifiers::VerifiedBurnFacts {
+            tx_hash: "burn".into(),
+            source_chain_id: SEPOLIA_CHAIN_ID.into(),
+            source_domain: 0,
+            destination_domain: 27,
+            sender: VALID_EVM_RECIPIENT.into(),
+            amount_cctp_subunits: 1,
+            burn_token_bytes32: [0; 32],
+            mint_recipient_bytes32: [0; 32],
+            destination_caller_bytes32: [0; 32],
+            min_finality_threshold: 2000,
+            hook_data: None,
+            token_messenger_bytes32: [0; 32],
+            block_or_ledger: None,
+        },
+        ready: true,
+    });
+    runtime.evm_approval_verifier =
+        Arc::new(stellarroute_api::cctp::approval::FakeApprovalVerifier {
+            facts: stellarroute_api::cctp::approval::VerifiedApprovalFacts {
+                tx_hash: "approve".into(),
+                owner: VALID_EVM_RECIPIENT.into(),
+                token_contract: cfg.contracts.sepolia_usdc.clone(),
+                spender_contract: cfg.contracts.sepolia_token_messenger.clone(),
+                amount: 1,
+                chain_id: SEPOLIA_CHAIN_ID.into(),
+            },
+            ready: true,
+        });
 
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let idempotency = Arc::new(InMemoryCctpQuoteIdempotencyStore::default());
@@ -729,7 +774,7 @@ impl IrisClient for CountingContractIris {
     ) -> Result<IrisFeeQuote, stellarroute_api::cctp::iris::IrisError> {
         self.fee_calls.fetch_add(1, Ordering::SeqCst);
         Ok(IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         })
     }

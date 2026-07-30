@@ -86,7 +86,7 @@ impl IrisClient for CountingIris {
     ) -> Result<IrisFeeQuote, stellarroute_api::cctp::iris::IrisError> {
         self.fee_calls.fetch_add(1, Ordering::SeqCst);
         Ok(IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         })
     }

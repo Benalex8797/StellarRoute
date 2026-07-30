@@ -201,12 +201,13 @@ Rules:
 
 ### Browser auth / CORS (production)
 
-- Global `REQUIRE_AUTH=true` does **not** block `/api/v2/bridge/cctp/*`. Quote stays public and
-  rate-limited; transfer routes still require `x-cctp-transfer-access` (uniform `404` on failure).
+- Global `REQUIRE_AUTH=true` does **not** block exact CCTP bridge routes (`POST /api/v2/bridge/cctp/quote`,
+  `GET|POST /api/v2/bridge/cctp/{uuid}` and mutation suffixes). Traversal, dot segments, malformed UUIDs,
+  and adjacent `/api/v2/*` paths remain protected.
+- `GET /api/v2` metadata is public in production (no integrator API key) for browser readiness; other
+  `/api/v2/*` routes still require auth unless listed in `PUBLIC_GET_ROUTES`.
 - Strict CORS allowlists must include the deployed frontend origin and allow headers:
   `Content-Type`, `Idempotency-Key`, `x-cctp-transfer-access`, `x-request-id`.
-- Browser clients also need `PUBLIC_GET_ROUTES=/api/v2` (or an integrator API key) to read
-  corridor metadata while `REQUIRE_AUTH=true`; CCTP quote/transfer routes are exempt separately.
 
 ### Local configured-ready proof
 
@@ -217,6 +218,14 @@ Opt-in script (loopback only, sanitized output):
 ```
 
 Writes `docs/readiness/evidence/cctp-configured-ready-proof.json` on success (no tokens/XDR/HMAC).
+
+**Evidence chronology (two-commit model):**
+
+1. Commit all code/tests/scripts/docs as commit **A** (`tested_code_head`).
+2. With a clean working tree, run the proof script. It records `tested_git_head` = commit A,
+   `proof_script_sha256`, `timestamp`, and `evidence_scope`.
+3. Commit **only** the evidence JSON as commit **B**. The evidence commit hash may differ; reviewers
+   reproduce behavior at `tested_git_head` (parent tested code), not at the evidence commit.
 
 ## Verification
 

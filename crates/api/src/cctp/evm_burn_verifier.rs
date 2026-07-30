@@ -48,6 +48,7 @@ pub struct EvmRpcBurnVerifier {
     token_messenger: Address,
     chain_id: u64,
     min_confirmations: u64,
+    probe_ok: bool,
 }
 
 impl EvmRpcBurnVerifier {
@@ -77,7 +78,29 @@ impl EvmRpcBurnVerifier {
             token_messenger,
             chain_id: SEPOLIA_CHAIN_ID_NUM,
             min_confirmations,
+            probe_ok: false,
         })
+    }
+
+    pub async fn try_new(config: &CctpConfig) -> Result<Self, VerifierError> {
+        let probe = crate::cctp::evm_readiness_probes::probe_sepolia_with_failover(config).await;
+        if !probe.all_ok() {
+            return Err(VerifierError::NotReady);
+        }
+        let mut verifier = Self::with_confirmations(config, DEFAULT_MIN_CONFIRMATIONS)?;
+        verifier.probe_ok = true;
+        Ok(verifier)
+    }
+
+    /// Wiremock/unit tests bypass live Sepolia probes but still exercise verifier logic.
+    #[cfg(test)]
+    pub fn with_confirmations_for_test(
+        config: &CctpConfig,
+        min_confirmations: u64,
+    ) -> Result<Self, VerifierError> {
+        let mut verifier = Self::with_confirmations(config, min_confirmations)?;
+        verifier.probe_ok = true;
+        Ok(verifier)
     }
 
     fn normalize_hash(hash: &str) -> String {
@@ -243,7 +266,7 @@ struct EthBlockNumber(String);
 #[async_trait]
 impl EvmBurnVerifier for EvmRpcBurnVerifier {
     fn is_ready(&self) -> bool {
-        !self.rpc_url.trim().is_empty() && self.chain_id == SEPOLIA_CHAIN_ID_NUM
+        self.probe_ok
     }
 
     async fn verify_burn(&self, tx_hash: &str) -> Result<VerifiedBurnFacts, VerifierError> {
@@ -429,7 +452,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcBurnVerifier::new(&cfg).unwrap();
+        let verifier = EvmRpcBurnVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
 
         Mock::given(method("POST"))
             .and(path("/"))
@@ -470,7 +493,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcBurnVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcBurnVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
 
         let from: Address = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
             .parse()
@@ -587,7 +610,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcBurnVerifier::with_confirmations(&cfg, 1).unwrap();
+        let verifier = EvmRpcBurnVerifier::with_confirmations_for_test(&cfg, 1).unwrap();
 
         let from: Address = FIXTURE_DEPOSITOR.parse().unwrap();
         let burn_token: Address = FIXTURE_BURN_TOKEN.parse().unwrap();
@@ -679,7 +702,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url = server.uri();
-        let verifier = EvmRpcBurnVerifier::with_confirmations(&cfg, 3).unwrap();
+        let verifier = EvmRpcBurnVerifier::with_confirmations_for_test(&cfg, 3).unwrap();
         let tx_hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
         let mint_recipient =
             evm_address_to_bytes32("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0").unwrap();

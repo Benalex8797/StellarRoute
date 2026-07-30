@@ -210,6 +210,21 @@ function validatePayloadAgainstBindings(input: {
         );
       }
     }
+    if (needsStellarMint && bindings.stellarMintSubmitter) {
+      const source = payloadSourceAddress(payload);
+      if (
+        source &&
+        !addressesEqualStellarG(source, bindings.stellarMintSubmitter.address)
+      ) {
+        return mismatch(
+          'stellar_mint_submitter_mismatch',
+          'stellar_mint_submitter',
+          'Connect the original Stellar mint submitter (G) to continue.',
+          bindings.stellarMintSubmitter.address,
+          source,
+        );
+      }
+    }
     return null;
   }
 

@@ -46,21 +46,21 @@ impl StellarRpcApprovalVerifier {
 
     fn decode_approve(
         invoke: &crate::cctp::stellar_tx::ParsedInvoke,
+        expected_owner: &str,
     ) -> Result<(String, i128, Option<u32>), VerifierError> {
         if invoke.function != "approve" {
             return Err(VerifierError::Failed("wrong function".into()));
         }
-        let (spender_idx, amount_idx, expiration_idx) = match invoke.args.len() {
-            2 => (0, 1, None),
-            3 => (0, 1, Some(2)),
-            4 => (1, 2, Some(3)),
-            _ => return Err(VerifierError::Failed("approve arg count".into())),
-        };
-        let spender = address_to_strkey(&scval_to_address(&invoke.args[spender_idx])?)?;
-        let amount = scval_to_i128(&invoke.args[amount_idx])?;
-        let expiration = expiration_idx
-            .map(|idx| scval_to_u32(&invoke.args[idx]))
-            .transpose()?;
+        if invoke.args.len() != 4 {
+            return Err(VerifierError::Failed("approve arg count".into()));
+        }
+        let owner = address_to_strkey(&scval_to_address(&invoke.args[0])?)?;
+        if owner != expected_owner {
+            return Err(VerifierError::Failed("wrong approval owner".into()));
+        }
+        let spender = address_to_strkey(&scval_to_address(&invoke.args[1])?)?;
+        let amount = scval_to_i128(&invoke.args[2])?;
+        let expiration = scval_to_u32(&invoke.args[3]).ok();
         Ok((spender, amount, expiration))
     }
 }
@@ -93,7 +93,8 @@ impl StellarApprovalVerifier for StellarRpcApprovalVerifier {
             return Err(VerifierError::Failed("wrong token contract".into()));
         }
 
-        let (spender, approved, expiration_ledger) = Self::decode_approve(&invoke)?;
+        let (spender, approved, expiration_ledger) =
+            Self::decode_approve(&invoke, &transfer.sender)?;
         if spender != self.token_messenger {
             return Err(VerifierError::Failed("wrong spender".into()));
         }

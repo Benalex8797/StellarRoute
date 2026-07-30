@@ -16,6 +16,7 @@ pub mod evm_approval_verifier;
 pub mod evm_attester_reader;
 pub mod evm_burn_verifier;
 pub mod evm_mint_verifier;
+pub mod evm_readiness_probes;
 pub mod evm_rpc;
 pub mod expectations;
 pub mod fixtures;

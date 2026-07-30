@@ -44,7 +44,7 @@ impl EvmRpcAllowanceChecker {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.rpc.is_ready()
+        !self.rpc.rpc_url.trim().is_empty()
     }
 }
 

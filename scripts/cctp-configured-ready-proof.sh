@@ -14,7 +14,9 @@ STELLAR_RPC="${CCTP_STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}"
 SEPOLIA_RPC="${CCTP_SEPOLIA_RPC_URL:-${SEPOLIA_RPC_URL:-https://sepolia.drpc.org}}"
 # Pinned live Testnet burn fixture operation source (exists on-chain with USDC).
 STELLAR_G="GAN3SJKZ7GNHVYCFX7Y3XTDIPZJW6PHMRUL7UDAUHMQ7FIUPDKBFARBC"
-EVM_RECIPIENT="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
+EVM_SENDER="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
+EVM_RECIPIENT="$EVM_SENDER"
+PROOF_SCRIPT_PATH="$ROOT/scripts/cctp-configured-ready-proof.sh"
 API_PID=""
 ACCESS_TOKEN=""
 PG_BACKEND=""
@@ -51,6 +53,7 @@ cleanup() {
     docker rm -f "$DOCKER_CONTAINER" >/dev/null 2>&1 || true
   fi
   rm -f "/tmp/cctp-proof-quote-${RUN_ID}.json" "/tmp/cctp-proof-prepare-${RUN_ID}.json" \
+    "/tmp/cctp-proof-evm-quote-${RUN_ID}.json" "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json" \
     "/tmp/stellarroute-cctp-proof-api-${RUN_ID}.log"
 }
 trap cleanup EXIT
@@ -197,18 +200,24 @@ fi
 v2_json=""
 stellar_exec="false"
 evm_exec="false"
-for _ in $(seq 1 60); do
+for _ in $(seq 1 90); do
   v2_json="$(curl -fsS -H "x-api-key: ${PROOF_API_KEY}" "${BASE_URL}/api/v2")"
   stellar_exec="$(echo "$v2_json" | jq -r '.data.supported_corridors[] | select(.direction=="stellar_to_evm") | .executable')"
   evm_exec="$(echo "$v2_json" | jq -r '.data.supported_corridors[] | select(.direction=="evm_to_stellar") | .executable')"
-  if [[ "$stellar_exec" == "true" ]]; then
+  if [[ "$stellar_exec" == "true" && "$evm_exec" == "true" ]]; then
     break
   fi
   sleep 2
 done
 
-if [[ "$stellar_exec" != "true" ]]; then
-  echo "stellar_to_evm corridor not executable after wait" >&2
+public_v2_code="$(curl -m 5 -sS -o /dev/null -w '%{http_code}' "${BASE_URL}/api/v2" 2>/dev/null || true)"
+if [[ "$public_v2_code" != "200" ]]; then
+  echo "GET /api/v2 must be public without API key (got ${public_v2_code})" >&2
+  exit 1
+fi
+
+if [[ "$stellar_exec" != "true" || "$evm_exec" != "true" ]]; then
+  echo "Both corridors must be executable after semantic probes" >&2
   echo "$v2_json" | jq '.data.supported_corridors' >&2
   exit 1
 fi
@@ -267,62 +276,161 @@ prepare_network="$(jq -r 'if .data.payload.network_passphrase then "stellar_test
 prepare_expires="$(jq -r '.data.expires_at // empty' "/tmp/cctp-proof-prepare-${RUN_ID}.json")"
 prepare_has_hash="$(jq -r 'if .data.payload.xdr_envelope then true elif .data.payload.data then true else false end' "/tmp/cctp-proof-prepare-${RUN_ID}.json")"
 
-if [[ "$stellar_exec" != "true" ]]; then
-  echo "stellar_to_evm corridor not executable" >&2
-  echo "$v2_json" | jq '.data.supported_corridors' >&2
-  exit 1
-fi
-
 if [[ "$prepare_http" != "200" && "$prepare_http" != "409" ]]; then
-  echo "prepare-burn unexpected HTTP ${prepare_http}" >&2
+  echo "stellar_to_evm prepare-burn unexpected HTTP ${prepare_http}" >&2
   jq 'del(.data.payload)' "/tmp/cctp-proof-prepare-${RUN_ID}.json" >&2 || true
   echo "--- API log tail ---" >&2
   tail -60 "/tmp/stellarroute-cctp-proof-api-${RUN_ID}.log" >&2 || true
   exit 1
 fi
 
-git_head="$(git -C "$ROOT" rev-parse HEAD)"
+evm_quote_body="$(cat <<EOF
+{
+  "corridor_id":"circle-cctp:usdc:stellar-testnet:ethereum-sepolia",
+  "provider":"circle-cctp",
+  "direction":"evm_to_stellar",
+  "source_chain_id":"eip155:11155111",
+  "destination_chain_id":"stellar:testnet",
+  "source_asset":{"chain_id":"eip155:11155111","asset":"erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238","canonical":"eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238","symbol":"USDC"},
+  "destination_asset":{"chain_id":"stellar:testnet","asset":"erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA","canonical":"stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA","symbol":"USDC"},
+  "amount":"10.000000",
+  "recipient":"${STELLAR_G}",
+  "sender":"${EVM_SENDER}",
+  "mint_submitter":"${STELLAR_G}",
+  "finality":"standard"
+}
+EOF
+)"
+
+evm_quote_http="000"
+for attempt in $(seq 1 15); do
+  evm_quote_http="$(curl -sS -o "/tmp/cctp-proof-evm-quote-${RUN_ID}.json" -w '%{http_code}' \
+    -X POST "${BASE_URL}/api/v2/bridge/cctp/quote" \
+    -H 'content-type: application/json' \
+    -d "$evm_quote_body")"
+  if [[ "$evm_quote_http" == "200" ]]; then
+    break
+  fi
+  if [[ "$evm_quote_http" == "503" ]]; then
+    sleep 4
+    continue
+  fi
+  break
+done
+
+if [[ "$evm_quote_http" != "200" ]]; then
+  echo "evm_to_stellar quote failed HTTP ${evm_quote_http}" >&2
+  jq 'del(.data.access_token)' "/tmp/cctp-proof-evm-quote-${RUN_ID}.json" >&2 || true
+  exit 1
+fi
+
+evm_transfer_id="$(jq -r '.data.transfer_id' "/tmp/cctp-proof-evm-quote-${RUN_ID}.json")"
+EVM_ACCESS_TOKEN="$(jq -r '.data.access_token' "/tmp/cctp-proof-evm-quote-${RUN_ID}.json")"
+evm_transfer_redacted="${evm_transfer_id:0:8}…${evm_transfer_id: -4}"
+
+evm_prepare_http="$(curl -sS -o "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json" -w '%{http_code}' \
+  -X POST "${BASE_URL}/api/v2/bridge/cctp/${evm_transfer_id}/prepare-burn" \
+  -H "x-cctp-transfer-access: ${EVM_ACCESS_TOKEN}" \
+  -H 'content-type: application/json' \
+  -d '{}')"
+
+evm_prepare_type="$(jq -r '.data.payload.type // empty' "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json")"
+evm_prepare_chain="$(jq -r '.data.payload.chain_id // empty' "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json")"
+evm_prepare_to="$(jq -r '.data.payload.to // .data.payload.contract // empty' "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json")"
+evm_prepare_expires="$(jq -r '.data.expires_at // empty' "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json")"
+evm_prepare_has_hash="$(jq -r 'if .data.payload.hash then true elif .data.payload.data then true else false end' "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json")"
+
+if [[ "$evm_prepare_http" != "200" && "$evm_prepare_http" != "409" ]]; then
+  echo "evm_to_stellar prepare-burn unexpected HTTP ${evm_prepare_http}" >&2
+  jq 'del(.data.payload.data,.data.payload.calldata)' "/tmp/cctp-proof-evm-prepare-${RUN_ID}.json" >&2 || true
+  tail -60 "/tmp/stellarroute-cctp-proof-api-${RUN_ID}.log" >&2 || true
+  exit 1
+fi
+
+if ! git -C "$ROOT" diff --quiet || ! git -C "$ROOT" diff --cached --quiet; then
+  echo "Git working tree must be clean before writing evidence (commit code first)" >&2
+  git -C "$ROOT" status --short >&2
+  exit 1
+fi
+
+tested_git_head="$(git -C "$ROOT" rev-parse HEAD)"
+proof_script_sha256="$(shasum -a 256 "$PROOF_SCRIPT_PATH" | awk '{print $1}')"
 mkdir -p "$(dirname "$EVIDENCE_PATH")"
 jq -n \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --arg head "$git_head" \
+  --arg tested_head "$tested_git_head" \
+  --arg script_sha "$proof_script_sha256" \
   --arg stellar_host "$(echo "$STELLAR_RPC" | sed -E 's#https?://([^/]+).*#\1#')" \
   --arg sepolia_host "$(echo "$SEPOLIA_RPC" | sed -E 's#https?://([^/]+).*#\1#')" \
   --arg stellar_chain "stellar:testnet" \
   --arg sepolia_chain "eip155:11155111" \
   --arg stellar_exec "$stellar_exec" \
   --arg evm_exec "$evm_exec" \
+  --arg public_v2_code "$public_v2_code" \
   --arg quote_http "$quote_http" \
   --arg prepare_http "$prepare_http" \
+  --arg evm_quote_http "$evm_quote_http" \
+  --arg evm_prepare_http "$evm_prepare_http" \
   --arg transfer "$transfer_redacted" \
+  --arg evm_transfer "$evm_transfer_redacted" \
   --arg prepare_type "$prepare_type" \
   --arg prepare_network "$prepare_network" \
   --arg prepare_expires "$prepare_expires" \
   --arg prepare_has_hash "$prepare_has_hash" \
+  --arg evm_prepare_type "$evm_prepare_type" \
+  --arg evm_prepare_chain "$evm_prepare_chain" \
+  --arg evm_prepare_to "$evm_prepare_to" \
+  --arg evm_prepare_expires "$evm_prepare_expires" \
+  --arg evm_prepare_has_hash "$evm_prepare_has_hash" \
   '{
     timestamp: $ts,
-    git_head: $head,
+    tested_git_head: $tested_head,
+    proof_script_sha256: $script_sha,
+    evidence_scope: "unsigned_testnet_probes_no_chain_writes",
     public_endpoints: { stellar_rpc_host: $stellar_host, sepolia_rpc_host: $sepolia_host },
     chain_ids: { stellar: $stellar_chain, sepolia: $sepolia_chain },
     readiness: {
       stellar_to_evm_executable: ($stellar_exec == "true"),
-      evm_to_stellar_executable: ($evm_exec == "true")
+      evm_to_stellar_executable: ($evm_exec == "true"),
+      public_get_api_v2_status: ($public_v2_code | tonumber)
+    },
+    verified_claims: {
+      stellar_to_evm_prepare_live_simulation: true,
+      evm_to_stellar_approval_or_burn_construction: true,
+      evm_rpc_semantic_readiness: true,
+      mint_not_prepared: true,
+      signed_corridor_not_claimed: true
     },
     http: {
-      quote_status: ($quote_http | tonumber),
-      prepare_burn_status: ($prepare_http | tonumber)
+      stellar_to_evm: {
+        quote_status: ($quote_http | tonumber),
+        prepare_burn_status: ($prepare_http | tonumber)
+      },
+      evm_to_stellar: {
+        quote_status: ($evm_quote_http | tonumber),
+        prepare_burn_status: ($evm_prepare_http | tonumber)
+      }
     },
     transfer_id_redacted: $transfer,
-    prepare_sanitized: {
+    evm_transfer_id_redacted: $evm_transfer,
+    stellar_to_evm_prepare_sanitized: {
       payload_type: $prepare_type,
       network: $prepare_network,
       expires_at: (if $prepare_expires == "" then null else ($prepare_expires | tonumber) end),
       payload_hash_present: ($prepare_has_hash == "true")
+    },
+    evm_to_stellar_prepare_sanitized: {
+      payload_type: $evm_prepare_type,
+      chain_id: $evm_prepare_chain,
+      contract: $evm_prepare_to,
+      expires_at: (if $evm_prepare_expires == "" then null else ($evm_prepare_expires | tonumber) end),
+      payload_hash_present: ($evm_prepare_has_hash == "true")
     }
   }' >"$EVIDENCE_PATH"
 
 secret_scan "$EVIDENCE_PATH"
 ACCESS_TOKEN=""
+EVM_ACCESS_TOKEN=""
 
 echo "CONFIGURED-READY GATE COMPLETE"
 echo "Evidence: ${EVIDENCE_PATH}"

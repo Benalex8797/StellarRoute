@@ -28,7 +28,7 @@ struct MockIris;
 impl IrisClient for MockIris {
     async fn fetch_burn_fees(&self, _: u32, _: u32) -> Result<IrisFeeQuote, IrisError> {
         Ok(IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         })
     }

@@ -20,7 +20,7 @@ const USER_AGENT: &str = "stellarroute-api/cctp-core/1.0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrisFeeQuote {
-    pub standard_fee: Option<String>,
+    pub standard_fee: String,
     pub fast_fee: Option<String>,
 }
 
@@ -170,7 +170,7 @@ fn is_local_test_host(host: &str) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
-struct FeeTierResponse {
+pub(crate) struct FeeTierResponse {
     #[serde(rename = "finalityThreshold")]
     finality_threshold: u32,
     #[serde(rename = "minimumFee")]
@@ -193,6 +193,47 @@ pub(crate) struct MessageV2 {
     status: Option<String>,
     #[serde(rename = "eventNonce")]
     event_nonce: Option<String>,
+}
+
+fn validate_minimum_fee(fee: u64) -> Result<(), IrisError> {
+    if fee > 1_000_000_000_000 {
+        return Err(IrisError::Malformed("minimumFee out of bounds".into()));
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_burn_fee_tiers(tiers: Vec<FeeTierResponse>) -> Result<IrisFeeQuote, IrisError> {
+    use std::collections::HashSet;
+
+    let standard_threshold = corridor_min_finality(CctpFinality::Standard);
+    let fast_threshold = corridor_min_finality(CctpFinality::Fast);
+    let mut seen = HashSet::new();
+    let mut standard_fee = None;
+    let mut fast_fee = None;
+
+    for tier in tiers {
+        if !seen.insert(tier.finality_threshold) {
+            return Err(IrisError::Malformed("duplicate finality tier".into()));
+        }
+        validate_minimum_fee(tier.minimum_fee)?;
+        if tier.finality_threshold == standard_threshold {
+            if standard_fee.is_some() {
+                return Err(IrisError::Malformed("duplicate standard tier".into()));
+            }
+            standard_fee = Some(tier.minimum_fee.to_string());
+        } else if tier.finality_threshold == fast_threshold {
+            fast_fee = Some(tier.minimum_fee.to_string());
+        } else {
+            return Err(IrisError::Malformed("unknown finality tier".into()));
+        }
+    }
+
+    let standard_fee =
+        standard_fee.ok_or_else(|| IrisError::Malformed("missing standard tier".into()))?;
+    Ok(IrisFeeQuote {
+        standard_fee,
+        fast_fee,
+    })
 }
 
 pub fn normalize_tx_hash(hash: &str) -> String {
@@ -267,20 +308,7 @@ impl IrisClient for ReqwestIrisClient {
             return Err(IrisError::Http(format!("status {}", resp.status())));
         }
         let tiers: Vec<FeeTierResponse> = self.read_bounded_json(resp).await?;
-        let standard_threshold = corridor_min_finality(CctpFinality::Standard);
-        let fast_threshold = corridor_min_finality(CctpFinality::Fast);
-        let standard_fee = tiers
-            .iter()
-            .find(|t| t.finality_threshold == standard_threshold)
-            .map(|t| t.minimum_fee.to_string());
-        let fast_fee = tiers
-            .iter()
-            .find(|t| t.finality_threshold == fast_threshold)
-            .map(|t| t.minimum_fee.to_string());
-        Ok(IrisFeeQuote {
-            standard_fee,
-            fast_fee,
-        })
+        parse_burn_fee_tiers(tiers)
     }
 
     async fn poll_messages_by_tx(
@@ -395,8 +423,63 @@ mod tests {
         };
         let client = ReqwestIrisClient::from_config(&cfg).unwrap();
         let fees = client.fetch_burn_fees(27, 0).await.unwrap();
-        assert_eq!(fees.standard_fee.as_deref(), Some("0"));
+        assert_eq!(fees.standard_fee, "0");
         assert_eq!(fees.fast_fee.as_deref(), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn fetch_burn_fees_rejects_missing_standard_tier() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v2/burn/USDC/fees/27/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"finalityThreshold": 1000, "minimumFee": 1}
+            ])))
+            .mount(&server)
+            .await;
+        let cfg = CctpConfig {
+            iris_base_url: server.uri(),
+            ..CctpConfig::default_testnet()
+        };
+        let client = ReqwestIrisClient::from_config(&cfg).unwrap();
+        let err = client.fetch_burn_fees(27, 0).await.unwrap_err();
+        assert!(matches!(err, IrisError::Malformed(_)));
+    }
+
+    #[tokio::test]
+    async fn fetch_burn_fees_rejects_duplicate_standard_tier() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"finalityThreshold": 2000, "minimumFee": 0},
+                {"finalityThreshold": 2000, "minimumFee": 1}
+            ])))
+            .mount(&server)
+            .await;
+        let cfg = CctpConfig {
+            iris_base_url: server.uri(),
+            ..CctpConfig::default_testnet()
+        };
+        let client = ReqwestIrisClient::from_config(&cfg).unwrap();
+        let err = client.fetch_burn_fees(27, 0).await.unwrap_err();
+        assert!(matches!(err, IrisError::Malformed(_)));
+    }
+
+    #[test]
+    fn parse_live_shaped_fee_tiers() {
+        let fees = parse_burn_fee_tiers(vec![
+            FeeTierResponse {
+                finality_threshold: 1000,
+                minimum_fee: 0,
+            },
+            FeeTierResponse {
+                finality_threshold: 2000,
+                minimum_fee: 0,
+            },
+        ])
+        .unwrap();
+        assert_eq!(fees.standard_fee, "0");
+        assert_eq!(fees.fast_fee.as_deref(), Some("0"));
     }
 
     #[tokio::test]

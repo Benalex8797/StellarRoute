@@ -34,6 +34,8 @@ pub const FINALITY_STANDARD: u32 = 2000;
 pub const FINALITY_FAST: u32 = 1000;
 /// Stellar USDC on testnet uses 7 decimal places (Circle SEP-41 token).
 pub const STELLAR_USDC_DECIMALS: u32 = 7;
+/// Sepolia USDC (ERC-20) uses 6 decimal places.
+pub const SEPOLIA_USDC_DECIMALS: u32 = 6;
 
 pub fn corridor_min_finality(finality: CctpFinality) -> u32 {
     match finality {

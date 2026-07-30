@@ -107,6 +107,7 @@ fn base_service(
 ) -> CctpService {
     let mut cfg = CctpConfig::default_testnet();
     cfg.enabled = true;
+    cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
     CctpService {
         config: cfg,
         store,
@@ -162,7 +163,7 @@ async fn not_ready_burn_verifier_blocks_record_burn() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Pending,
@@ -203,7 +204,7 @@ async fn not_ready_attestation_blocks_attestation_ready() {
     let prepared = {
         let iris = Arc::new(MockIris {
             fees: IrisFeeQuote {
-                standard_fee: Some("1".into()),
+                standard_fee: "1".into(),
                 fast_fee: None,
             },
             poll_outcome: IrisPollOutcome::Pending,
@@ -230,7 +231,7 @@ async fn not_ready_attestation_blocks_attestation_ready() {
     let msg = complete_iris_message(&prepared, &CctpConfig::default_testnet(), TX_HASH, "0xdead");
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Complete(msg),
@@ -262,7 +263,7 @@ async fn burn_fact_mismatch_rejected() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Pending,
@@ -307,7 +308,7 @@ async fn attestation_ready_requires_crypto_verifier_and_binding() {
     let prepared = {
         let iris = Arc::new(MockIris {
             fees: IrisFeeQuote {
-                standard_fee: Some("1".into()),
+                standard_fee: "1".into(),
                 fast_fee: None,
             },
             poll_outcome: IrisPollOutcome::Pending,
@@ -330,7 +331,7 @@ async fn attestation_ready_requires_crypto_verifier_and_binding() {
     let msg = complete_iris_message(&prepared, &CctpConfig::default_testnet(), TX_HASH, "0xbeef");
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Complete(msg),
@@ -362,7 +363,7 @@ async fn iris_tx_hash_mismatch_rejected() {
             store.clone(),
             Arc::new(MockIris {
                 fees: IrisFeeQuote {
-                    standard_fee: Some("1".into()),
+                    standard_fee: "1".into(),
                     fast_fee: None,
                 },
                 poll_outcome: IrisPollOutcome::Pending,
@@ -390,7 +391,7 @@ async fn iris_tx_hash_mismatch_rejected() {
     );
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Complete(msg),
@@ -422,7 +423,7 @@ async fn empty_attestation_rejected() {
             store.clone(),
             Arc::new(MockIris {
                 fees: IrisFeeQuote {
-                    standard_fee: Some("1".into()),
+                    standard_fee: "1".into(),
                     fast_fee: None,
                 },
                 poll_outcome: IrisPollOutcome::Pending,
@@ -447,7 +448,7 @@ async fn empty_attestation_rejected() {
     msg.attestation_hex = None;
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Complete(msg),
@@ -476,6 +477,7 @@ async fn poll_timeout_marks_attestation_failed() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let mut cfg = CctpConfig::default_testnet();
     cfg.enabled = true;
+    cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
     cfg.poll_timeout_secs = 1;
 
     let facts = fake_facts(
@@ -491,7 +493,7 @@ async fn poll_timeout_marks_attestation_failed() {
         ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
-                standard_fee: Some("1".into()),
+                standard_fee: "1".into(),
                 fast_fee: None,
             },
             poll_outcome: IrisPollOutcome::Pending,
@@ -569,7 +571,7 @@ async fn reattest_recovery_clears_terminal_at() {
         ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
-                standard_fee: Some("1".into()),
+                standard_fee: "1".into(),
                 fast_fee: None,
             },
             poll_outcome: IrisPollOutcome::Pending,
@@ -594,6 +596,7 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
 
     let mut cfg = CctpConfig::default_testnet();
     cfg.enabled = true;
+    cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
     let service = CctpService {
         config: cfg,
         store: store.clone(),
@@ -602,7 +605,7 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
         ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
-                standard_fee: Some("1".into()),
+                standard_fee: "1".into(),
                 fast_fee: None,
             },
             poll_outcome: IrisPollOutcome::Pending,
@@ -776,7 +779,7 @@ async fn reattest_without_nonce_repolls_by_tx_hash() {
         ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
-                standard_fee: Some("1".into()),
+                standard_fee: "1".into(),
                 fast_fee: None,
             },
             poll_outcome: IrisPollOutcome::Pending,
@@ -801,7 +804,7 @@ async fn prepare_burn_rejects_expired_quote() {
         store,
         Arc::new(MockIris {
             fees: IrisFeeQuote {
-                standard_fee: Some("1".into()),
+                standard_fee: "1".into(),
                 fast_fee: None,
             },
             poll_outcome: IrisPollOutcome::Pending,
@@ -822,7 +825,7 @@ async fn fee_expired_blocks_prepare_burn() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Pending,
@@ -859,7 +862,7 @@ async fn fee_expired_blocks_record_burn() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Pending,

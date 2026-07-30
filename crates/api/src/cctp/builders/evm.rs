@@ -85,23 +85,48 @@ impl EvmAllowanceChecker for FixedEvmAllowanceChecker {
 pub struct ProductionEvmCctpBuilder {
     pub rpc_url: String,
     pub allowance: std::sync::Arc<dyn EvmAllowanceChecker>,
+    pub probe_ok: bool,
 }
 
 impl ProductionEvmCctpBuilder {
-    pub fn new(config: &CctpConfig, allowance: std::sync::Arc<dyn EvmAllowanceChecker>) -> Self {
+    pub fn new(
+        config: &CctpConfig,
+        allowance: std::sync::Arc<dyn EvmAllowanceChecker>,
+        probe_ok: bool,
+    ) -> Self {
         Self {
             rpc_url: config.sepolia_rpc_url.clone(),
             allowance,
+            probe_ok,
         }
     }
 
-    pub fn from_config(config: &CctpConfig) -> Self {
+    pub async fn try_new(config: &CctpConfig) -> Result<Self, BuilderError> {
+        if config.sepolia_rpc_url.trim().is_empty() {
+            return Err(BuilderError::NotReady);
+        }
+        let probe = crate::cctp::evm_readiness_probes::probe_sepolia_with_failover(config).await;
+        if !probe.all_ok() {
+            return Err(BuilderError::NotReady);
+        }
         let allowance: std::sync::Arc<dyn EvmAllowanceChecker> =
             match crate::cctp::evm_allowance::EvmRpcAllowanceChecker::new(config) {
                 Ok(c) => std::sync::Arc::new(c),
                 Err(_) => std::sync::Arc::new(FixedEvmAllowanceChecker { sufficient: false }),
             };
-        Self::new(config, allowance)
+        Ok(Self::new(config, allowance, true))
+    }
+
+    pub fn from_config(config: &CctpConfig) -> Self {
+        Self::new(
+            config,
+            std::sync::Arc::new(FixedEvmAllowanceChecker { sufficient: false }),
+            false,
+        )
+    }
+
+    pub(crate) fn is_production_ready(&self) -> bool {
+        self.probe_ok
     }
 
     fn sepolia_ready(config: &CctpConfig) -> bool {
@@ -110,7 +135,7 @@ impl ProductionEvmCctpBuilder {
     }
 
     fn evm_burn_ready(&self) -> bool {
-        !self.rpc_url.trim().is_empty()
+        self.is_production_ready()
     }
 
     async fn needs_approval(
@@ -240,7 +265,7 @@ pub struct SharedProductionEvmBuilder(pub std::sync::Arc<ProductionEvmCctpBuilde
 #[async_trait]
 impl EvmCctpBurnBuilder for SharedProductionEvmBuilder {
     fn is_ready(&self) -> bool {
-        EvmCctpBurnBuilder::is_ready(self.0.as_ref())
+        self.0.is_production_ready()
     }
     async fn prepare_burn(
         &self,
@@ -254,7 +279,7 @@ impl EvmCctpBurnBuilder for SharedProductionEvmBuilder {
 #[async_trait]
 impl EvmCctpMintBuilder for SharedProductionEvmBuilder {
     fn is_ready(&self) -> bool {
-        EvmCctpMintBuilder::is_ready(self.0.as_ref())
+        self.0.is_production_ready()
     }
     async fn prepare_mint(
         &self,

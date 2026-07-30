@@ -68,7 +68,7 @@ async fn quote_core_creates_transfer_when_enabled() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Pending,
@@ -103,7 +103,7 @@ async fn provider_kill_switch_blocks_new_quote() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let iris = Arc::new(MockIris {
         fees: IrisFeeQuote {
-            standard_fee: Some("1".into()),
+            standard_fee: "1".into(),
             fast_fee: None,
         },
         poll_outcome: IrisPollOutcome::Pending,

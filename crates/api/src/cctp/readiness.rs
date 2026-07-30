@@ -86,33 +86,17 @@ impl CctpRuntime {
         }
     }
 
-    /// Wire production EVM RPC builders/verifiers when configured.
-    /// Attestation verifier remains NotReady until `from_config_async` bootstraps trust cache.
-    /// Stellar verifiers wire when Soroban RPC + contracts pass non-mutating probes.
-    /// `is_public_executable` stays false until builders + all verifiers are ready.
+    /// Wire production defaults only — EVM/Stellar production components require
+    /// `from_config_async` for semantic RPC probes.
     pub fn from_config(config: &CctpConfig) -> Self {
-        let mut runtime = Self::production_defaults();
-        if !config.sepolia_rpc_url.trim().is_empty() {
-            let shared =
-                SharedProductionEvmBuilder(Arc::new(ProductionEvmCctpBuilder::from_config(config)));
-            runtime.evm_burn_builder = Arc::new(shared.clone());
-            runtime.evm_mint_builder = Arc::new(shared);
-            if let Ok(v) = crate::cctp::evm_approval_verifier::EvmRpcApprovalVerifier::new(config) {
-                runtime.evm_approval_verifier = Arc::new(v);
-            }
-            if let Ok(v) = crate::cctp::evm_burn_verifier::EvmRpcBurnVerifier::new(config) {
-                runtime.evm_burn_verifier = Arc::new(v);
-            }
-            if let Ok(v) = crate::cctp::evm_mint_verifier::EvmRpcMintVerifier::new(config) {
-                runtime.evm_mint_verifier = Arc::new(v);
-            }
-        }
-        runtime
+        let _ = config;
+        Self::production_defaults()
     }
 
     /// Async bootstrap for attestation trust cache and production verifier wiring.
     pub async fn from_config_async(config: &CctpConfig) -> Self {
         let mut runtime = Self::from_config(config);
+        wire_evm_components(config, &mut runtime).await;
         wire_stellar_verifiers(config, &mut runtime).await;
         wire_stellar_builders(config, &mut runtime).await;
         if let Some(verifier) = try_build_attestation_verifier_async(config).await {
@@ -195,6 +179,72 @@ impl CctpRuntime {
             && self.evm_approval_verifier.is_ready()
             && self.stellar_approval_verifier.is_ready()
             && self.attestation_verifier.is_ready()
+    }
+}
+
+async fn wire_evm_components(config: &CctpConfig, runtime: &mut CctpRuntime) {
+    if config.sepolia_rpc_url.trim().is_empty() {
+        crate::metrics::record_cctp_stellar_verifier_readiness("evm_burn_builder", "missing");
+        return;
+    }
+    match ProductionEvmCctpBuilder::try_new(config).await {
+        Ok(builder) if builder.is_production_ready() => {
+            let shared = SharedProductionEvmBuilder(std::sync::Arc::new(builder));
+            runtime.evm_burn_builder = std::sync::Arc::new(shared.clone());
+            runtime.evm_mint_builder = std::sync::Arc::new(shared);
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_burn_builder", "ready");
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_mint_builder", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness(
+                "evm_burn_builder",
+                "probe_failed",
+            );
+            crate::metrics::record_cctp_stellar_verifier_readiness(
+                "evm_mint_builder",
+                "probe_failed",
+            );
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_burn_builder", "not_ready");
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_mint_builder", "not_ready");
+        }
+    }
+    match crate::cctp::evm_approval_verifier::EvmRpcApprovalVerifier::try_new(config).await {
+        Ok(v) if v.is_ready() => {
+            runtime.evm_approval_verifier = std::sync::Arc::new(v);
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_approval", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_approval", "probe_failed");
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_approval", "not_ready");
+        }
+    }
+    match crate::cctp::evm_burn_verifier::EvmRpcBurnVerifier::try_new(config).await {
+        Ok(v) if v.is_ready() => {
+            runtime.evm_burn_verifier = std::sync::Arc::new(v);
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_burn", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_burn", "probe_failed");
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_burn", "not_ready");
+        }
+    }
+    match crate::cctp::evm_mint_verifier::EvmRpcMintVerifier::try_new(config).await {
+        Ok(v) if v.is_ready() => {
+            runtime.evm_mint_verifier = std::sync::Arc::new(v);
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_mint", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_mint", "probe_failed");
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("evm_mint", "not_ready");
+        }
     }
 }
 
@@ -354,27 +404,24 @@ mod tests {
     }
 
     #[test]
-    fn from_config_wires_evm_when_rpc_present() {
+    fn from_config_does_not_pretend_evm_ready_without_probes() {
         let mut cfg = CctpConfig::default_testnet();
-        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
+        cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
         let rt = CctpRuntime::from_config(&cfg);
-        assert!(rt.evm_burn_builder.is_ready());
-        assert!(rt.evm_mint_builder.is_ready());
-        assert!(rt.evm_burn_verifier.is_ready());
-        assert!(rt.evm_mint_verifier.is_ready());
-        assert!(rt.evm_approval_verifier.is_ready());
-        assert!(!rt.stellar_burn_builder.is_ready());
-        assert!(!rt.attestation_verifier.is_ready());
+        assert!(!rt.evm_burn_builder.is_ready());
+        assert!(!rt.evm_mint_builder.is_ready());
+        assert!(!rt.evm_burn_verifier.is_ready());
+        assert!(!rt.evm_mint_verifier.is_ready());
+        assert!(!rt.evm_approval_verifier.is_ready());
         assert!(!rt.is_public_executable(&cfg));
     }
 
     #[tokio::test]
     async fn from_config_async_leaves_attestation_not_ready_without_live_deps() {
         let mut cfg = CctpConfig::default_testnet();
-        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
-        cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
+        cfg.sepolia_rpc_url.clear();
+        cfg.stellar_rpc_url.clear();
         let rt = CctpRuntime::from_config_async(&cfg).await;
-        assert!(rt.evm_burn_builder.is_ready());
         assert!(!rt.attestation_verifier.is_ready());
         assert!(!rt.is_public_executable(&cfg));
     }
@@ -382,19 +429,19 @@ mod tests {
     #[test]
     fn sync_from_config_never_pretends_attestation_ready() {
         let mut cfg = CctpConfig::default_testnet();
-        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
+        cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
         cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
         let rt = CctpRuntime::from_config(&cfg);
         assert!(!rt.attestation_verifier.is_ready());
     }
 
     #[test]
-    fn evm_to_stellar_assess_requires_approval_verifier() {
+    fn evm_to_stellar_assess_requires_approval_verifier_when_probed() {
         let mut cfg = CctpConfig::default_testnet();
-        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
+        cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
         let rt = CctpRuntime::from_config(&cfg);
         let readiness = rt.assess(CctpDirection::EvmToStellar);
-        assert!(!readiness
+        assert!(readiness
             .missing
             .contains(&ReadinessComponent::EvmApprovalVerifier));
         assert!(readiness

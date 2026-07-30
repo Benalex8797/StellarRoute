@@ -44,7 +44,7 @@ impl EvmRpcClient {
     }
 
     pub fn is_ready(&self) -> bool {
-        !self.rpc_url.trim().is_empty() && self.chain_id == SEPOLIA_CHAIN_ID_NUM
+        false
     }
 
     pub fn bound_body(body: &str) -> Result<(), VerifierError> {
@@ -116,6 +116,10 @@ impl EvmRpcClient {
         let chain_id_resp: String = self.call("eth_chainId", json!([])).await?;
         u64::from_str_radix(chain_id_resp.trim_start_matches("0x"), 16)
             .map_err(|_| VerifierError::Failed("chain id parse".into()))
+    }
+
+    pub async fn get_code(&self, address: &str) -> Result<String, VerifierError> {
+        self.call("eth_getCode", json!([address, "latest"])).await
     }
 
     pub async fn ensure_chain(&self) -> Result<(), VerifierError> {
