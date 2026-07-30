@@ -21,6 +21,16 @@ const VALID_STELLAR_TX_HASH: &str =
     "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
 
 async fn setup_test_router() -> axum::Router {
+    for key in [
+        "CCTP_ENABLED",
+        "CCTP_ACCESS_TOKEN_HMAC_KEY",
+        "CCTP_STELLAR_RPC_URL",
+        "CCTP_SEPOLIA_RPC_URL",
+        "SEPOLIA_RPC_URL",
+    ] {
+        std::env::remove_var(key);
+    }
+
     let pool = PgPoolOptions::new()
         .max_connections(1)
         .connect_lazy("postgres://localhost/unused")
@@ -639,6 +649,7 @@ fn fully_ready_cctp_router(
 
     let mut cfg = CctpConfig::default_testnet();
     cfg.enabled = true;
+    cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
     let mut runtime = CctpRuntime::from_config(&cfg);
     runtime.attestation_verifier = Arc::new(FakeAttestationVerifier { ready: true });
     runtime.stellar_mint_builder = Arc::new(ReadyStellarMintBuilder);

@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-07-30T20:52:59Z",
-  "git_head": "f49778ff3edd10a90a7b9242076e2968049d8e9e",
+  "timestamp": "2026-07-30T21:05:38Z",
+  "git_head": "1a7a2e4756939cbc3345d044840e7ea3dde07709",
   "public_endpoints": {
     "stellar_rpc_host": "soroban-testnet.stellar.org",
     "sepolia_rpc_host": "sepolia.drpc.org"
@@ -17,11 +17,11 @@
     "quote_status": 200,
     "prepare_burn_status": 200
   },
-  "transfer_id_redacted": "0de7ffa6…18c9",
+  "transfer_id_redacted": "2f20a8eb…6e5c",
   "prepare_sanitized": {
     "payload_type": "stellar_xdr",
     "network": "stellar_testnet",
-    "expires_at": 1785445074,
+    "expires_at": 1785445833,
     "payload_hash_present": true
   }
 }

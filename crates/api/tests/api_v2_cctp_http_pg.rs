@@ -135,8 +135,15 @@ impl StellarCctpMintBuilder for ReadyTestStellarMintBuilder {
     }
 }
 
+fn testnet_cctp_config() -> CctpConfig {
+    let mut cfg = CctpConfig::default_testnet();
+    cfg.enabled = true;
+    cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
+    cfg
+}
+
 fn executable_runtime() -> CctpRuntime {
-    let cfg = CctpConfig::default_testnet();
+    let cfg = testnet_cctp_config();
     let mut runtime = CctpRuntime::from_config(&cfg);
     runtime.attestation_verifier = Arc::new(FakeAttestationVerifier { ready: true });
     runtime.stellar_mint_builder = Arc::new(ReadyTestStellarMintBuilder);
@@ -227,8 +234,7 @@ impl PgHarness {
     }
 
     fn build_context(&self) -> Arc<CctpHttpContext> {
-        let mut cfg = CctpConfig::default_testnet();
-        cfg.enabled = true;
+        let mut cfg = testnet_cctp_config();
         cfg.poll_interval_secs = 60;
 
         let store: Arc<dyn CctpTransferStore> =
