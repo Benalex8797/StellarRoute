@@ -19,6 +19,47 @@ vi.mock('@/hooks/useFeatureFlag', () => ({
   useFeatureFlag: vi.fn(() => ({ enabled: false, loading: false })),
 }));
 
+vi.mock('@/hooks/useApiV2Readiness', () => ({
+  useApiV2Readiness: vi.fn(() => ({
+    loaded: true,
+    corridors: [],
+    cctpGloballyReady: false,
+    providerKilled: false,
+    error: null,
+    fetchedAt: Date.now(),
+    loading: false,
+    refresh: vi.fn(),
+  })),
+}));
+
+vi.mock('@/hooks/useCctpSaga', () => ({
+  useCctpSaga: vi.fn(() => ({
+    stage: 'idle',
+    quote: null,
+    transferStatus: null,
+    error: null,
+    busy: false,
+    sessionPublic: null,
+    primaryAction: { label: 'Get CCTP quote', disabled: false, action: 'quote' },
+    runPrimaryAction: vi.fn(),
+    requestQuote: vi.fn(),
+    reconcileOnLoad: vi.fn(),
+    resetSaga: vi.fn(),
+  })),
+}));
+
+vi.mock('@/hooks/useChainWallet', () => ({
+  useChainWallet: vi.fn(() => ({
+    session: null,
+    isConnected: false,
+    networkMismatch: false,
+    isLoading: false,
+    availableWallets: [],
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  })),
+}));
+
 function renderDeck(
   presentation?: Parameters<typeof CrossChainSwapDeck>[0]['storyPresentation']
 ) {

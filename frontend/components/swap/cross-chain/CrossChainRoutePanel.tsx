@@ -1,8 +1,9 @@
 'use client';
 
-import { CctpStepRail } from './CctpStepRail';
+import { CctpStepRail, cctpActiveStepFromSaga } from './CctpStepRail';
 import { formatChainPairLabel } from '@/lib/cross-chain/format';
 import type { ChainDisplayId, CrossChainProtocol } from '@/lib/cross-chain/types';
+import type { CctpQuoteResponse } from '@/lib/cctp/types';
 import { cn } from '@/lib/utils';
 import { ArrowRight } from 'lucide-react';
 
@@ -12,6 +13,9 @@ interface CrossChainRoutePanelProps {
   protocol: CrossChainProtocol | null;
   executable: boolean;
   uncatalogued?: boolean;
+  quote?: CctpQuoteResponse | null;
+  bridgeUnavailable?: boolean;
+  sagaStatus?: string;
   className?: string;
 }
 
@@ -21,6 +25,9 @@ export function CrossChainRoutePanel({
   protocol,
   executable,
   uncatalogued = false,
+  quote = null,
+  bridgeUnavailable = false,
+  sagaStatus,
   className,
 }: CrossChainRoutePanelProps) {
   const pairLabel = formatChainPairLabel(sourceChainId, destChainId);
@@ -67,8 +74,10 @@ export function CrossChainRoutePanel({
         <h2 className="brand-wordmark text-lg text-foreground">{pairLabel}</h2>
         <p className="text-sm text-muted-foreground">
           {executable
-            ? 'Stellar-native execution uses SDEX prepare → sign → submit.'
-            : 'Protocol preview — quotes and execution are not available for this corridor yet.'}
+            ? 'Circle CCTP — server-prepared payloads, wallet sign, hash-only submit.'
+            : bridgeUnavailable
+              ? 'CCTP corridor is listed but not executable on this API yet.'
+              : 'Protocol preview — quotes and execution are not available for this corridor yet.'}
         </p>
       </div>
 
@@ -93,16 +102,23 @@ export function CrossChainRoutePanel({
       {isCctp && (
         <div className="space-y-2" data-testid="cctp-route-rail">
           <p className="text-xs font-semibold text-foreground">CCTP rail</p>
-          <CctpStepRail previewOnly={!executable} />
+          <CctpStepRail
+            previewOnly={!executable}
+            activeStep={executable ? cctpActiveStepFromSaga(sagaStatus) : null}
+          />
           <dl className="grid gap-2 text-xs sm:grid-cols-2">
             <div className="rounded-lg border border-border/30 bg-muted/20 p-2">
               <dt className="text-muted-foreground">Provider</dt>
-              <dd className="font-medium">Circle CCTP (preview)</dd>
+              <dd className="font-medium">Circle CCTP</dd>
             </div>
             <div className="rounded-lg border border-border/30 bg-muted/20 p-2">
               <dt className="text-muted-foreground">Fees &amp; finality</dt>
               <dd className="font-medium text-muted-foreground">
-                Estimate unavailable — corridor not live
+                {quote
+                  ? `Standard · quote until ${new Date(quote.expires_at * 1000).toLocaleTimeString()}`
+                  : executable
+                    ? 'Request a quote for fee estimate'
+                    : 'Estimate unavailable — corridor not live'}
               </dd>
             </div>
           </dl>

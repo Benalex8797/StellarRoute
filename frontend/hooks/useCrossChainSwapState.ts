@@ -12,6 +12,7 @@ import {
 } from '@/lib/cross-chain/corridors';
 import { buildExecutionTimelineSteps } from '@/lib/cross-chain/execution-timeline';
 import { validatePreviewRecipientAddress } from '@/lib/cross-chain/recipient-validation';
+import { resolveCctpDirection } from '@/lib/cctp/corridor-bridge';
 import type {
   ChainDisplayId,
   CorridorId,
@@ -79,15 +80,29 @@ export function useCrossChainSwapState(options?: {
     setDestChainId(id);
   }, []);
 
+  const isCctpCorridor =
+    !isUncatalogued &&
+    Boolean(resolveCctpDirection(sourceChainId, destChainId));
+
   const timelineSteps = useMemo(() => {
     if (options?.timelineStepsOverride) {
       return options.timelineStepsOverride;
+    }
+    if (executable && isCctpCorridor) {
+      return buildExecutionTimelineSteps(true, false).map((step) =>
+        step.id === 'stellar_swap'
+          ? { ...step, status: 'unavailable' as const }
+          : step.id === 'burn'
+            ? { ...step, status: 'pending' as const }
+            : step,
+      );
     }
     return buildExecutionTimelineSteps(executable, isStellarNativeExecutable);
   }, [
     options?.timelineStepsOverride,
     executable,
     isStellarNativeExecutable,
+    isCctpCorridor,
   ]);
 
   return {
@@ -96,6 +111,7 @@ export function useCrossChainSwapState(options?: {
     isUncatalogued,
     availability,
     executable,
+    isCctpCorridor,
     isStellarNativePair,
     isStellarNativeExecutable,
     sourceChainId,
