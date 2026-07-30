@@ -227,7 +227,7 @@ impl ProductionStellarCctpBuilder {
         config: &CctpConfig,
         stellar_amount: i128,
     ) -> Result<bool, BuilderError> {
-        if transfer.source_approval_tx_hash.is_some() {
+        if transfer.source_approval_verified_at.is_some() {
             return Ok(false);
         }
         let sufficient = self
@@ -451,6 +451,7 @@ mod tests {
             status: crate::models::v2_cctp::CctpTransferStatus::BurnPrepared,
             source_tx_hash: None,
             source_approval_tx_hash: approval_hash,
+            source_approval_verified_at: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,
@@ -519,8 +520,10 @@ mod tests {
             .unwrap();
         assert!(needs);
         let with_approval = sample_stellar_burn_transfer(Some("stellar-approval-hash".into()));
+        let mut verified = with_approval;
+        verified.source_approval_verified_at = Some(Utc::now());
         let needs_after = builder
-            .needs_approval(&with_approval, &CctpConfig::default_testnet(), 1)
+            .needs_approval(&verified, &CctpConfig::default_testnet(), 1)
             .await
             .unwrap();
         assert!(!needs_after);

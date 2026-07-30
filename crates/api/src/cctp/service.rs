@@ -282,6 +282,7 @@ impl CctpService {
             status: CctpTransferStatus::Created,
             source_tx_hash: None,
             source_approval_tx_hash: None,
+            source_approval_verified_at: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,
@@ -600,8 +601,49 @@ impl CctpService {
         Self::ensure_quote_not_expired(&transfer)?;
         Self::ensure_fee_not_expired(&transfer)?;
 
+        if let Some(existing) = transfer.source_approval_tx_hash.as_deref() {
+            if !tx_hashes_equal(existing, tx_hash) {
+                return Err(CctpServiceError::Verifier(VerifierError::Failed(
+                    "conflicting approval tx hash".into(),
+                )));
+            }
+            if transfer.source_approval_verified_at.is_some() {
+                return Ok(transfer);
+            }
+        }
+
+        let required_subunits = decimal_to_cctp_subunits(&transfer.amount)
+            .map_err(|_| CctpServiceError::Verifier(VerifierError::Failed("amount".into())))?;
+
+        let verified_at = Utc::now();
+        match transfer.direction {
+            CctpDirection::StellarToEvm => {
+                if !self.runtime.stellar_approval_verifier.is_ready() {
+                    return Err(CctpServiceError::VerifiersNotReady);
+                }
+                let required_i128: i128 = required_subunits.try_into().map_err(|_| {
+                    CctpServiceError::Verifier(VerifierError::Failed("amount".into()))
+                })?;
+                self.runtime
+                    .stellar_approval_verifier
+                    .verify_approval(&transfer, tx_hash, required_i128)
+                    .await
+                    .map_err(CctpServiceError::Verifier)?;
+            }
+            CctpDirection::EvmToStellar => {
+                if !self.runtime.evm_approval_verifier.is_ready() {
+                    return Err(CctpServiceError::VerifiersNotReady);
+                }
+                self.runtime
+                    .evm_approval_verifier
+                    .verify_approval(&transfer, tx_hash, required_subunits)
+                    .await
+                    .map_err(CctpServiceError::Verifier)?;
+            }
+        }
+
         self.store
-            .record_approval_submission(transfer_id, transfer.version, tx_hash)
+            .record_approval_submission(transfer_id, transfer.version, tx_hash, verified_at)
             .await
             .map_err(CctpServiceError::Store)
     }

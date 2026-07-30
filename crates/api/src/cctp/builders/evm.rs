@@ -96,10 +96,12 @@ impl ProductionEvmCctpBuilder {
     }
 
     pub fn from_config(config: &CctpConfig) -> Self {
-        Self::new(
-            config,
-            std::sync::Arc::new(FixedEvmAllowanceChecker { sufficient: false }),
-        )
+        let allowance: std::sync::Arc<dyn EvmAllowanceChecker> =
+            match crate::cctp::evm_allowance::EvmRpcAllowanceChecker::new(config) {
+                Ok(c) => std::sync::Arc::new(c),
+                Err(_) => std::sync::Arc::new(FixedEvmAllowanceChecker { sufficient: false }),
+            };
+        Self::new(config, allowance)
     }
 
     fn sepolia_ready(config: &CctpConfig) -> bool {
@@ -116,7 +118,7 @@ impl ProductionEvmCctpBuilder {
         transfer: &CctpTransfer,
         config: &CctpConfig,
     ) -> Result<bool, BuilderError> {
-        if transfer.source_approval_tx_hash.is_some() {
+        if transfer.source_approval_verified_at.is_some() {
             return Ok(false);
         }
         let sufficient = self

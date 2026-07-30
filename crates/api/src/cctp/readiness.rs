@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::cctp::approval::{EvmApprovalVerifier, StellarApprovalVerifier};
 use crate::cctp::attestation::AttestationVerifier;
 use crate::cctp::builders::{
     EvmCctpBurnBuilder, EvmCctpMintBuilder, StellarCctpBurnBuilder, StellarCctpMintBuilder,
@@ -45,11 +46,14 @@ pub struct CctpRuntime {
     pub evm_burn_verifier: Arc<dyn EvmBurnVerifier>,
     pub stellar_mint_verifier: Arc<dyn StellarMintVerifier>,
     pub evm_mint_verifier: Arc<dyn EvmMintVerifier>,
+    pub evm_approval_verifier: Arc<dyn EvmApprovalVerifier>,
+    pub stellar_approval_verifier: Arc<dyn StellarApprovalVerifier>,
     pub attestation_verifier: Arc<dyn AttestationVerifier>,
 }
 
 impl CctpRuntime {
     pub fn production_defaults() -> Self {
+        use crate::cctp::approval::{NotReadyEvmApprovalVerifier, NotReadyStellarApprovalVerifier};
         use crate::cctp::attestation::NotReadyAttestationVerifier;
         use crate::cctp::builders::{
             NotReadyEvmBurnBuilder, NotReadyEvmMintBuilder, NotReadyStellarBurnBuilder,
@@ -69,8 +73,25 @@ impl CctpRuntime {
             evm_burn_verifier: Arc::new(NotReadyEvmBurnVerifier),
             stellar_mint_verifier: Arc::new(NotReadyStellarMintVerifier),
             evm_mint_verifier: Arc::new(NotReadyEvmMintVerifier),
+            evm_approval_verifier: Arc::new(NotReadyEvmApprovalVerifier),
+            stellar_approval_verifier: Arc::new(NotReadyStellarApprovalVerifier),
             attestation_verifier: Arc::new(NotReadyAttestationVerifier),
         }
+    }
+
+    /// Wire production EVM RPC verifiers when `sepolia_rpc_url` is configured.
+    pub fn from_config(config: &CctpConfig) -> Self {
+        let mut runtime = Self::production_defaults();
+        if let Ok(v) = crate::cctp::evm_approval_verifier::EvmRpcApprovalVerifier::new(config) {
+            runtime.evm_approval_verifier = Arc::new(v);
+        }
+        if let Ok(v) = crate::cctp::evm_burn_verifier::EvmRpcBurnVerifier::new(config) {
+            runtime.evm_burn_verifier = Arc::new(v);
+        }
+        if let Ok(v) = crate::cctp::evm_mint_verifier::EvmRpcMintVerifier::new(config) {
+            runtime.evm_mint_verifier = Arc::new(v);
+        }
+        runtime
     }
 
     pub fn for_tests(
