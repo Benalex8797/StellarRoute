@@ -3,6 +3,8 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
+use crate::models::v2_cctp::CctpFinality;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedBurnFacts {
     pub tx_hash: String,
@@ -110,6 +112,7 @@ pub trait StellarMintVerifier: Send + Sync {
         message: &[u8],
         nonce: &str,
         recipient: &str,
+        quoted_finality: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError>;
 }
 
@@ -130,6 +133,7 @@ pub trait EvmMintVerifier: Send + Sync {
         message: &[u8],
         nonce: &str,
         recipient: &str,
+        quoted_finality: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError>;
 }
 
@@ -182,6 +186,7 @@ impl StellarMintVerifier for NotReadyStellarMintVerifier {
         _: &[u8],
         _: &str,
         _: &str,
+        _: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         Err(VerifierError::NotReady)
     }
@@ -209,6 +214,7 @@ impl EvmMintVerifier for NotReadyEvmMintVerifier {
         _: &[u8],
         _: &str,
         _: &str,
+        _: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         Err(VerifierError::NotReady)
     }
@@ -336,6 +342,7 @@ impl StellarMintVerifier for FakeMintVerifier {
         _: &[u8],
         _nonce: &str,
         _recipient: &str,
+        _quoted_finality: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         if !self.ready {
             return Err(VerifierError::NotReady);
@@ -377,6 +384,7 @@ impl EvmMintVerifier for FakeMintVerifier {
         _: &[u8],
         _nonce: &str,
         _recipient: &str,
+        _quoted_finality: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         if !self.ready {
             return Err(VerifierError::NotReady);

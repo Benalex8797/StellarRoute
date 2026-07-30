@@ -168,6 +168,7 @@ async fn transient_mint_verifier_error_preserves_state() {
             _: &[u8],
             _: &str,
             _: &str,
+            _: CctpFinality,
         ) -> Result<MintVerifyOutcome, VerifierError> {
             Err(VerifierError::NotReady)
         }
@@ -306,6 +307,15 @@ async fn reconciliation_nonce_consumed_does_not_complete() {
     );
     let submitted = service.record_mint_submission(id, "0xmint").await.unwrap();
     assert_eq!(submitted.status, CctpTransferStatus::MintSubmitted);
+    assert_eq!(
+        submitted.last_provider_code.as_deref(),
+        Some("mint_reconciliation_nonce")
+    );
+    assert!(submitted
+        .last_provider_error
+        .as_deref()
+        .unwrap_or("")
+        .contains("without full mint delivery evidence"));
 }
 
 fn service_with_stellar_mint_verifier(
@@ -369,6 +379,7 @@ async fn poll_mint_pending_then_completes() {
             _: &[u8],
             _: &str,
             _: &str,
+            _: CctpFinality,
         ) -> Result<MintVerifyOutcome, VerifierError> {
             let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n == 0 {

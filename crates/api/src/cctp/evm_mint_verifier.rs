@@ -375,6 +375,7 @@ impl EvmMintVerifier for EvmRpcMintVerifier {
         message: &[u8],
         nonce: &str,
         _recipient: &str,
+        _quoted_finality: crate::models::v2_cctp::CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         if !self.is_ready() {
             return Err(VerifierError::NotReady);
@@ -536,6 +537,7 @@ mod tests {
                 &message,
                 "42",
                 "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+                crate::models::v2_cctp::CctpFinality::Standard,
             )
             .await
             .unwrap();
@@ -615,7 +617,13 @@ mod tests {
         )
         .await;
         let outcome = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap();
         assert_eq!(outcome, MintVerifyOutcome::Pending);
@@ -654,7 +662,13 @@ mod tests {
         )
         .await;
         let outcome = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap();
         assert_eq!(outcome, MintVerifyOutcome::Pending);
@@ -695,7 +709,13 @@ mod tests {
         )
         .await;
         let outcome = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap();
         assert_eq!(outcome, MintVerifyOutcome::Pending);
@@ -736,7 +756,13 @@ mod tests {
         )
         .await;
         let outcome = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap();
         assert_eq!(outcome, MintVerifyOutcome::Pending);
@@ -777,7 +803,13 @@ mod tests {
         )
         .await;
         let outcome = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap();
         assert_eq!(outcome, MintVerifyOutcome::Pending);
@@ -815,7 +847,13 @@ mod tests {
         )
         .await;
         let err = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, VerifierError::Failed(_)));
@@ -836,7 +874,13 @@ mod tests {
         let message = sample_cctp_message();
         let tx_hash = "0x8888888888888888888888888888888888888888888888888888888888888888";
         let err = verifier
-            .verify_mint_completion(tx_hash, &message, "99", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "99",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, VerifierError::Failed(_)));
@@ -873,7 +917,13 @@ mod tests {
             .mount(&server)
             .await;
         let err = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, VerifierError::Failed(_)));
@@ -918,7 +968,13 @@ mod tests {
             .mount(&server)
             .await;
         let err = verifier
-            .verify_mint_completion(tx_hash, &message, "42", "0x0")
+            .verify_mint_completion(
+                tx_hash,
+                &message,
+                "42",
+                "0x0",
+                crate::models::v2_cctp::CctpFinality::Standard,
+            )
             .await
             .unwrap_err();
         assert!(matches!(
@@ -978,6 +1034,7 @@ mod tests {
                 &message,
                 "42",
                 "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+                crate::models::v2_cctp::CctpFinality::Standard,
             )
             .await
             .unwrap();
@@ -1046,6 +1103,7 @@ mod tests {
                 &message,
                 "42",
                 "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+                crate::models::v2_cctp::CctpFinality::Standard,
             )
             .await
             .unwrap();

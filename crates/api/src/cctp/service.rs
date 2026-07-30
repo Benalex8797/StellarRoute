@@ -803,13 +803,25 @@ impl CctpService {
             CctpDirection::StellarToEvm => self
                 .runtime
                 .evm_mint_verifier
-                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
+                .verify_mint_completion(
+                    tx_hash,
+                    message,
+                    nonce,
+                    &transfer.recipient,
+                    transfer.finality,
+                )
                 .await
                 .map_err(CctpServiceError::Verifier)?,
             CctpDirection::EvmToStellar => self
                 .runtime
                 .stellar_mint_verifier
-                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
+                .verify_mint_completion(
+                    tx_hash,
+                    message,
+                    nonce,
+                    &transfer.recipient,
+                    transfer.finality,
+                )
                 .await
                 .map_err(CctpServiceError::Verifier)?,
         };
@@ -820,8 +832,9 @@ impl CctpService {
                 .record_mint_completed(submitted.transfer_id, submitted.version)
                 .await
                 .map_err(CctpServiceError::Store),
-            MintVerifyOutcome::Pending | MintVerifyOutcome::ReconciliationNonceConsumed => {
-                Ok(submitted)
+            MintVerifyOutcome::Pending => Ok(submitted),
+            MintVerifyOutcome::ReconciliationNonceConsumed => {
+                self.record_mint_reconciliation_hint(submitted).await
             }
             MintVerifyOutcome::FailedRetryable { reason } => {
                 let retryable = self
@@ -842,6 +855,31 @@ impl CctpService {
                 Ok(retryable)
             }
         }
+    }
+
+    async fn record_mint_reconciliation_hint(
+        &self,
+        transfer: CctpTransfer,
+    ) -> Result<CctpTransfer, CctpServiceError> {
+        if transfer.last_provider_code.as_deref() == Some("mint_reconciliation_nonce") {
+            return Ok(transfer);
+        }
+        self.store
+            .transition(
+                transfer.transfer_id,
+                transfer.version,
+                transfer.status,
+                TransferPatch {
+                    last_provider_error: Some(
+                        "nonce consumed on-chain without full mint delivery evidence; remains MintSubmitted"
+                            .into(),
+                    ),
+                    last_provider_code: Some("mint_reconciliation_nonce".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(CctpServiceError::Store)
     }
 
     async fn poll_mint_completion(
@@ -865,13 +903,25 @@ impl CctpService {
             CctpDirection::StellarToEvm => self
                 .runtime
                 .evm_mint_verifier
-                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
+                .verify_mint_completion(
+                    tx_hash,
+                    message,
+                    nonce,
+                    &transfer.recipient,
+                    transfer.finality,
+                )
                 .await
                 .map_err(CctpServiceError::Verifier)?,
             CctpDirection::EvmToStellar => self
                 .runtime
                 .stellar_mint_verifier
-                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
+                .verify_mint_completion(
+                    tx_hash,
+                    message,
+                    nonce,
+                    &transfer.recipient,
+                    transfer.finality,
+                )
                 .await
                 .map_err(CctpServiceError::Verifier)?,
         };
@@ -882,8 +932,9 @@ impl CctpService {
                 .record_mint_completed(transfer.transfer_id, transfer.version)
                 .await
                 .map_err(CctpServiceError::Store),
-            MintVerifyOutcome::Pending | MintVerifyOutcome::ReconciliationNonceConsumed => {
-                Ok(transfer)
+            MintVerifyOutcome::Pending => Ok(transfer),
+            MintVerifyOutcome::ReconciliationNonceConsumed => {
+                self.record_mint_reconciliation_hint(transfer).await
             }
             MintVerifyOutcome::FailedRetryable { reason } => {
                 let retryable = self

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 use stellar_xdr::curr::{
     ContractEvent, HostFunction, InvokeContractArgs, Limits, MuxedAccount, OperationBody, ReadXdr,
-    ScAddress, ScBytes, ScVal, TransactionEnvelope, TransactionV1Envelope, Uint256,
+    ScAddress, ScBytes, ScVal, TransactionEnvelope, TransactionV1Envelope,
 };
 
 use crate::cctp::bounds::{check_str_len, MAX_TX_HASH_LEN};
@@ -236,23 +236,7 @@ pub fn ensure_testnet_binding(config: &CctpConfig) -> Result<(), VerifierError> 
 }
 
 pub fn muxed_account_to_strkey(account: &MuxedAccount) -> Result<String, VerifierError> {
-    match account {
-        MuxedAccount::Ed25519(Uint256(bytes)) => {
-            Ok(format!("{}", stellar_strkey::ed25519::PublicKey(*bytes)))
-        }
-        MuxedAccount::MuxedEd25519(muxed) => {
-            let id = muxed.id;
-            if id != 0 {
-                return Err(VerifierError::Failed(
-                    "muxed M-address recipients unsupported".into(),
-                ));
-            }
-            Ok(format!(
-                "{}",
-                stellar_strkey::ed25519::PublicKey(muxed.ed25519.0)
-            ))
-        }
-    }
+    crate::cctp::stellar_muxed::muxed_account_xdr_to_strkey(account)
 }
 
 pub fn parse_invoke_envelope(envelope_xdr: &str) -> Result<ParsedInvoke, VerifierError> {
@@ -286,17 +270,20 @@ fn parse_invoke_args(
     args: &InvokeContractArgs,
 ) -> Result<ParsedInvoke, VerifierError> {
     let contract_strkey = match &args.contract_address {
-        ScAddress::Contract(hash) => format!("{}", stellar_strkey::Contract(hash.0)),
+        ScAddress::Contract(contract) => {
+            format!("{}", stellar_strkey::Contract(contract.0 .0))
+        }
         ScAddress::Account(_) => {
             return Err(VerifierError::Failed("invoke target not contract".into()));
         }
+        _ => return Err(VerifierError::Failed("invoke target not contract".into())),
     };
     let function = args.function_name.0.to_string();
     Ok(ParsedInvoke {
         source_account: source,
         operation_source,
         contract_hash: match &args.contract_address {
-            ScAddress::Contract(hash) => hash.0,
+            ScAddress::Contract(contract) => contract.0 .0,
             _ => return Err(VerifierError::Failed("contract hash".into())),
         },
         contract_strkey,

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use sha2::Digest;
 use std::sync::Arc;
 
-use crate::cctp::config::CctpConfig;
+use crate::cctp::config::{corridor_min_finality, CctpConfig};
 use crate::cctp::encoding::{canonical_to_stellar_local_amount, stellar_contract_to_bytes32};
 use crate::cctp::evm_mint_verifier::EvmRpcMintVerifier;
 use crate::cctp::message::{parse_cctp_v2_message, MESSAGE_HEADER_LEN};
@@ -20,7 +20,7 @@ use crate::cctp::stellar_tx::{
 use crate::cctp::verifiers::{
     MintVerifyOutcome, StellarMintVerifier, VerifiedMintFacts, VerifierError,
 };
-use crate::models::v2_cctp::STELLAR_TESTNET_CHAIN_ID;
+use crate::models::v2_cctp::{CctpFinality, STELLAR_TESTNET_CHAIN_ID};
 
 pub struct StellarRpcMintVerifier {
     rpc: Arc<StellarRpcClient>,
@@ -135,6 +135,7 @@ impl StellarRpcMintVerifier {
         nonce: &str,
         recipient: &str,
         expected_amount_cctp: u128,
+        quoted_finality: CctpFinality,
         events: &BoundMintEvents,
     ) -> Result<(), VerifierError> {
         let expected_nonce = EvmRpcMintVerifier::parse_stored_nonce(nonce)?;
@@ -159,6 +160,16 @@ impl StellarRpcMintVerifier {
         if events.received.sender != parsed.sender {
             return Err(VerifierError::Failed("sender mismatch".into()));
         }
+        if events.received.finality_threshold_executed != parsed.finality_threshold_executed {
+            return Err(VerifierError::Failed("executed finality mismatch".into()));
+        }
+        let expected_min = corridor_min_finality(quoted_finality);
+        if parsed.min_finality_threshold != expected_min {
+            return Err(VerifierError::Failed("min finality policy mismatch".into()));
+        }
+        if parsed.finality_threshold_executed < parsed.min_finality_threshold {
+            return Err(VerifierError::Failed("finality below minimum".into()));
+        }
 
         let expected_local = canonical_to_stellar_local_amount(expected_amount_cctp as i128)
             .map_err(|e| VerifierError::Failed(e.to_string()))?;
@@ -175,13 +186,10 @@ impl StellarRpcMintVerifier {
         }
         let _ = usdc_addr;
 
-        if !events
-            .forward
-            .forward_recipient
-            .eq_ignore_ascii_case(recipient)
-        {
-            return Err(VerifierError::Failed("recipient mismatch".into()));
-        }
+        crate::cctp::stellar_muxed::stellar_recipients_match(
+            recipient,
+            &events.forward.forward_recipient,
+        )?;
 
         Ok(())
     }
@@ -193,6 +201,7 @@ impl StellarRpcMintVerifier {
         nonce: &str,
         recipient: &str,
         expected_amount_cctp: u128,
+        quoted_finality: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         let expected_nonce = EvmRpcMintVerifier::parse_stored_nonce(nonce)?;
         let tx = self.rpc.get_finalized_transaction(tx_hash).await?;
@@ -218,6 +227,7 @@ impl StellarRpcMintVerifier {
                     nonce,
                     recipient,
                     expected_amount_cctp,
+                    quoted_finality,
                     &events,
                 )?;
                 Ok(MintVerifyOutcome::Succeeded)
@@ -309,6 +319,7 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
         message: &[u8],
         nonce: &str,
         recipient: &str,
+        quoted_finality: CctpFinality,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         if !self.is_ready() {
             return Err(VerifierError::NotReady);
@@ -317,8 +328,15 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
             .map_err(|e| VerifierError::Failed(e.to_string()))?
             .body
             .amount;
-        self.completion_outcome(tx_hash, message, nonce, recipient, amount_cctp as u128)
-            .await
+        self.completion_outcome(
+            tx_hash,
+            message,
+            nonce,
+            recipient,
+            amount_cctp as u128,
+            quoted_finality,
+        )
+        .await
     }
 }
 
@@ -406,7 +424,14 @@ mod tests {
         let (cfg, message, nonce, recipient, amount, events) = mint_binding_context();
         let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
         verifier
-            .bind_completion_evidence(&message, &nonce, &recipient, amount, &events)
+            .bind_completion_evidence(
+                &message,
+                &nonce,
+                &recipient,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            )
             .unwrap();
     }
 
@@ -510,26 +535,121 @@ mod tests {
 
         events.forward.forward_recipient = "GINVALID".into();
         assert!(matches!(
-            verifier.bind_completion_evidence(&message, &nonce, &recipient, amount, &events),
-            Err(VerifierError::Failed(ref m)) if m.contains("recipient")
+            verifier.bind_completion_evidence(
+                &message,
+                &nonce,
+                &recipient,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            ),
+            Err(VerifierError::Failed(ref m))
+                if m.contains("recipient") || m.contains("strkey")
         ));
         events = mint_binding_context().5;
         events.forward.amount = MINT_LOCAL_AMOUNT + 1;
         assert!(matches!(
-            verifier.bind_completion_evidence(&message, &nonce, &recipient, amount, &events),
+            verifier.bind_completion_evidence(
+                &message,
+                &nonce,
+                &recipient,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            ),
             Err(VerifierError::Failed(ref m)) if m.contains("amount")
         ));
         events = mint_binding_context().5;
         events.received.message_body[0] ^= 0xff;
         assert!(matches!(
-            verifier.bind_completion_evidence(&message, &nonce, &recipient, amount, &events),
+            verifier.bind_completion_evidence(
+                &message,
+                &nonce,
+                &recipient,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            ),
             Err(VerifierError::Failed(ref m)) if m.contains("message_body")
         ));
         events = mint_binding_context().5;
         let bad_nonce = "0x0000000000000000000000000000000000000000000000000000000000000001";
         assert!(matches!(
-            verifier.bind_completion_evidence(&message, bad_nonce, &recipient, amount, &events),
+            verifier.bind_completion_evidence(
+                &message,
+                bad_nonce,
+                &recipient,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            ),
             Err(VerifierError::Failed(ref m)) if m.contains("nonce")
+        ));
+    }
+
+    #[test]
+    fn m_recipient_completes_with_dual_event_evidence() {
+        const TEST_M: &str =
+            "MA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAAAAAAAAAPCICBKU";
+        let (cfg, message, nonce, _g_recipient, amount, mut events) = mint_binding_context();
+        events.forward.forward_recipient = TEST_M.to_string();
+        let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
+        verifier
+            .bind_completion_evidence(
+                &message,
+                &nonce,
+                TEST_M,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn m_wrong_mux_id_does_not_complete_binding() {
+        const TEST_M: &str =
+            "MA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAAAAAAAAAPCICBKU";
+        const TEST_G: &str = "GA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQHES5";
+        let (cfg, message, nonce, _g_recipient, amount, mut events) = mint_binding_context();
+        let pk = stellar_strkey::ed25519::PublicKey::from_string(TEST_G).unwrap();
+        let wrong_m = format!(
+            "{}",
+            stellar_strkey::ed25519::MuxedAccount {
+                ed25519: pk.0,
+                id: 42,
+            }
+        );
+        events.forward.forward_recipient = wrong_m;
+        let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
+        assert!(matches!(
+            verifier.bind_completion_evidence(
+                &message,
+                &nonce,
+                TEST_M,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            ),
+            Err(VerifierError::Failed(ref m)) if m.contains("recipient")
+        ));
+    }
+
+    #[test]
+    fn rejects_finality_executed_mismatch() {
+        let (cfg, message, nonce, recipient, amount, mut events) = mint_binding_context();
+        events.received.finality_threshold_executed ^= 1;
+        let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
+        assert!(matches!(
+            verifier.bind_completion_evidence(
+                &message,
+                &nonce,
+                &recipient,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            ),
+            Err(VerifierError::Failed(ref m)) if m.contains("finality")
         ));
     }
 }

@@ -129,11 +129,21 @@ pub fn map_get<'a>(data: &'a ScVal, key: &str) -> Result<&'a ScVal, VerifierErro
 
 pub fn address_to_strkey(addr: &ScAddress) -> Result<String, VerifierError> {
     match addr {
-        ScAddress::Contract(hash) => Ok(format!("{}", stellar_strkey::Contract(hash.0))),
+        ScAddress::Contract(contract) => Ok(format!("{}", stellar_strkey::Contract(contract.0 .0))),
         ScAddress::Account(account_id) => {
             use stellar_xdr::curr::{PublicKey, Uint256};
             let PublicKey::PublicKeyTypeEd25519(Uint256(bytes)) = account_id.0;
             Ok(format!("{}", stellar_strkey::ed25519::PublicKey(bytes)))
+        }
+        ScAddress::MuxedAccount(muxed) => Ok(format!(
+            "{}",
+            stellar_strkey::ed25519::MuxedAccount {
+                ed25519: muxed.ed25519.0,
+                id: muxed.id,
+            }
+        )),
+        ScAddress::ClaimableBalance(_) | ScAddress::LiquidityPool(_) => {
+            Err(VerifierError::Failed("unsupported address type".into()))
         }
     }
 }
@@ -143,7 +153,7 @@ pub fn contract_hash(event: &ContractEvent) -> Result<[u8; 32], VerifierError> {
         .contract_id
         .as_ref()
         .ok_or_else(|| VerifierError::Failed("missing contract id".into()))?;
-    Ok(hash.0)
+    Ok(hash.0 .0)
 }
 
 pub fn parse_deposit_for_burn(event: &ContractEvent) -> Result<DepositForBurnEvent, VerifierError> {
@@ -220,46 +230,12 @@ pub fn parse_mint_and_forward(event: &ContractEvent) -> Result<MintAndForwardEve
         return Err(VerifierError::Failed("mint_and_forward topic count".into()));
     }
     let forward_recipient = map_get(data, "forward_recipient")?;
-    let recipient_str = scval_to_muxed_recipient_strkey(forward_recipient)?;
+    let recipient_str = crate::cctp::stellar_muxed::muxed_recipient_from_scval(forward_recipient)?;
     Ok(MintAndForwardEvent {
         forward_recipient: recipient_str,
         token: scval_to_address(map_get(data, "token")?)?,
         amount: scval_to_i128(map_get(data, "amount")?)?,
     })
-}
-
-/// Circle `MuxedAddress` wire in events — G (ed25519) supported; M with non-zero id and C rejected.
-pub fn scval_to_muxed_recipient_strkey(val: &ScVal) -> Result<String, VerifierError> {
-    match val {
-        ScVal::Address(ScAddress::Account(account_id)) => {
-            use stellar_xdr::curr::{PublicKey, Uint256};
-            let PublicKey::PublicKeyTypeEd25519(Uint256(bytes)) = account_id.0;
-            Ok(format!("{}", stellar_strkey::ed25519::PublicKey(bytes)))
-        }
-        ScVal::Address(ScAddress::Contract(_)) => Err(VerifierError::Failed(
-            "contract forward recipient unsupported".into(),
-        )),
-        ScVal::Map(Some(map)) => {
-            for entry in map.0.iter() {
-                let ScMapEntry { key, val } = entry;
-                if let ScVal::Symbol(sym) = key {
-                    if sym.0.to_string() == "ed25519" {
-                        if let ScVal::Bytes(ScBytes(bytes)) = val {
-                            if bytes.len() == 32 {
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(bytes);
-                                return Ok(format!("{}", stellar_strkey::ed25519::PublicKey(arr)));
-                            }
-                        }
-                    }
-                }
-            }
-            Err(VerifierError::Failed(
-                "muxed recipient map unsupported".into(),
-            ))
-        }
-        _ => Err(VerifierError::Failed("forward_recipient type".into())),
-    }
 }
 
 pub fn collect_contract_events(
@@ -291,7 +267,9 @@ pub fn collect_contract_events(
 #[cfg(test)]
 pub mod test_helpers {
     use super::*;
-    use stellar_xdr::curr::{ContractEventType, ExtensionPoint, Hash, ScSymbol, VecM, WriteXdr};
+    use stellar_xdr::curr::{
+        ContractEventType, ContractId, ExtensionPoint, Hash, ScSymbol, VecM, WriteXdr,
+    };
 
     pub fn build_event_map(fields: Vec<(&str, ScVal)>) -> ScVal {
         let entries: Vec<ScMapEntry> = fields
@@ -313,7 +291,7 @@ pub mod test_helpers {
     ) -> ContractEvent {
         ContractEvent {
             ext: ExtensionPoint::V0,
-            contract_id: Some(Hash(contract_hash)),
+            contract_id: Some(ContractId(Hash(contract_hash))),
             type_: ContractEventType::Contract,
             body: ContractEventBody::V0(stellar_xdr::curr::ContractEventV0 {
                 topics: vec![
@@ -332,7 +310,7 @@ pub mod test_helpers {
     pub fn message_sent_event(contract_hash: [u8; 32], message: Vec<u8>) -> ContractEvent {
         ContractEvent {
             ext: ExtensionPoint::V0,
-            contract_id: Some(Hash(contract_hash)),
+            contract_id: Some(ContractId(Hash(contract_hash))),
             type_: ContractEventType::Contract,
             body: ContractEventBody::V0(stellar_xdr::curr::ContractEventV0 {
                 topics: vec![ScVal::Symbol(
@@ -350,13 +328,13 @@ pub mod test_helpers {
 
     pub fn mint_and_forward_event(
         contract_hash: [u8; 32],
-        forward_recipient: ScAddress,
+        forward_recipient: ScVal,
         token: ScAddress,
         amount: i128,
     ) -> ContractEvent {
         ContractEvent {
             ext: ExtensionPoint::V0,
-            contract_id: Some(Hash(contract_hash)),
+            contract_id: Some(ContractId(Hash(contract_hash))),
             type_: ContractEventType::Contract,
             body: ContractEventBody::V0(stellar_xdr::curr::ContractEventV0 {
                 topics: vec![ScVal::Symbol(
@@ -365,7 +343,7 @@ pub mod test_helpers {
                 .try_into()
                 .unwrap(),
                 data: build_event_map(vec![
-                    ("forward_recipient", ScVal::Address(forward_recipient)),
+                    ("forward_recipient", forward_recipient),
                     ("token", ScVal::Address(token)),
                     (
                         "amount",

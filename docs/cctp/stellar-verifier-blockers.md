@@ -9,7 +9,7 @@ pinned Circle `stellar-cctp` event layouts (`45746f2c8031`), and offline live XD
 |----------|--------------|------------------|
 | `StellarRpcApprovalVerifier` | Optional standalone `approve` when recorded; allowance simulation | owner, spender=TokenMessenger, amount, expiration ledger |
 | `StellarRpcBurnVerifier` | `deposit_for_burn(_with_hook)` invoke + events + `message_sent` | local 7dp→canonical 6dp, max_fee, destination messenger, op-source |
-| `StellarRpcMintVerifier` | `mint_and_forward` invoke; completion requires **exactly one** `mint_and_forward` + **exactly one** `message_received` | message+attestation bytes, payload hash, dual-event cross-bindings |
+| `StellarRpcMintVerifier` | `mint_and_forward` invoke; completion requires **exactly one** `mint_and_forward` + **exactly one** `message_received` | message+attestation bytes, payload hash, dual-event cross-bindings, `message_received.finality_threshold_executed` bound to parsed CCTP v2 message + corridor finality policy |
 
 Mint completion **never** succeeds from `is_nonce_used` alone (`ReconciliationNonceConsumed` is
 reconciliation-only). `poll_one_transfer` re-queries `MintSubmitted` transfers idempotently.
@@ -25,8 +25,21 @@ Fixtures: `crates/api/src/cctp/fixtures/live_xdr/`. `#[ignore]` tests re-fetch w
 
 ## Readiness probes (non-mutating)
 
-`stellar_readiness_probes`: RPC reachability, MessageTransmitter `is_nonce_used` simulation,
-USDC `decimals`, TokenMessenger `local_domain`, forwarder contract callable.
+`stellar_readiness_probes` decodes and validates pinned contract responses (not `.is_ok()` only):
+
+| Probe | Method | Pass criteria |
+|-------|--------|---------------|
+| MessageTransmitter | `is_nonce_used` (probe nonce) | strict bool decode (either value OK) |
+| MessageTransmitter | `paused` | strict bool, must be `false` |
+| Forwarder | `get_message_transmitter` | decoded address equals configured MessageTransmitter |
+| TokenMessenger | `paused` | strict bool, must be `false` |
+| USDC | `decimals` | must equal Stellar USDC precision (7) |
+
+## Muxed forward recipients (M…)
+
+Circle Soroban `MuxedAddress` wire decodes via `stellar_muxed`:
+`ScAddress::Account` → G strkey; `ScAddress::MuxedAccount` → M strkey (nonzero/max u64 id);
+`ScAddress::Contract` → fail-closed for Evm→Stellar forward recipients (frozen public quote API is G/M accounts only).
 
 ## Still blocking `is_public_executable`
 

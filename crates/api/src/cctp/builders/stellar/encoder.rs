@@ -2,10 +2,10 @@
 
 use chrono::Utc;
 use stellar_xdr::curr::{
-    AccountId, Hash, HostFunction, InvokeContractArgs, InvokeHostFunctionOp, Limits, Memo,
-    MuxedAccount, Operation, OperationBody, Preconditions, PublicKey, ScAddress, ScBytes, ScSymbol,
-    ScVal, SequenceNumber, TimeBounds, TimePoint, Transaction, TransactionEnvelope, TransactionExt,
-    TransactionV1Envelope, Uint256, VecM, WriteXdr,
+    AccountId, ContractId, Hash, HostFunction, InvokeContractArgs, InvokeHostFunctionOp, Limits,
+    Memo, MuxedAccount, Operation, OperationBody, Preconditions, PublicKey, ScAddress, ScBytes,
+    ScSymbol, ScVal, SequenceNumber, TimeBounds, TimePoint, Transaction, TransactionEnvelope,
+    TransactionExt, TransactionV1Envelope, Uint256, VecM, WriteXdr,
 };
 
 use crate::cctp::builders::BuilderError;
@@ -16,7 +16,7 @@ use crate::swap::tx::{DEFAULT_BASE_FEE, DEFAULT_TIMEOUT_SECS};
 pub fn contract_address(strkey: &str) -> Result<ScAddress, BuilderError> {
     let contract = stellar_strkey::Contract::from_string(strkey.trim())
         .map_err(|_| BuilderError::Validation(format!("invalid contract: {strkey}")))?;
-    Ok(ScAddress::Contract(Hash(contract.0)))
+    Ok(ScAddress::Contract(ContractId(Hash(contract.0))))
 }
 
 pub fn account_address(g: &str) -> Result<ScAddress, BuilderError> {

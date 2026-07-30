@@ -4,8 +4,8 @@ use std::fmt;
 
 use crate::env_profile::{is_production, parse_bool_env};
 use crate::models::v2_cctp::{
-    CCTP_PROVIDER_ID, CCTP_TESTNET_CORRIDOR_ID, SEPOLIA_USDC_ASSET, STELLAR_TESTNET_CHAIN_ID,
-    STELLAR_TESTNET_USDC_ASSET,
+    CctpFinality, CCTP_PROVIDER_ID, CCTP_TESTNET_CORRIDOR_ID, SEPOLIA_USDC_ASSET,
+    STELLAR_TESTNET_CHAIN_ID, STELLAR_TESTNET_USDC_ASSET,
 };
 
 pub const STELLAR_TESTNET_DOMAIN: u32 = 27;
@@ -28,6 +28,15 @@ pub const SEPOLIA_USDC: &str = "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238";
 /// Finality threshold constants from Circle CCTP v2 technical guide.
 pub const FINALITY_STANDARD: u32 = 2000;
 pub const FINALITY_FAST: u32 = 1000;
+/// Stellar USDC on testnet uses 7 decimal places (Circle SEP-41 token).
+pub const STELLAR_USDC_DECIMALS: u32 = 7;
+
+pub fn corridor_min_finality(finality: CctpFinality) -> u32 {
+    match finality {
+        CctpFinality::Standard => FINALITY_STANDARD,
+        CctpFinality::Fast => FINALITY_FAST,
+    }
+}
 
 #[derive(Clone)]
 pub struct CctpConfig {

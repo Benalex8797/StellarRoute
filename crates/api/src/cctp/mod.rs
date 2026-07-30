@@ -28,6 +28,7 @@ pub mod stellar_attester_reader;
 pub mod stellar_burn_verifier;
 pub mod stellar_contract_events;
 pub mod stellar_mint_verifier;
+pub mod stellar_muxed;
 pub mod stellar_payload;
 pub mod stellar_readiness_probes;
 pub mod stellar_rpc;
