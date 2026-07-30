@@ -86,6 +86,15 @@ pub fn redact_canonical_asset(s: &str) -> String {
     }
 }
 
+/// Redact opaque CCTP attestation or message bytes for structured logs.
+pub fn redact_cctp_secret_bytes(label: &str, bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return format!("{}:empty", label);
+    }
+    let prefix = sha256_hex_prefix(&hex::encode(bytes), 8);
+    format!("{}:sha256#{}", label, prefix)
+}
+
 fn sha256_hex_prefix(input: &str, len: usize) -> String {
     use sha2::{Digest, Sha256};
 
@@ -161,7 +170,12 @@ mod tests {
         )
     }
 
-    // ── Unit tests ────────────────────────────────────────────────────────────
+    #[test]
+    fn redact_cctp_bytes_never_includes_raw_payload() {
+        let redacted = redact_cctp_secret_bytes("attestation", &[0xde, 0xad, 0xbe, 0xef]);
+        assert!(!redacted.contains("dead"));
+        assert!(redacted.starts_with("attestation:sha256#"));
+    }
 
     #[test]
     fn native_asset_is_unchanged() {

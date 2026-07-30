@@ -1,0 +1,324 @@
+//! Typed CCTP testnet configuration with fail-closed validation.
+
+use std::fmt;
+
+use crate::env_profile::{is_production, parse_bool_env};
+use crate::models::v2_cctp::{
+    CCTP_PROVIDER_ID, CCTP_TESTNET_CORRIDOR_ID, SEPOLIA_USDC_ASSET, STELLAR_TESTNET_CHAIN_ID,
+    STELLAR_TESTNET_USDC_ASSET,
+};
+
+pub const STELLAR_TESTNET_DOMAIN: u32 = 27;
+pub const SEPOLIA_DOMAIN: u32 = 0;
+pub const STELLAR_TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+pub const DEFAULT_IRIS_SANDBOX_URL: &str = "https://iris-api-sandbox.circle.com";
+
+pub const STELLAR_TOKEN_MESSENGER: &str =
+    "CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP";
+pub const STELLAR_MESSAGE_TRANSMITTER: &str =
+    "CBJ6MTCKKZG73PMDZCJMSFRD7DQEMI4FKDH7CGDSV4W6FHCRBCQAVVJY";
+pub const STELLAR_CCTP_FORWARDER: &str = "CA66Q2WFBND6V4UEB7RD4SAXSVIWMD6RA4X3U32ELVFGXV5PJK4T4VSZ";
+pub const STELLAR_USDC_CONTRACT: &str = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+
+pub const SEPOLIA_TOKEN_MESSENGER: &str = "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA";
+pub const SEPOLIA_MESSAGE_TRANSMITTER: &str = "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275";
+pub const SEPOLIA_USDC: &str = "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238";
+
+/// Finality threshold constants from Circle CCTP v2 technical guide.
+pub const FINALITY_STANDARD: u32 = 2000;
+pub const FINALITY_FAST: u32 = 1000;
+
+#[derive(Debug, Clone)]
+pub struct CctpConfig {
+    pub enabled: bool,
+    pub iris_base_url: String,
+    pub stellar_domain: u32,
+    pub sepolia_domain: u32,
+    pub stellar_rpc_url: String,
+    pub stellar_horizon_url: String,
+    pub stellar_network_passphrase: String,
+    pub sepolia_rpc_url: String,
+    pub amount_cap: String,
+    pub quote_ttl_secs: u64,
+    pub poll_interval_secs: u64,
+    pub poll_timeout_secs: u64,
+    pub iris_timeout_secs: u64,
+    pub iris_max_retries: u32,
+    pub contracts: CctpContractAddresses,
+}
+
+#[derive(Debug, Clone)]
+pub struct CctpContractAddresses {
+    pub stellar_token_messenger: String,
+    pub stellar_message_transmitter: String,
+    pub stellar_cctp_forwarder: String,
+    pub stellar_usdc: String,
+    pub sepolia_token_messenger: String,
+    pub sepolia_message_transmitter: String,
+    pub sepolia_usdc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CctpConfigError {
+    MalformedAddress(String),
+    WrongDomainPair,
+    NonHttpsUrl(String),
+    MainnetPassphraseOnTestnet,
+    ZeroOrUnsafeLimit(String),
+    FastModeUnsupported,
+    InvalidEnv(String),
+}
+
+impl fmt::Display for CctpConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MalformedAddress(a) => write!(f, "malformed address: {a}"),
+            Self::WrongDomainPair => write!(f, "domain/chain pair mismatch"),
+            Self::NonHttpsUrl(u) => write!(f, "URL must be HTTPS in non-test builds: {u}"),
+            Self::MainnetPassphraseOnTestnet => {
+                write!(f, "mainnet passphrase on testnet configuration")
+            }
+            Self::ZeroOrUnsafeLimit(l) => write!(f, "unsafe limit: {l}"),
+            Self::FastModeUnsupported => write!(f, "fast finality not verified for this corridor"),
+            Self::InvalidEnv(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for CctpConfigError {}
+
+/// Redact URL userinfo and query for Debug/logging.
+pub fn redact_url(url: &str) -> String {
+    let scheme_end = url.find("//").map(|i| i + 2).unwrap_or(0);
+    let (scheme, rest) = url.split_at(scheme_end);
+    let host_path = rest.rsplit('@').next().unwrap_or(rest);
+    let host_path = host_path.split('?').next().unwrap_or(host_path);
+    format!("{scheme}{host_path}")
+}
+
+impl CctpConfig {
+    pub fn default_testnet() -> Self {
+        Self {
+            enabled: false,
+            iris_base_url: DEFAULT_IRIS_SANDBOX_URL.into(),
+            stellar_domain: STELLAR_TESTNET_DOMAIN,
+            sepolia_domain: SEPOLIA_DOMAIN,
+            stellar_rpc_url: "https://soroban-testnet.stellar.org".into(),
+            stellar_horizon_url: "https://horizon-testnet.stellar.org".into(),
+            stellar_network_passphrase: STELLAR_TESTNET_PASSPHRASE.into(),
+            sepolia_rpc_url: "https://rpc.sepolia.org".into(),
+            amount_cap: "100000".into(),
+            quote_ttl_secs: 300,
+            poll_interval_secs: 5,
+            poll_timeout_secs: 600,
+            iris_timeout_secs: 10,
+            iris_max_retries: 2,
+            contracts: CctpContractAddresses {
+                stellar_token_messenger: STELLAR_TOKEN_MESSENGER.into(),
+                stellar_message_transmitter: STELLAR_MESSAGE_TRANSMITTER.into(),
+                stellar_cctp_forwarder: STELLAR_CCTP_FORWARDER.into(),
+                stellar_usdc: STELLAR_USDC_CONTRACT.into(),
+                sepolia_token_messenger: SEPOLIA_TOKEN_MESSENGER.into(),
+                sepolia_message_transmitter: SEPOLIA_MESSAGE_TRANSMITTER.into(),
+                sepolia_usdc: SEPOLIA_USDC.into(),
+            },
+        }
+    }
+
+    pub fn from_env() -> Result<Self, CctpConfigError> {
+        let mut cfg = Self::default_testnet();
+        cfg.enabled = parse_bool_env("CCTP_ENABLED");
+
+        if let Ok(v) = std::env::var("CCTP_IRIS_BASE_URL") {
+            cfg.iris_base_url = v;
+        }
+        if let Ok(v) = std::env::var("STELLAR_RPC_URL") {
+            cfg.stellar_rpc_url = v;
+        }
+        if let Ok(v) = std::env::var("STELLAR_HORIZON_URL") {
+            cfg.stellar_horizon_url = v;
+        }
+        if let Ok(v) = std::env::var("STELLAR_NETWORK_PASSPHRASE") {
+            cfg.stellar_network_passphrase = v;
+        }
+        if let Ok(v) = std::env::var("SEPOLIA_RPC_URL") {
+            cfg.sepolia_rpc_url = v;
+        }
+        if let Ok(v) = std::env::var("CCTP_AMOUNT_CAP") {
+            cfg.amount_cap = v;
+        }
+        if let Ok(v) = std::env::var("CCTP_QUOTE_TTL_SECS") {
+            cfg.quote_ttl_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv("CCTP_QUOTE_TTL_SECS must be u64".into())
+            })?;
+        }
+        if let Ok(v) = std::env::var("CCTP_POLL_INTERVAL_SECS") {
+            cfg.poll_interval_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv("CCTP_POLL_INTERVAL_SECS must be u64".into())
+            })?;
+        }
+        if let Ok(v) = std::env::var("CCTP_POLL_TIMEOUT_SECS") {
+            cfg.poll_timeout_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv("CCTP_POLL_TIMEOUT_SECS must be u64".into())
+            })?;
+        }
+
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    pub fn validate(&self) -> Result<(), CctpConfigError> {
+        if self.stellar_domain != STELLAR_TESTNET_DOMAIN || self.sepolia_domain != SEPOLIA_DOMAIN {
+            return Err(CctpConfigError::WrongDomainPair);
+        }
+
+        validate_stellar_contract(&self.contracts.stellar_token_messenger)?;
+        validate_stellar_contract(&self.contracts.stellar_message_transmitter)?;
+        validate_stellar_contract(&self.contracts.stellar_cctp_forwarder)?;
+        validate_stellar_contract(&self.contracts.stellar_usdc)?;
+        validate_evm_address(&self.contracts.sepolia_token_messenger)?;
+        validate_evm_address(&self.contracts.sepolia_message_transmitter)?;
+        validate_evm_address(&self.contracts.sepolia_usdc)?;
+
+        if self
+            .stellar_network_passphrase
+            .contains("Public Global Stellar Network")
+        {
+            return Err(CctpConfigError::MainnetPassphraseOnTestnet);
+        }
+        if self.stellar_network_passphrase != STELLAR_TESTNET_PASSPHRASE {
+            return Err(CctpConfigError::WrongDomainPair);
+        }
+
+        for url in [
+            &self.iris_base_url,
+            &self.stellar_rpc_url,
+            &self.stellar_horizon_url,
+            &self.sepolia_rpc_url,
+        ] {
+            validate_https_url(url)?;
+        }
+
+        if self.amount_cap.is_empty()
+            || self.quote_ttl_secs == 0
+            || self.poll_interval_secs == 0
+            || self.poll_timeout_secs == 0
+            || self.iris_timeout_secs == 0
+        {
+            return Err(CctpConfigError::ZeroOrUnsafeLimit("timing or cap".into()));
+        }
+
+        Ok(())
+    }
+
+    /// Config is structurally valid. Distinct from public executability.
+    pub fn is_configured(&self) -> bool {
+        self.validate().is_ok()
+    }
+
+    /// Public corridor executability — always false until transaction builders land.
+    pub fn is_executable(&self) -> bool {
+        false
+    }
+
+    pub fn corridor_id(&self) -> &'static str {
+        CCTP_TESTNET_CORRIDOR_ID
+    }
+
+    pub fn provider_id(&self) -> &'static str {
+        CCTP_PROVIDER_ID
+    }
+}
+
+fn validate_https_url(url: &str) -> Result<(), CctpConfigError> {
+    if is_production() && !url.starts_with("https://") {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+    }
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
+    }
+    Ok(())
+}
+
+fn validate_stellar_contract(addr: &str) -> Result<(), CctpConfigError> {
+    if stellar_strkey::Contract::from_string(addr.trim()).is_err() {
+        return Err(CctpConfigError::MalformedAddress(addr.to_string()));
+    }
+    Ok(())
+}
+
+fn validate_evm_address(addr: &str) -> Result<(), CctpConfigError> {
+    let trimmed = addr.trim();
+    if trimmed.len() != 42 || !trimmed.starts_with("0x") {
+        return Err(CctpConfigError::MalformedAddress(addr.to_string()));
+    }
+    if !trimmed[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(CctpConfigError::MalformedAddress(addr.to_string()));
+    }
+    Ok(())
+}
+
+pub fn frozen_source_asset(chain: &str) -> (String, String) {
+    if chain == STELLAR_TESTNET_CHAIN_ID {
+        (
+            STELLAR_TESTNET_USDC_ASSET.into(),
+            format!("{}/{}", chain, STELLAR_TESTNET_USDC_ASSET),
+        )
+    } else {
+        (
+            SEPOLIA_USDC_ASSET.into(),
+            format!("{}/{}", chain, SEPOLIA_USDC_ASSET),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_disabled_and_valid_testnet() {
+        let cfg = CctpConfig::default_testnet();
+        assert!(!cfg.enabled);
+        assert!(cfg.validate().is_ok());
+        assert!(cfg.is_configured());
+        assert!(!cfg.is_executable());
+    }
+
+    #[test]
+    fn wrong_passphrase_fails() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.stellar_network_passphrase = "Public Global Stellar Network ; September 2015".into();
+        assert_eq!(
+            cfg.validate(),
+            Err(CctpConfigError::MainnetPassphraseOnTestnet)
+        );
+    }
+
+    #[test]
+    fn malformed_evm_address_fails() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.contracts.sepolia_usdc = "not-an-address".into();
+        assert!(matches!(
+            cfg.validate(),
+            Err(CctpConfigError::MalformedAddress(_))
+        ));
+    }
+
+    #[test]
+    fn redact_url_strips_credentials_and_query() {
+        let redacted = redact_url("https://user:secret@rpc.example.com/path?token=abc");
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("token"));
+        assert!(redacted.contains("rpc.example.com"));
+    }
+
+    #[test]
+    fn env_parsing_respects_cctp_enabled() {
+        let _guard = std::sync::Mutex::new(());
+        std::env::set_var("CCTP_ENABLED", "true");
+        let cfg = CctpConfig::from_env().expect("valid env config");
+        assert!(cfg.enabled);
+        std::env::remove_var("CCTP_ENABLED");
+    }
+}

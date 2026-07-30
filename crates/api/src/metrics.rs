@@ -592,6 +592,59 @@ lazy_static! {
         &["phase"]
     )
     .expect("Can't create SWAP_INFLIGHT gauge");
+
+    /// CCTP saga state transitions.
+    pub static ref CCTP_TRANSITIONS: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_transitions_total",
+        "CCTP transfer state transitions",
+        &["to_status"]
+    )
+    .expect("Can't create CCTP_TRANSITIONS counter");
+
+    /// Iris client outcomes.
+    pub static ref CCTP_IRIS_OUTCOMES: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_iris_outcomes_total",
+        "CCTP Iris client outcomes",
+        &["operation", "outcome"]
+    )
+    .expect("Can't create CCTP_IRIS_OUTCOMES counter");
+
+    /// Iris request latency.
+    pub static ref CCTP_IRIS_LATENCY: HistogramVec = register_histogram_vec!(
+        "stellarroute_cctp_iris_duration_seconds",
+        "CCTP Iris request latency",
+        &["operation"],
+        vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]
+    )
+    .expect("Can't create CCTP_IRIS_LATENCY histogram");
+
+    pub static ref CCTP_INVALID_MESSAGE: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_invalid_message_total",
+        "CCTP raw message validation failures",
+        &["reason"]
+    )
+    .expect("Can't create CCTP_INVALID_MESSAGE counter");
+
+    pub static ref CCTP_RATE_LIMITED: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_rate_limited_total",
+        "CCTP Iris rate limit events",
+        &["source"]
+    )
+    .expect("Can't create CCTP_RATE_LIMITED counter");
+
+    pub static ref CCTP_VERIFIER_MISMATCH: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_verifier_mismatch_total",
+        "CCTP burn verifier mismatches",
+        &["kind"]
+    )
+    .expect("Can't create CCTP_VERIFIER_MISMATCH counter");
+
+    pub static ref CCTP_PROVIDER_KILLED_NEW: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_provider_killed_new_transfer_total",
+        "CCTP new transfers blocked by provider kill switch",
+        &["provider"]
+    )
+    .expect("Can't create CCTP_PROVIDER_KILLED_NEW counter");
 }
 
 /// Record a swap prepare outcome.
@@ -677,5 +730,36 @@ pub fn record_live_compare_result(pair: &str, divergence_bps: f64, outcome: &str
         .set(divergence_bps);
     CANARY_COMPARISON_TOTAL
         .with_label_values(&[pair, outcome])
+        .inc();
+}
+
+pub fn record_cctp_transition(to_status: &str) {
+    CCTP_TRANSITIONS.with_label_values(&[to_status]).inc();
+}
+
+pub fn record_cctp_iris_latency(duration: Duration, operation: &str) {
+    CCTP_IRIS_LATENCY
+        .with_label_values(&[operation])
+        .observe(duration.as_secs_f64());
+    CCTP_IRIS_OUTCOMES
+        .with_label_values(&[operation, "ok"])
+        .inc();
+}
+
+pub fn record_cctp_invalid_message() {
+    CCTP_INVALID_MESSAGE.with_label_values(&["corridor"]).inc();
+}
+
+pub fn record_cctp_rate_limited() {
+    CCTP_RATE_LIMITED.with_label_values(&["iris"]).inc();
+}
+
+pub fn record_cctp_verifier_mismatch() {
+    CCTP_VERIFIER_MISMATCH.with_label_values(&["burn"]).inc();
+}
+
+pub fn record_cctp_provider_killed_new_transfer() {
+    CCTP_PROVIDER_KILLED_NEW
+        .with_label_values(&["circle-cctp"])
         .inc();
 }
