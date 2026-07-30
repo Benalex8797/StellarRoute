@@ -7,7 +7,6 @@ import { RoutesBetaGate } from "@/src/components/RoutesBetaGate";
 import { useFeatureFlag } from "@/hooks/useFeatureFlag";
 import {
   CrossChainSwapDeck,
-  CrossChainSwapDeckSkeleton,
 } from "@/components/swap/cross-chain/CrossChainSwapDeck";
 import dynamic from "next/dynamic";
 
@@ -79,7 +78,11 @@ function SwapUiV2Surface() {
   const { enabled, loading } = useFeatureFlag("swap_ui_v2");
 
   if (loading) {
-    return <CrossChainSwapDeckSkeleton />;
+    return (
+      <RoutesBetaGate fallback={<SwapLegacyRoutes />}>
+        <SwapRoutesBeta />
+      </RoutesBetaGate>
+    );
   }
 
   if (!enabled) {

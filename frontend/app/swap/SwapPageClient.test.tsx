@@ -15,9 +15,6 @@ vi.mock('@/hooks/useFeatureFlag', () => ({
 
 vi.mock('@/components/swap/cross-chain/CrossChainSwapDeck', () => ({
   CrossChainSwapDeck: () => <div data-testid="cross-chain-swap-deck">deck</div>,
-  CrossChainSwapDeckSkeleton: () => (
-    <div data-testid="cross-chain-swap-deck-skeleton">skeleton</div>
-  ),
 }));
 
 vi.mock('@/hooks/useSplitView', () => ({
@@ -45,7 +42,7 @@ describe('SwapPageClient swap_ui_v2 gate', () => {
     expect(screen.queryByTestId('cross-chain-swap-deck')).not.toBeInTheDocument();
   });
 
-  it('shows skeleton while swap_ui_v2 is loading', () => {
+  it('renders legacy surface while swap_ui_v2 is loading', () => {
     vi.mocked(useFeatureFlag).mockImplementation((flag) => {
       if (flag === 'swap_ui_v2') {
         return { enabled: false, loading: true };
@@ -53,7 +50,9 @@ describe('SwapPageClient swap_ui_v2 gate', () => {
       return { enabled: false, loading: false };
     });
     render(<SwapPageClient />);
-    expect(screen.getByTestId('cross-chain-swap-deck-skeleton')).toBeInTheDocument();
+    expect(screen.getByTestId('swap-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('cross-chain-swap-deck')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cross-chain-swap-deck-skeleton')).not.toBeInTheDocument();
   });
 
   it('renders cross-chain deck when swap_ui_v2 is enabled', () => {
