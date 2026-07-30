@@ -43,6 +43,16 @@ All API errors return a consistent JSON body:
 | `duplicate_quote` | 409 | The prepare quote was already submitted or is currently being submitted. |
 | `unsupported_execution_mode` | 422 | The route requires AMM/Soroban/router execution, which is not enabled; classic PathPaymentStrictSend only. |
 | `unsupported_route` | 422 | The classic route shape is not supported by this prepare build (currently single SDEX hop only; multi-hop is rejected). |
+| `cctp_not_enabled` | 503 | Circle CCTP bridge settlement is not enabled on this deployment. |
+| `unsupported_corridor` | 400 | The requested CCTP corridor or provider is unknown or unsupported. |
+| `invalid_finality` | 400 | CCTP finality mode is invalid for the source chain (Stellar outbound burns require `standard`). |
+| `invalid_recipient` | 400 | The CCTP recipient address failed validation. |
+| `fee_quote_unavailable` | 503 | A runtime CCTP fee quote could not be produced. |
+| `attestation_pending` | 422 | CCTP attestation is still pending for this transfer (saga guard). |
+| `attestation_expired` | 422 | CCTP attestation has expired; request re-attestation before minting. |
+| `mint_retryable` | 422 | CCTP mint failed but may be retried (`mint_failed_retryable` saga state). |
+| `transfer_not_found` | 404 | The referenced CCTP `transfer_id` is unknown. |
+| `provider_killed` | 503 | The CCTP provider kill-switch is active. |
 
 This table is the canonical list backing `crates/api/src/models/response.rs`'s
 `ApiErrorCode::ALL` and sdk-js's `API_ERROR_CODES` (`sdk-js/src/types.ts`).

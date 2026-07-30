@@ -13,6 +13,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use super::v2_cctp::SupportedCorridor;
+
 /// Chain-scoped asset as returned by v2 endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct ChainAssetV2 {
@@ -52,4 +54,6 @@ pub struct ApiV2Info {
     /// Always false: bridge settlement is not executable; default pathfinding rejects bridges.
     pub bridge_settlement_executable: bool,
     pub supported_chain_namespaces: Vec<String>,
+    /// Advertised CCTP corridors (empty until backend health gates execution).
+    pub supported_corridors: Vec<SupportedCorridor>,
 }
