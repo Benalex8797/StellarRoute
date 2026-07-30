@@ -159,7 +159,7 @@ impl AttestationVerifier for CircleAttestationVerifier {
                 if reason == AttestationCryptoError::UnknownSigner.reason_label() =>
             {
                 self.trust
-                    .full_refresh(self.deps.as_ref())
+                    .force_full_refresh(self.deps.as_ref())
                     .await
                     .map_err(|_| AttestationVerifyError::NotReady)?;
                 let generation = self
@@ -389,21 +389,293 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_unknown_signer_refresh_success() {
-        let enabled = vec![ATTESTER_ADDRESS_1, ATTESTER_ADDRESS_2, ATTESTER_ADDRESS_3];
-        let verifier = e2e_verifier(enabled);
-        verifier.bootstrap().await.unwrap();
-        let generation = verifier.trust.generation().unwrap();
-        let snap = verifier
+    async fn e2e_verify_attestation_unknown_signer_single_refresh_success() {
+        use k256::ecdsa::SigningKey;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::cctp::attestation_crypto::SIGNATURE_LENGTH;
+
+        fn corridor_message() -> Vec<u8> {
+            let mut msg = FIXTURE_VALID_MESSAGE.to_vec();
+            msg[4..8].copy_from_slice(&27u32.to_be_bytes());
+            msg[8..12].copy_from_slice(&0u32.to_be_bytes());
+            msg
+        }
+
+        fn eth_address(sk: &SigningKey) -> [u8; 20] {
+            let encoded = sk.verifying_key().to_encoded_point(false);
+            let mut xy = [0u8; 64];
+            xy.copy_from_slice(&encoded.as_bytes()[1..65]);
+            crate::cctp::attestation_crypto::eth_address_from_pubkey_xy(&xy)
+        }
+
+        fn sign_component(digest: &[u8; 32], sk: &SigningKey) -> [u8; 65] {
+            let (sig, rid) = sk
+                .sign_prehash_recoverable(digest)
+                .expect("sign prehash recoverable");
+            let mut out = [0u8; 65];
+            out[..64].copy_from_slice(&sig.to_bytes());
+            out[64] = rid.to_byte() + 27;
+            out
+        }
+
+        fn build_attestation(message: &[u8], signers: &[SigningKey]) -> Vec<u8> {
+            let digest = crate::cctp::attestation_crypto::keccak256(message);
+            let mut addrs: Vec<([u8; 20], SigningKey)> = signers
+                .iter()
+                .map(|sk| (eth_address(sk), sk.clone()))
+                .collect();
+            addrs.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut attestation = Vec::with_capacity(2 * SIGNATURE_LENGTH);
+            for (_, sk) in addrs {
+                attestation.extend_from_slice(&sign_component(&digest, &sk));
+            }
+            attestation
+        }
+
+        let sk_known = SigningKey::from_bytes(&[0x11; 32].into()).expect("known key");
+        let sk_unknown = SigningKey::from_bytes(&[0x22; 32].into()).expect("unknown key");
+        let sk_decoy = SigningKey::from_bytes(&[0x55; 32].into()).expect("decoy key");
+        let addr_known = eth_address(&sk_known);
+        let addr_unknown = eth_address(&sk_unknown);
+        let addr_decoy = eth_address(&sk_decoy);
+        assert_ne!(addr_known, addr_unknown);
+
+        let message = corridor_message();
+        let attestation = build_attestation(&message, &[sk_known.clone(), sk_unknown.clone()]);
+
+        let initial_enabled = {
+            let mut v = vec![addr_known, addr_decoy];
+            v.sort();
+            v
+        };
+        let refreshed_enabled = {
+            let mut v = vec![addr_known, addr_unknown];
+            v.sort();
+            v
+        };
+
+        struct PhasedIris {
+            calls: AtomicUsize,
+            initial: Vec<[u8; 20]>,
+            refreshed: Vec<[u8; 20]>,
+        }
+
+        #[async_trait]
+        impl IrisPublicKeySource for PhasedIris {
+            async fn fetch_public_keys(&self) -> Result<Vec<[u8; 20]>, IrisPublicKeyError> {
+                let phase = self.calls.fetch_add(1, Ordering::SeqCst);
+                if phase == 0 {
+                    Ok(self.initial.clone())
+                } else {
+                    Ok(self.refreshed.clone())
+                }
+            }
+        }
+
+        struct PhasedReader {
+            dest: AttesterDestination,
+            calls: AtomicUsize,
+            initial: Vec<[u8; 20]>,
+            refreshed: Vec<[u8; 20]>,
+        }
+
+        #[async_trait]
+        impl AttesterSetReader for PhasedReader {
+            fn destination(&self) -> AttesterDestination {
+                self.dest
+            }
+
+            async fn read_on_chain_set(&self) -> Result<RawOnChainAttesterSet, AttesterSetError> {
+                let phase = self.calls.fetch_add(1, Ordering::SeqCst);
+                let enabled = if phase == 0 {
+                    self.initial.clone()
+                } else {
+                    self.refreshed.clone()
+                };
+                Ok(RawOnChainAttesterSet {
+                    signature_threshold: 2,
+                    enabled_addresses: enabled,
+                    block_or_ledger: Some("mock".into()),
+                })
+            }
+        }
+
+        let trust = Arc::new(AttestationTrustCache::new(
+            Duration::from_secs(900),
+            Duration::from_secs(86_400),
+            Arc::new(SystemClock),
+        ));
+        let build_count = trust.generation_build_count.clone();
+        let verifier = CircleAttestationVerifier::new(
+            trust.clone(),
+            AttestationRefreshDeps {
+                iris_source: Arc::new(PhasedIris {
+                    calls: AtomicUsize::new(0),
+                    initial: initial_enabled.clone(),
+                    refreshed: refreshed_enabled.clone(),
+                }),
+                readers: vec![
+                    Arc::new(PhasedReader {
+                        dest: AttesterDestination::Sepolia,
+                        calls: AtomicUsize::new(0),
+                        initial: initial_enabled.clone(),
+                        refreshed: refreshed_enabled.clone(),
+                    }),
+                    Arc::new(PhasedReader {
+                        dest: AttesterDestination::StellarTestnet,
+                        calls: AtomicUsize::new(0),
+                        initial: initial_enabled,
+                        refreshed: refreshed_enabled.clone(),
+                    }),
+                ],
+            },
+        );
+
+        verifier.bootstrap().await.expect("bootstrap");
+        assert_eq!(build_count.load(Ordering::SeqCst), 1);
+
+        let gen_before = verifier.trust.generation().expect("generation");
+        verifier
+            .verify_attestation(&message, &attestation)
+            .await
+            .expect("unknown signer refresh succeeds");
+
+        assert_eq!(build_count.load(Ordering::SeqCst), 2);
+        let gen_after = verifier
             .trust
-            .snapshot_for(AttesterDestination::Sepolia)
-            .unwrap();
-        CircleAttestationVerifier::verify_with_snapshot(
-            FIXTURE_VALID_MESSAGE,
-            FIXTURE_VALID_ATTESTATION,
-            &snap,
-            generation.iris.set_hash,
-        )
-        .unwrap();
+            .generation()
+            .expect("generation after refresh");
+        assert!(gen_after.generation > gen_before.generation);
+        for dest in [
+            AttesterDestination::Sepolia,
+            AttesterDestination::StellarTestnet,
+        ] {
+            let snap = verifier.trust.snapshot_for(dest).expect("snapshot");
+            assert!(snap.enabled_addresses.contains(&addr_unknown));
+            assert_eq!(snap.iris_set_hash, gen_after.iris.set_hash);
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_verify_attestation_unknown_signer_fails_after_one_refresh() {
+        use k256::ecdsa::SigningKey;
+        use std::sync::atomic::Ordering;
+
+        use crate::cctp::attestation_crypto::SIGNATURE_LENGTH;
+
+        fn corridor_message() -> Vec<u8> {
+            let mut msg = FIXTURE_VALID_MESSAGE.to_vec();
+            msg[4..8].copy_from_slice(&27u32.to_be_bytes());
+            msg[8..12].copy_from_slice(&0u32.to_be_bytes());
+            msg
+        }
+
+        fn eth_address(sk: &SigningKey) -> [u8; 20] {
+            let encoded = sk.verifying_key().to_encoded_point(false);
+            let mut xy = [0u8; 64];
+            xy.copy_from_slice(&encoded.as_bytes()[1..65]);
+            crate::cctp::attestation_crypto::eth_address_from_pubkey_xy(&xy)
+        }
+
+        fn sign_component(digest: &[u8; 32], sk: &SigningKey) -> [u8; 65] {
+            let (sig, rid) = sk
+                .sign_prehash_recoverable(digest)
+                .expect("sign prehash recoverable");
+            let mut out = [0u8; 65];
+            out[..64].copy_from_slice(&sig.to_bytes());
+            out[64] = rid.to_byte() + 27;
+            out
+        }
+
+        let sk_known = SigningKey::from_bytes(&[0x33; 32].into()).expect("known key");
+        let sk_unknown = SigningKey::from_bytes(&[0x44; 32].into()).expect("unknown key");
+        let sk_decoy = SigningKey::from_bytes(&[0x66; 32].into()).expect("decoy key");
+        let addr_known = eth_address(&sk_known);
+        let addr_unknown = eth_address(&sk_unknown);
+        let addr_decoy = eth_address(&sk_decoy);
+
+        let message = corridor_message();
+        let digest = crate::cctp::attestation_crypto::keccak256(&message);
+        let mut signers = vec![(addr_known, sk_known.clone()), (addr_unknown, sk_unknown)];
+        signers.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut attestation = Vec::with_capacity(2 * SIGNATURE_LENGTH);
+        for (_, sk) in &signers {
+            attestation.extend_from_slice(&sign_component(&digest, sk));
+        }
+
+        let enabled_without_unknown = {
+            let mut v = vec![addr_known, addr_decoy];
+            v.sort();
+            v
+        };
+
+        struct StaticIrisAlways(Vec<[u8; 20]>);
+        #[async_trait]
+        impl IrisPublicKeySource for StaticIrisAlways {
+            async fn fetch_public_keys(&self) -> Result<Vec<[u8; 20]>, IrisPublicKeyError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        struct StaticReaderAlways {
+            dest: AttesterDestination,
+            enabled: Vec<[u8; 20]>,
+        }
+        #[async_trait]
+        impl AttesterSetReader for StaticReaderAlways {
+            fn destination(&self) -> AttesterDestination {
+                self.dest
+            }
+            async fn read_on_chain_set(&self) -> Result<RawOnChainAttesterSet, AttesterSetError> {
+                Ok(RawOnChainAttesterSet {
+                    signature_threshold: 2,
+                    enabled_addresses: self.enabled.clone(),
+                    block_or_ledger: Some("mock".into()),
+                })
+            }
+        }
+
+        let trust = Arc::new(AttestationTrustCache::new(
+            Duration::from_secs(900),
+            Duration::from_secs(86_400),
+            Arc::new(SystemClock),
+        ));
+        let build_count = trust.generation_build_count.clone();
+        let verifier = CircleAttestationVerifier::new(
+            trust,
+            AttestationRefreshDeps {
+                iris_source: Arc::new(StaticIrisAlways(enabled_without_unknown.clone())),
+                readers: vec![
+                    Arc::new(StaticReaderAlways {
+                        dest: AttesterDestination::Sepolia,
+                        enabled: enabled_without_unknown.clone(),
+                    }),
+                    Arc::new(StaticReaderAlways {
+                        dest: AttesterDestination::StellarTestnet,
+                        enabled: enabled_without_unknown,
+                    }),
+                ],
+            },
+        );
+
+        verifier.bootstrap().await.unwrap();
+        assert_eq!(build_count.load(Ordering::SeqCst), 1);
+
+        let err = verifier
+            .verify_attestation(&message, &attestation)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AttestationVerifyError::Invalid(
+                AttestationCryptoError::UnknownSigner.reason_label().into()
+            )
+        );
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            2,
+            "must perform exactly one full refresh, not a retry loop"
+        );
     }
 }

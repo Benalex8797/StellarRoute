@@ -1,6 +1,6 @@
 //! Atomic attestation trust generations: Iris keys + both destination snapshots.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -94,6 +94,8 @@ pub struct AttestationTrustCache {
     refresh_lock: Mutex<()>,
     generation_counter: AtomicU64,
     clock: Arc<dyn Clock>,
+    /// Successful atomic generation builds (for tests/diagnostics).
+    pub(crate) generation_build_count: Arc<AtomicUsize>,
 }
 
 pub struct AttestationRefreshDeps {
@@ -110,6 +112,7 @@ impl AttestationTrustCache {
             refresh_lock: Mutex::new(()),
             generation_counter: AtomicU64::new(0),
             clock,
+            generation_build_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -179,11 +182,33 @@ impl AttestationTrustCache {
         &self,
         deps: &AttestationRefreshDeps,
     ) -> Result<(), AttestationTrustError> {
+        self.full_refresh_inner(deps, false).await
+    }
+
+    /// Rebuild trust even when the current generation is TTL-fresh (unknown-signer recovery).
+    pub(crate) async fn force_full_refresh(
+        &self,
+        deps: &AttestationRefreshDeps,
+    ) -> Result<(), AttestationTrustError> {
+        self.full_refresh_inner(deps, true).await
+    }
+
+    async fn full_refresh_inner(
+        &self,
+        deps: &AttestationRefreshDeps,
+        force: bool,
+    ) -> Result<(), AttestationTrustError> {
         let _guard = self.refresh_lock.lock().await;
-        if let Some(gen) = self.generation() {
-            if self.is_fresh(&gen) {
-                return Ok(());
+        if !force {
+            if let Some(gen) = self.generation() {
+                if self.is_fresh(&gen) {
+                    return Ok(());
+                }
+                if self.is_stale_beyond(&gen) {
+                    return Err(AttestationTrustError::Stale);
+                }
             }
+        } else if let Some(gen) = self.generation() {
             if self.is_stale_beyond(&gen) {
                 return Err(AttestationTrustError::Stale);
             }
@@ -194,6 +219,7 @@ impl AttestationTrustCache {
                 metrics::record_cctp_iris_keys_refresh("success", "generation");
                 metrics::record_cctp_attester_snapshot_refresh("sepolia", "success");
                 metrics::record_cctp_attester_snapshot_refresh("stellar_testnet", "success");
+                self.generation_build_count.fetch_add(1, Ordering::SeqCst);
                 self.state.store(Arc::new(Some(gen)));
                 Ok(())
             }
