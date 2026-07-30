@@ -223,6 +223,7 @@ struct EthTransaction {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EthReceipt {
     status: Option<String>,
     logs: Option<Vec<EthLog>>,
@@ -458,5 +459,197 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, VerifierError::Failed("tx failed".into()));
+    }
+
+    #[tokio::test]
+    async fn accepts_synthetic_deposit_for_burn_fixture() {
+        use alloy_primitives::{Address, Bytes, FixedBytes, B256, U256};
+        use alloy_sol_types::SolEvent;
+        use wiremock::matchers::{body_string_contains, method, path};
+
+        let server = MockServer::start().await;
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = server.uri();
+        let verifier = EvmRpcBurnVerifier::with_confirmations(&cfg, 1).unwrap();
+
+        let from: Address = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"
+            .parse()
+            .unwrap();
+        let burn_token: Address = crate::cctp::config::SEPOLIA_USDC.parse().unwrap();
+        let mint_recipient =
+            evm_address_to_bytes32("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0").unwrap();
+        let amount = 1_000_000u128;
+        let dest_domain = crate::cctp::config::STELLAR_TESTNET_DOMAIN;
+        let data = ProductionEvmCctpBuilder::encode_deposit_for_burn(
+            amount,
+            dest_domain,
+            mint_recipient,
+            crate::cctp::config::SEPOLIA_USDC,
+            ANY_DESTINATION_CALLER,
+            "1",
+            crate::cctp::config::FINALITY_STANDARD,
+        )
+        .unwrap();
+        let input = format!("0x{}", hex::encode(&data));
+        let tx_hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+
+        let max_fee = U256::from(crate::cctp::encoding::decimal_to_cctp_subunits("1").unwrap());
+        let event = DepositForBurn {
+            burnToken: burn_token,
+            amount: U256::from(amount),
+            depositor: from,
+            mintRecipient: FixedBytes::from_slice(&mint_recipient),
+            destinationDomain: dest_domain,
+            destinationTokenMessenger: B256::ZERO,
+            destinationCaller: FixedBytes::from_slice(&ANY_DESTINATION_CALLER),
+            maxFee: max_fee,
+            minFinalityThreshold: crate::cctp::config::FINALITY_STANDARD,
+            hookData: Bytes::new(),
+        };
+        let log_data = event.encode_log_data();
+        let topics: Vec<String> = log_data
+            .topics()
+            .iter()
+            .map(|t| format!("{:#x}", t))
+            .collect();
+        let log_body = format!("0x{}", hex::encode(log_data.data));
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("eth_getTransactionByHash"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "from": format!("{:#x}", from),
+                    "to": cfg.contracts.sepolia_token_messenger,
+                    "input": input
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_getTransactionReceipt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "status": "0x1",
+                    "blockNumber": "0x10",
+                    "logs": [{
+                        "address": cfg.contracts.sepolia_token_messenger,
+                        "topics": topics,
+                        "data": log_body
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_chainId"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": "0xaa36a7"
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_blockNumber"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": "0x10"
+            })))
+            .mount(&server)
+            .await;
+
+        let facts = verifier.verify_burn(tx_hash).await.unwrap();
+        assert_eq!(facts.tx_hash, tx_hash);
+        assert_eq!(facts.amount_cctp_subunits, amount as u128);
+        assert_eq!(facts.destination_domain, dest_domain);
+        assert_eq!(facts.sender.to_ascii_lowercase(), format!("{:#x}", from));
+    }
+
+    #[tokio::test]
+    async fn insufficient_confirmations_rejected() {
+        use wiremock::matchers::{body_string_contains, method, path};
+
+        let server = MockServer::start().await;
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = server.uri();
+        let verifier = EvmRpcBurnVerifier::with_confirmations(&cfg, 3).unwrap();
+        let tx_hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let mint_recipient =
+            evm_address_to_bytes32("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0").unwrap();
+        let data = ProductionEvmCctpBuilder::encode_deposit_for_burn(
+            1_000_000,
+            crate::cctp::config::STELLAR_TESTNET_DOMAIN,
+            mint_recipient,
+            crate::cctp::config::SEPOLIA_USDC,
+            ANY_DESTINATION_CALLER,
+            "1",
+            crate::cctp::config::FINALITY_STANDARD,
+        )
+        .unwrap();
+        let input = format!("0x{}", hex::encode(&data));
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("eth_getTransactionByHash"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "from": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+                    "to": cfg.contracts.sepolia_token_messenger,
+                    "input": input
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_getTransactionReceipt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "status": "0x1",
+                    "blockNumber": "0x10",
+                    "logs": []
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_chainId"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": "0xaa36a7"
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_blockNumber"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": "0x11"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = verifier.verify_burn(tx_hash).await.unwrap_err();
+        assert_eq!(
+            err,
+            VerifierError::Failed("insufficient confirmations".into())
+        );
     }
 }

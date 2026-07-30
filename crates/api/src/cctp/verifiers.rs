@@ -378,3 +378,102 @@ impl EvmMintVerifier for FakeMintVerifier {
         Ok(self.completion.clone())
     }
 }
+
+#[cfg(test)]
+mod facts_match_tests {
+    use super::*;
+
+    fn base_facts() -> VerifiedBurnFacts {
+        VerifiedBurnFacts {
+            tx_hash: "0xabc".into(),
+            source_chain_id: "eip155:11155111".into(),
+            source_domain: 0,
+            destination_domain: 27,
+            sender: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+            amount_cctp_subunits: 1_000_000,
+            burn_token_bytes32: [1u8; 32],
+            mint_recipient_bytes32: [2u8; 32],
+            destination_caller_bytes32: [3u8; 32],
+            min_finality_threshold: 1000,
+            hook_data: None,
+            token_messenger_bytes32: [4u8; 32],
+            block_or_ledger: None,
+        }
+    }
+
+    #[test]
+    fn facts_match_accepts_identical() {
+        let a = base_facts();
+        assert!(facts_match(&a, &a).is_ok());
+    }
+
+    #[test]
+    fn facts_match_table_rejects_each_field() {
+        let expected = base_facts();
+        let mut actual = expected.clone();
+        actual.tx_hash = "0xdead".into();
+        assert_eq!(facts_match(&expected, &actual).unwrap_err(), "tx_hash");
+
+        let mut actual = expected.clone();
+        actual.source_chain_id = "eip155:1".into();
+        assert_eq!(
+            facts_match(&expected, &actual).unwrap_err(),
+            "source_chain_id"
+        );
+
+        let mut actual = expected.clone();
+        actual.source_domain = 99;
+        assert_eq!(
+            facts_match(&expected, &actual).unwrap_err(),
+            "source_domain"
+        );
+
+        let mut actual = expected.clone();
+        actual.destination_domain = 88;
+        assert_eq!(
+            facts_match(&expected, &actual).unwrap_err(),
+            "destination_domain"
+        );
+
+        let mut actual = expected.clone();
+        actual.amount_cctp_subunits += 1;
+        assert_eq!(facts_match(&expected, &actual).unwrap_err(), "amount");
+
+        let mut actual = expected.clone();
+        actual.burn_token_bytes32[0] ^= 0xff;
+        assert_eq!(facts_match(&expected, &actual).unwrap_err(), "burn_token");
+
+        let mut actual = expected.clone();
+        actual.mint_recipient_bytes32[0] ^= 0xff;
+        assert_eq!(
+            facts_match(&expected, &actual).unwrap_err(),
+            "mint_recipient"
+        );
+
+        let mut actual = expected.clone();
+        actual.destination_caller_bytes32[0] ^= 0xff;
+        assert_eq!(
+            facts_match(&expected, &actual).unwrap_err(),
+            "destination_caller"
+        );
+
+        let mut actual = expected.clone();
+        actual.min_finality_threshold = 2000;
+        assert_eq!(facts_match(&expected, &actual).unwrap_err(), "finality");
+
+        let mut actual = expected.clone();
+        actual.token_messenger_bytes32[0] ^= 0xff;
+        assert_eq!(
+            facts_match(&expected, &actual).unwrap_err(),
+            "token_messenger"
+        );
+
+        let mut actual = expected.clone();
+        actual.sender = "0x0000000000000000000000000000000000000001".into();
+        assert_eq!(facts_match(&expected, &actual).unwrap_err(), "sender");
+
+        let mut actual = expected.clone();
+        actual.hook_data = Some(vec![0x01]);
+        assert_eq!(facts_match(&expected, &actual).unwrap_err(), "hook_data");
+    }
+}
