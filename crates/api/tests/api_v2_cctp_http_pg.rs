@@ -16,9 +16,7 @@ use std::sync::Arc;
 use stellarroute_api::{
     cctp::{
         access::{hash_access_token, test_access_token_keyring, TRANSFER_ACCESS_HEADER},
-        attestation::FakeAttestationVerifier,
         bootstrap::CctpHttpContext,
-        builders::{BuilderError, PreparedMintBundle, StellarCctpMintBuilder},
         config::CctpConfig,
         gate::{CCTP_CHAIN_KILL_SEPOLIA, CCTP_CHAIN_KILL_STELLAR, REATTEST_MAX_ATTEMPTS},
         idempotency::{canonical_quote_request_hash, PgCctpQuoteIdempotencyStore},
@@ -27,7 +25,6 @@ use stellarroute_api::{
         readiness::CctpRuntime,
         service::CctpService,
         store::{CctpTransfer, CctpTransferStore, PgCctpTransferStore},
-        verifiers::{FakeMintVerifier, MintVerifyOutcome, VerifiedMintFacts},
     },
     dependency_health::ExternalDependencyHealth,
     kill_switch::KillSwitchManager,
@@ -111,27 +108,15 @@ impl IrisClient for CountingIris {
     }
 }
 
-struct ReadyTestStellarMintBuilder;
-
-#[async_trait]
-impl StellarCctpMintBuilder for ReadyTestStellarMintBuilder {
-    fn is_ready(&self) -> bool {
-        true
-    }
-
-    async fn prepare_mint(
-        &self,
-        transfer: &CctpTransfer,
-        config: &CctpConfig,
-    ) -> Result<PreparedMintBundle, BuilderError> {
-        Ok(PreparedMintBundle {
-            primary: stellarroute_api::models::v2_cctp::PreparedWalletPayload::StellarXdr {
-                network_passphrase: config.stellar_network_passphrase.clone(),
-                xdr_envelope: "AAAA".into(),
-            },
-            expires_at: transfer.quote_expires_at.timestamp(),
-            payload_hash: "pg-test-payload-hash".into(),
-        })
+fn clear_shell_cctp_env() {
+    for key in [
+        "CCTP_ENABLED",
+        "CCTP_ACCESS_TOKEN_HMAC_KEY",
+        "CCTP_STELLAR_RPC_URL",
+        "CCTP_SEPOLIA_RPC_URL",
+        "SEPOLIA_RPC_URL",
+    ] {
+        std::env::remove_var(key);
     }
 }
 
@@ -142,28 +127,8 @@ fn testnet_cctp_config() -> CctpConfig {
     cfg
 }
 
-fn executable_runtime() -> CctpRuntime {
-    let cfg = testnet_cctp_config();
-    let mut runtime = CctpRuntime::from_config(&cfg);
-    runtime.attestation_verifier = Arc::new(FakeAttestationVerifier { ready: true });
-    runtime.stellar_mint_builder = Arc::new(ReadyTestStellarMintBuilder);
-    runtime.stellar_mint_verifier = Arc::new(FakeMintVerifier {
-        facts: VerifiedMintFacts {
-            tx_hash: "mint-tx".into(),
-            destination_chain_id: STELLAR_TESTNET_CHAIN_ID.into(),
-            contract_address: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA".into(),
-            function_selector: "mint".into(),
-            message_hash: [0u8; 32],
-            attestation_hash: [0u8; 32],
-            nonce: "nonce-1".into(),
-            payload_hash: "pg-test-payload-hash".into(),
-            outcome: MintVerifyOutcome::Pending,
-            recipient_evidence: Some(VALID_STELLAR_RECIPIENT.into()),
-        },
-        completion: MintVerifyOutcome::Pending,
-        ready: true,
-    });
-    runtime
+fn executable_runtime(cfg: &CctpConfig) -> CctpRuntime {
+    CctpRuntime::probe_ready_http_harness(cfg, "pg-test-payload-hash")
 }
 
 fn sample_quote_body() -> Value {
@@ -219,6 +184,7 @@ struct PgHarness {
 
 impl PgHarness {
     async fn connect() -> Self {
+        clear_shell_cctp_env();
         std::env::set_var("CCTP_IDEMPOTENCY_LEASE_SECS", "2");
         let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL");
         let pool = PgPoolOptions::new()
@@ -240,7 +206,7 @@ impl PgHarness {
         let store: Arc<dyn CctpTransferStore> =
             Arc::new(PgCctpTransferStore::new(self.pool.clone()));
         let idempotency = Arc::new(PgCctpQuoteIdempotencyStore::new(self.pool.clone()));
-        let runtime = executable_runtime();
+        let runtime = executable_runtime(&cfg);
         let service = Arc::new(CctpService {
             config: cfg.clone(),
             store,
