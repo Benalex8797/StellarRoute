@@ -78,8 +78,15 @@ const ALWAYS_EXEMPT_PREFIXES: &[&str] = &[
     "/api/v1/system",
 ];
 
+/// Narrow CCTP bridge exemption: browser clients authenticate transfers via
+/// `x-cctp-transfer-access` instead of integrator API keys. Quote remains
+/// unauthenticated but route-level rate limited.
 fn is_always_exempt(path: &str) -> bool {
     ALWAYS_EXEMPT_PREFIXES.iter().any(|p| path.starts_with(p))
+}
+
+fn is_cctp_bridge_exempt(path: &str) -> bool {
+    path == "/api/v2/bridge/cctp/quote" || path.starts_with("/api/v2/bridge/cctp/")
 }
 
 /// Parse `PUBLIC_GET_ROUTES` as a CSV allowlist of route path prefixes that
@@ -190,6 +197,10 @@ where
 
         Box::pin(async move {
             if is_always_exempt(req.uri().path()) {
+                return inner.call(req).await;
+            }
+
+            if is_cctp_bridge_exempt(req.uri().path()) {
                 return inner.call(req).await;
             }
 
@@ -354,5 +365,19 @@ mod tests {
         let result = validate_auth_startup();
         reset_env();
         assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn cctp_bridge_paths_are_auth_exempt() {
+        assert!(is_cctp_bridge_exempt("/api/v2/bridge/cctp/quote"));
+        assert!(is_cctp_bridge_exempt(
+            "/api/v2/bridge/cctp/550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(is_cctp_bridge_exempt(
+            "/api/v2/bridge/cctp/550e8400-e29b-41d4-a716-446655440000/prepare-burn"
+        ));
+        assert!(!is_cctp_bridge_exempt("/api/v2"));
+        assert!(!is_cctp_bridge_exempt("/api/v2/assets/canonicalize"));
+        assert!(!is_cctp_bridge_exempt("/api/v1/admin/kill-switch"));
     }
 }

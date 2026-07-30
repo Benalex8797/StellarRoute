@@ -1,7 +1,7 @@
 //! API server setup and configuration
 
 use axum::{
-    http::{HeaderValue, Request},
+    http::{header, HeaderName, HeaderValue, Request},
     Router,
 };
 use std::{net::SocketAddr, sync::Arc};
@@ -119,6 +119,17 @@ pub fn validate_cors_config() -> std::result::Result<(), String> {
     Ok(())
 }
 
+fn strict_cors_allowed_headers() -> Vec<HeaderName> {
+    vec![
+        header::CONTENT_TYPE,
+        header::AUTHORIZATION,
+        HeaderName::from_static("x-api-key"),
+        HeaderName::from_static(crate::cctp::access::TRANSFER_ACCESS_HEADER),
+        HeaderName::from_static(crate::cctp::idempotency::IDEMPOTENCY_HEADER),
+        HeaderName::from_static(REQUEST_ID_HEADER),
+    ]
+}
+
 /// Build the CORS layer for the API.
 ///
 /// In production (or when `REQUIRE_STRICT_CORS=1`), origins are restricted to
@@ -133,7 +144,7 @@ fn build_cors_layer() -> CorsLayer {
         CorsLayer::new()
             .allow_origin(origins)
             .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_headers(strict_cors_allowed_headers())
     } else {
         CorsLayer::new()
             .allow_origin(Any)
@@ -521,5 +532,46 @@ mod tests {
                 .is_none(),
             "disallowed origin must not receive an Access-Control-Allow-Origin header"
         );
+    }
+
+    #[tokio::test]
+    async fn cors_allows_cctp_headers_on_preflight_in_production() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_cors_env();
+        std::env::set_var("STELLARROUTE_ENV", "production");
+        std::env::set_var("CORS_ALLOWED_ORIGINS", "https://app.example.com");
+
+        let server = Server::new(ServerConfig::default(), lazy_db_pools()).await;
+        let router = server.router();
+
+        let response = router
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/api/v2/bridge/cctp/quote")
+                    .header("origin", "https://app.example.com")
+                    .header("access-control-request-method", "POST")
+                    .header(
+                        "access-control-request-headers",
+                        "content-type,idempotency-key,x-cctp-transfer-access,x-request-id",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        reset_cors_env();
+
+        let allowed = response
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(allowed.contains("idempotency-key"));
+        assert!(allowed.contains("x-cctp-transfer-access"));
+        assert!(allowed.contains("x-request-id"));
+        assert!(allowed.contains("content-type"));
     }
 }
