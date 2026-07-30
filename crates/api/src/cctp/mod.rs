@@ -3,6 +3,7 @@
 pub mod approval;
 pub mod attestation;
 pub mod attestation_crypto;
+pub mod attestation_trust;
 pub mod attester_set;
 pub mod bounds;
 pub mod builders;
@@ -19,6 +20,7 @@ pub mod fixtures;
 pub mod iris;
 pub mod iris_public_keys;
 pub mod message;
+pub mod provenance;
 pub mod readiness;
 pub mod service;
 pub mod stellar_attester_reader;
