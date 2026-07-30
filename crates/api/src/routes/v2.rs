@@ -12,8 +12,27 @@ use crate::error::{ApiError, Result};
 use crate::middleware::RequestId;
 use crate::models::compat::{chain_asset_to_v2, parse_asset_input};
 use crate::models::v2::{ApiV2Info, CanonicalizeAssetRequest, CanonicalizeAssetResponse};
+use crate::models::v2_cctp::SupportedCorridor;
 use crate::models::ApiResponse;
 use axum::Json;
+
+#[cfg(test)]
+static TEST_SUPPORTED_CORRIDORS: std::sync::OnceLock<Vec<SupportedCorridor>> =
+    std::sync::OnceLock::new();
+
+/// Corridors advertised by `GET /api/v2` (empty unless test injection is set).
+pub(crate) fn supported_corridors_for_info() -> Vec<SupportedCorridor> {
+    #[cfg(test)]
+    if let Some(corridors) = TEST_SUPPORTED_CORRIDORS.get() {
+        return corridors.clone();
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_supported_corridors(corridors: Vec<SupportedCorridor>) {
+    let _ = TEST_SUPPORTED_CORRIDORS.set(corridors);
+}
 
 /// `GET /api/v2` — capability descriptor for the chain-aware seam.
 #[utoipa::path(
@@ -39,6 +58,7 @@ pub async fn api_v2_info(request_id: RequestId) -> Result<Json<ApiResponse<ApiV2
                 "bip122".into(),
                 "tron".into(),
             ],
+            supported_corridors: supported_corridors_for_info(),
         },
         request_id.as_str(),
     )))
