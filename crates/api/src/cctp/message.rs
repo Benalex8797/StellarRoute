@@ -147,12 +147,17 @@ fn read_u256(bytes: &[u8], offset: usize) -> Result<u128, MessageParseError> {
 pub struct CorridorMessageExpectations {
     pub source_domain: u32,
     pub destination_domain: u32,
+    pub header_recipient: [u8; 32],
+    pub header_sender: [u8; 32],
     pub burn_token: [u8; 32],
     pub mint_recipient: [u8; 32],
     pub destination_caller: [u8; 32],
     pub amount_cctp_subunits: u128,
     pub min_finality: u32,
+    pub body_message_sender: [u8; 32],
     pub hook_data: Option<Vec<u8>>,
+    /// When true, hook_data must be empty (Stellar->EVM corridor).
+    pub hook_data_required_empty: bool,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -163,6 +168,10 @@ pub enum MessageValidationError {
     WrongSourceDomain,
     #[error("wrong destination domain")]
     WrongDestinationDomain,
+    #[error("wrong header recipient")]
+    WrongHeaderRecipient,
+    #[error("wrong header sender")]
+    WrongHeaderSender,
     #[error("wrong burn token")]
     WrongBurnToken,
     #[error("wrong mint recipient")]
@@ -173,17 +182,25 @@ pub enum MessageValidationError {
     WrongAmount,
     #[error("wrong finality")]
     WrongFinality,
+    #[error("wrong message sender")]
+    WrongMessageSender,
     #[error("wrong hook data")]
     WrongHookData,
     #[error("finality not executed")]
     FinalityNotExecuted,
+    #[error("hook data too large")]
+    HookDataTooLarge,
 }
+
+use crate::cctp::bounds::{check_byte_len, MAX_HOOK_DATA_BYTES, MAX_RAW_MESSAGE_BYTES};
 
 pub fn validate_message_for_corridor(
     raw_hex: &str,
     expected: &CorridorMessageExpectations,
 ) -> Result<ParsedCctpMessage, MessageValidationError> {
     let bytes = decode_hex_message(raw_hex).map_err(MessageValidationError::Parse)?;
+    check_byte_len("raw_message", &bytes, MAX_RAW_MESSAGE_BYTES)
+        .map_err(|_| MessageValidationError::Parse(MessageParseError::TooShort))?;
     let parsed = parse_cctp_v2_message(&bytes).map_err(MessageValidationError::Parse)?;
 
     if parsed.source_domain != expected.source_domain {
@@ -192,11 +209,20 @@ pub fn validate_message_for_corridor(
     if parsed.destination_domain != expected.destination_domain {
         return Err(MessageValidationError::WrongDestinationDomain);
     }
+    if parsed.recipient != expected.header_recipient {
+        return Err(MessageValidationError::WrongHeaderRecipient);
+    }
+    if parsed.sender != expected.header_sender {
+        return Err(MessageValidationError::WrongHeaderSender);
+    }
     if parsed.body.burn_token != expected.burn_token {
         return Err(MessageValidationError::WrongBurnToken);
     }
     if parsed.body.mint_recipient != expected.mint_recipient {
         return Err(MessageValidationError::WrongMintRecipient);
+    }
+    if parsed.body.message_sender != expected.body_message_sender {
+        return Err(MessageValidationError::WrongMessageSender);
     }
     if parsed.destination_caller != expected.destination_caller {
         return Err(MessageValidationError::WrongDestinationCaller);
@@ -215,10 +241,20 @@ pub fn validate_message_for_corridor(
         return Err(MessageValidationError::FinalityNotExecuted);
     }
 
-    if let Some(expected_hook) = &expected.hook_data {
+    if check_byte_len("hook_data", &parsed.body.hook_data, MAX_HOOK_DATA_BYTES).is_err() {
+        return Err(MessageValidationError::HookDataTooLarge);
+    }
+
+    if expected.hook_data_required_empty {
+        if !parsed.body.hook_data.is_empty() {
+            return Err(MessageValidationError::WrongHookData);
+        }
+    } else if let Some(expected_hook) = &expected.hook_data {
         if parsed.body.hook_data != *expected_hook {
             return Err(MessageValidationError::WrongHookData);
         }
+    } else if !parsed.body.hook_data.is_empty() {
+        return Err(MessageValidationError::WrongHookData);
     }
 
     Ok(parsed)
@@ -230,6 +266,35 @@ pub fn normalize_finality(threshold: u32) -> u32 {
     } else {
         FINALITY_STANDARD
     }
+}
+
+/// Build a synthetic v2 burn message for tests (deterministic layout).
+pub fn build_synthetic_cctp_message(expected: &CorridorMessageExpectations) -> Vec<u8> {
+    let hook_len = expected.hook_data.as_ref().map(|h| h.len()).unwrap_or(0);
+    let mut msg = vec![0u8; 148 + 228 + hook_len];
+    msg[4..8].copy_from_slice(&expected.source_domain.to_be_bytes());
+    msg[8..12].copy_from_slice(&expected.destination_domain.to_be_bytes());
+    msg[44..76].copy_from_slice(&expected.header_sender);
+    msg[76..108].copy_from_slice(&expected.header_recipient);
+    msg[108..140].copy_from_slice(&expected.destination_caller);
+    msg[140..144].copy_from_slice(&expected.min_finality.to_be_bytes());
+    msg[144..148].copy_from_slice(&expected.min_finality.to_be_bytes());
+
+    let body_base = 148;
+    msg[body_base + 4..body_base + 36].copy_from_slice(&expected.burn_token);
+    msg[body_base + 36..body_base + 68].copy_from_slice(&expected.mint_recipient);
+    msg[body_base + 68 + 16..body_base + 68 + 32]
+        .copy_from_slice(&expected.amount_cctp_subunits.to_be_bytes());
+    msg[body_base + 100..body_base + 132].copy_from_slice(&expected.body_message_sender);
+
+    if hook_len > 0 {
+        msg[body_base + 228..].copy_from_slice(expected.hook_data.as_ref().unwrap());
+    }
+    msg
+}
+
+pub fn encode_message_hex(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
 }
 
 #[cfg(test)]

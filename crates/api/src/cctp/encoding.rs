@@ -43,6 +43,13 @@ pub fn stellar_contract_to_bytes32(strkey: &str) -> Result<[u8; 32], EncodingErr
     Ok(contract.0)
 }
 
+/// Stellar G-address ed25519 public key as bytes32 (Circle Stellar burn messageSender).
+pub fn stellar_account_to_bytes32(g_address: &str) -> Result<[u8; 32], EncodingError> {
+    let pk = stellar_strkey::ed25519::PublicKey::from_string(g_address.trim())
+        .map_err(|_| EncodingError::InvalidStellarAccount(g_address.to_string()))?;
+    Ok(pk.0)
+}
+
 /// Build CctpForwarder hook data for a G-address recipient (Circle Stellar reference).
 ///
 /// Layout: 24 zero bytes | u32 BE version=0 | u32 BE length | UTF-8 strkey
