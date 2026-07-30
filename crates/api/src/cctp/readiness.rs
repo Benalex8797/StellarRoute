@@ -82,7 +82,8 @@ impl CctpRuntime {
         }
     }
 
-    /// Wire production EVM RPC builders/verifiers and attestation stack when configured.
+    /// Wire production EVM RPC builders/verifiers when configured.
+    /// Attestation verifier remains NotReady until `from_config_async` bootstraps trust cache.
     /// Stellar burn/approval/mint remain NotReady; `is_public_executable` stays false.
     pub fn from_config(config: &CctpConfig) -> Self {
         let mut runtime = Self::production_defaults();
@@ -101,7 +102,13 @@ impl CctpRuntime {
                 runtime.evm_mint_verifier = Arc::new(v);
             }
         }
-        if let Some(verifier) = try_build_attestation_verifier(config) {
+        runtime
+    }
+
+    /// Async bootstrap for attestation trust cache and production verifier wiring.
+    pub async fn from_config_async(config: &CctpConfig) -> Self {
+        let mut runtime = Self::from_config(config);
+        if let Some(verifier) = try_build_attestation_verifier_async(config).await {
             runtime.attestation_verifier = verifier;
         }
         runtime
@@ -181,13 +188,13 @@ impl CctpRuntime {
     }
 }
 
-fn try_build_attestation_verifier(
+async fn try_build_attestation_verifier_async(
     config: &CctpConfig,
 ) -> Option<Arc<dyn crate::cctp::attestation::AttestationVerifier>> {
     use crate::cctp::attestation::CircleAttestationVerifier;
-    use crate::cctp::attester_set::AttesterSetCache;
+    use crate::cctp::attestation_trust::{AttestationRefreshDeps, AttestationTrustCache};
     use crate::cctp::evm_attester_reader::evm_reader_arc;
-    use crate::cctp::iris_public_keys::{IrisPublicKeyCache, ReqwestIrisPublicKeySource};
+    use crate::cctp::iris_public_keys::ReqwestIrisPublicKeySource;
     use crate::cctp::stellar_attester_reader::stellar_reader_arc;
 
     if config.sepolia_rpc_url.trim().is_empty() || config.stellar_rpc_url.trim().is_empty() {
@@ -197,35 +204,16 @@ fn try_build_attestation_verifier(
     let evm_reader = evm_reader_arc(config).ok()?;
     let stellar_reader = stellar_reader_arc(config).ok()?;
 
-    let iris_keys = Arc::new(IrisPublicKeyCache::from_config(config));
-    let snapshots = Arc::new(AttesterSetCache::from_config(config));
-    let verifier = Arc::new(CircleAttestationVerifier::new(
-        iris_keys.clone(),
-        snapshots.clone(),
-        Arc::new(iris_source),
-    ));
-
-    // Bootstrap synchronously via tokio runtime if available, else defer to first verify.
-    let readers: Vec<Arc<dyn crate::cctp::attester_set::AttesterSetReader>> =
-        vec![evm_reader, stellar_reader];
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        let iris_keys_c = iris_keys.clone();
-        let snapshots_c = snapshots.clone();
-        let verifier_c = verifier.clone();
-        let readers_c = readers.clone();
-        handle.block_on(async {
-            if verifier_c.bootstrap().await.is_err() {
-                return;
-            }
-            let _ = snapshots_c.refresh_all(&readers_c, &iris_keys_c).await;
-        });
-        if !verifier.is_ready() {
-            return None;
-        }
-    } else {
+    let trust = Arc::new(AttestationTrustCache::from_config(config));
+    let deps = AttestationRefreshDeps {
+        iris_source: Arc::new(iris_source),
+        readers: vec![evm_reader, stellar_reader],
+    };
+    let verifier = Arc::new(CircleAttestationVerifier::new(trust, deps));
+    verifier.bootstrap().await.ok()?;
+    if !verifier.is_ready() {
         return None;
     }
-
     Some(verifier)
 }
 
@@ -254,7 +242,28 @@ mod tests {
         assert!(rt.evm_mint_verifier.is_ready());
         assert!(rt.evm_approval_verifier.is_ready());
         assert!(!rt.stellar_burn_builder.is_ready());
+        assert!(!rt.attestation_verifier.is_ready());
         assert!(!rt.is_public_executable(&cfg));
+    }
+
+    #[tokio::test]
+    async fn from_config_async_leaves_attestation_not_ready_without_live_deps() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
+        cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
+        let rt = CctpRuntime::from_config_async(&cfg).await;
+        assert!(rt.evm_burn_builder.is_ready());
+        assert!(!rt.attestation_verifier.is_ready());
+        assert!(!rt.is_public_executable(&cfg));
+    }
+
+    #[test]
+    fn sync_from_config_never_pretends_attestation_ready() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
+        cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
+        let rt = CctpRuntime::from_config(&cfg);
+        assert!(!rt.attestation_verifier.is_ready());
     }
 
     #[test]
