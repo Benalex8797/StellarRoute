@@ -60,16 +60,24 @@ pub async fn bridge_settlement_publicly_executable(
     config: &CctpConfig,
     kill_switch: &KillSwitchManager,
     dependency_health: &ExternalDependencyHealth,
+    provider_killed: bool,
 ) -> bool {
-    if !config.enabled || !config.is_configured() {
+    if provider_killed || !config.enabled || !config.is_configured() {
         return false;
     }
     if dependency_health.guard_live_path().is_err() {
         return false;
     }
     for direction in [CctpDirection::StellarToEvm, CctpDirection::EvmToStellar] {
-        if direction_publicly_executable(runtime, config, kill_switch, dependency_health, direction)
-            .await
+        if direction_publicly_executable(
+            runtime,
+            config,
+            kill_switch,
+            dependency_health,
+            direction,
+            provider_killed,
+        )
+        .await
         {
             return true;
         }
@@ -82,6 +90,7 @@ pub async fn supported_corridors_with_gates(
     config: &CctpConfig,
     kill_switch: &KillSwitchManager,
     dependency_health: &ExternalDependencyHealth,
+    provider_killed: bool,
 ) -> Vec<SupportedCorridor> {
     let mut out = Vec::new();
     for direction in [CctpDirection::StellarToEvm, CctpDirection::EvmToStellar] {
@@ -92,11 +101,42 @@ pub async fn supported_corridors_with_gates(
             kill_switch,
             dependency_health,
             direction,
+            provider_killed,
         )
         .await;
         out.push(corridor);
     }
     out
+}
+
+/// Single bounded snapshot for `/api/v2` metadata (one provider-policy read).
+pub async fn cctp_public_executability_snapshot(
+    service: &CctpService,
+    kill_switch: &KillSwitchManager,
+    dependency_health: &ExternalDependencyHealth,
+) -> (Vec<SupportedCorridor>, bool) {
+    let config = &service.config;
+    if !config.enabled || !config.is_configured() {
+        return (vec![], false);
+    }
+    let provider_killed = service.provider_killed().await;
+    let corridors = supported_corridors_with_gates(
+        &service.runtime,
+        config,
+        kill_switch,
+        dependency_health,
+        provider_killed,
+    )
+    .await;
+    let executable = bridge_settlement_publicly_executable(
+        &service.runtime,
+        config,
+        kill_switch,
+        dependency_health,
+        provider_killed,
+    )
+    .await;
+    (corridors, executable)
 }
 
 /// Per-direction public executability: readiness + symmetric source/dest chain kills + chain health.
@@ -106,7 +146,11 @@ pub async fn direction_publicly_executable(
     kill_switch: &KillSwitchManager,
     dependency_health: &ExternalDependencyHealth,
     direction: CctpDirection,
+    provider_killed: bool,
 ) -> bool {
+    if provider_killed {
+        return false;
+    }
     direction_executable(runtime, config, direction)
         && !corridor_chain_killed(kill_switch, direction).await
         && dependency_health.guard_cctp_direction(direction).is_ok()
@@ -514,6 +558,14 @@ mod tests {
         kill_switch.update_state(state).await.unwrap();
     }
 
+    async fn set_provider_kill(kill_switch: &KillSwitchManager, provider: &str) {
+        let mut state = kill_switch.get_state().await;
+        state
+            .providers
+            .insert(provider.to_string(), OverrideDirective::ForceExclude);
+        kill_switch.update_state(state).await.unwrap();
+    }
+
     fn sample_transfer(status: CctpTransferStatus) -> CctpTransfer {
         let (token, hash) = generate_access_token();
         let _ = token;
@@ -628,5 +680,107 @@ mod tests {
         assert!(health2
             .guard_cctp_direction(CctpDirection::EvmToStellar)
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_kill_snapshot_marks_all_corridors_non_executable() {
+        use std::sync::Arc;
+
+        use crate::cctp::idempotency::InMemoryCctpQuoteIdempotencyStore;
+        use crate::cctp::iris::{IrisClient, IrisFeeQuote, IrisPollOutcome};
+        use crate::cctp::prepare_lock::InMemoryCctpPrepareLockStore;
+        use crate::cctp::store::InMemoryCctpTransferStore;
+
+        struct MockIris;
+        #[async_trait::async_trait]
+        impl IrisClient for MockIris {
+            async fn fetch_burn_fees(
+                &self,
+                _: u32,
+                _: u32,
+            ) -> Result<IrisFeeQuote, crate::cctp::iris::IrisError> {
+                Ok(IrisFeeQuote {
+                    standard_fee: Some("1".into()),
+                    fast_fee: None,
+                })
+            }
+            async fn poll_messages_by_tx(
+                &self,
+                _: u32,
+                _: &str,
+            ) -> Result<IrisPollOutcome, crate::cctp::iris::IrisError> {
+                Ok(IrisPollOutcome::Pending)
+            }
+            async fn reattest(&self, _: &str) -> Result<(), crate::cctp::iris::IrisError> {
+                Ok(())
+            }
+        }
+
+        let kill = Arc::new(KillSwitchManager::new(None));
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.enabled = true;
+        let mut runtime = CctpRuntime::from_config(&cfg);
+        runtime.attestation_verifier =
+            Arc::new(crate::cctp::attestation::FakeAttestationVerifier { ready: true });
+        struct ReadyStellarMintBuilder;
+        #[async_trait::async_trait]
+        impl crate::cctp::builders::StellarCctpMintBuilder for ReadyStellarMintBuilder {
+            fn is_ready(&self) -> bool {
+                true
+            }
+            async fn prepare_mint(
+                &self,
+                transfer: &CctpTransfer,
+                config: &CctpConfig,
+            ) -> Result<
+                crate::cctp::builders::PreparedMintBundle,
+                crate::cctp::builders::BuilderError,
+            > {
+                Ok(crate::cctp::builders::PreparedMintBundle {
+                    primary: crate::models::v2_cctp::PreparedWalletPayload::StellarXdr {
+                        network_passphrase: config.stellar_network_passphrase.clone(),
+                        xdr_envelope: "AAAA".into(),
+                    },
+                    expires_at: transfer.quote_expires_at.timestamp(),
+                    payload_hash: "test".into(),
+                })
+            }
+        }
+        runtime.stellar_mint_builder = Arc::new(ReadyStellarMintBuilder);
+        runtime.stellar_mint_verifier = Arc::new(crate::cctp::verifiers::FakeMintVerifier {
+            facts: crate::cctp::verifiers::VerifiedMintFacts {
+                tx_hash: "mint".into(),
+                destination_chain_id: STELLAR_TESTNET_CHAIN_ID.into(),
+                contract_address: "c".into(),
+                function_selector: "mint".into(),
+                message_hash: [0; 32],
+                attestation_hash: [0; 32],
+                nonce: "n".into(),
+                payload_hash: "p".into(),
+                outcome: crate::cctp::verifiers::MintVerifyOutcome::Pending,
+                recipient_evidence: None,
+            },
+            completion: crate::cctp::verifiers::MintVerifyOutcome::Pending,
+            ready: true,
+        });
+        let service = CctpService {
+            config: cfg.clone(),
+            store: Arc::new(InMemoryCctpTransferStore::default()),
+            prepare_lock: Arc::new(InMemoryCctpPrepareLockStore::default()),
+            iris: Arc::new(MockIris),
+            kill_switch: kill.clone(),
+            runtime,
+        };
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
+
+        let (_, exec_before) = cctp_public_executability_snapshot(&service, &kill, &health).await;
+        assert!(exec_before);
+
+        set_provider_kill(&kill, CCTP_PROVIDER_ID).await;
+        let (corridors, exec_after) =
+            cctp_public_executability_snapshot(&service, &kill, &health).await;
+        assert!(!exec_after);
+        assert_eq!(corridors.len(), 2);
+        assert!(corridors.iter().all(|c| !c.executable));
     }
 }

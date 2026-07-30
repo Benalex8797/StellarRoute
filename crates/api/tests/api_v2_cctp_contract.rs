@@ -592,3 +592,208 @@ async fn openapi_cctp_documents_access_and_idempotency_headers() {
         "only quote response may document access_token wire field"
     );
 }
+
+fn fully_ready_cctp_router(
+    kill_switch: std::sync::Arc<stellarroute_api::kill_switch::KillSwitchManager>,
+    iris: std::sync::Arc<CountingContractIris>,
+) -> axum::Router {
+    use std::sync::Arc;
+    use stellarroute_api::cctp::{
+        access::test_access_token_keyring,
+        attestation::FakeAttestationVerifier,
+        bootstrap::CctpHttpContext,
+        builders::{BuilderError, PreparedMintBundle, StellarCctpMintBuilder},
+        config::CctpConfig,
+        idempotency::InMemoryCctpQuoteIdempotencyStore,
+        prepare_lock::InMemoryCctpPrepareLockStore,
+        readiness::CctpRuntime,
+        service::CctpService,
+        store::{CctpTransferStore, InMemoryCctpTransferStore},
+        verifiers::{FakeMintVerifier, MintVerifyOutcome, VerifiedMintFacts},
+    };
+    use stellarroute_api::dependency_health::ExternalDependencyHealth;
+    use stellarroute_api::models::v2_cctp::STELLAR_TESTNET_CHAIN_ID;
+    use stellarroute_api::state::{AppState, DatabasePools};
+
+    struct ReadyStellarMintBuilder;
+    #[async_trait::async_trait]
+    impl StellarCctpMintBuilder for ReadyStellarMintBuilder {
+        fn is_ready(&self) -> bool {
+            true
+        }
+        async fn prepare_mint(
+            &self,
+            transfer: &stellarroute_api::cctp::store::CctpTransfer,
+            config: &CctpConfig,
+        ) -> Result<PreparedMintBundle, BuilderError> {
+            Ok(PreparedMintBundle {
+                primary: stellarroute_api::models::v2_cctp::PreparedWalletPayload::StellarXdr {
+                    network_passphrase: config.stellar_network_passphrase.clone(),
+                    xdr_envelope: "AAAA".into(),
+                },
+                expires_at: transfer.quote_expires_at.timestamp(),
+                payload_hash: "contract-test".into(),
+            })
+        }
+    }
+
+    let mut cfg = CctpConfig::default_testnet();
+    cfg.enabled = true;
+    let mut runtime = CctpRuntime::from_config(&cfg);
+    runtime.attestation_verifier = Arc::new(FakeAttestationVerifier { ready: true });
+    runtime.stellar_mint_builder = Arc::new(ReadyStellarMintBuilder);
+    runtime.stellar_mint_verifier = Arc::new(FakeMintVerifier {
+        facts: VerifiedMintFacts {
+            tx_hash: "mint".into(),
+            destination_chain_id: STELLAR_TESTNET_CHAIN_ID.into(),
+            contract_address: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA".into(),
+            function_selector: "mint".into(),
+            message_hash: [0; 32],
+            attestation_hash: [0; 32],
+            nonce: "nonce".into(),
+            payload_hash: "contract-test".into(),
+            outcome: MintVerifyOutcome::Pending,
+            recipient_evidence: Some(VALID_STELLAR_RECIPIENT.into()),
+        },
+        completion: MintVerifyOutcome::Pending,
+        ready: true,
+    });
+
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let idempotency = Arc::new(InMemoryCctpQuoteIdempotencyStore::default());
+    idempotency.bind_transfer_store(store.clone());
+    let service = Arc::new(CctpService {
+        config: cfg.clone(),
+        store,
+        prepare_lock: Arc::new(InMemoryCctpPrepareLockStore::default()),
+        iris,
+        kill_switch: kill_switch.clone(),
+        runtime: runtime.clone(),
+    });
+    let ctx = Arc::new(CctpHttpContext {
+        config: cfg,
+        service,
+        runtime,
+        idempotency,
+        access_token_keys: test_access_token_keyring(),
+    });
+
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://localhost/unused")
+        .expect("lazy pool");
+    let mut state = AppState::new(DatabasePools::new(pool, None)).with_cctp(ctx);
+    state.kill_switch = kill_switch;
+    state.external_dependency_health = Arc::new(ExternalDependencyHealth::new(vec![], vec![]));
+    stellarroute_api::routes::create_router(state.into_arc())
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use stellarroute_api::cctp::iris::{IrisClient, IrisFeeQuote, IrisPollOutcome};
+use stellarroute_api::kill_switch::{KillSwitchManager, KillSwitchState};
+use stellarroute_api::models::v2_cctp::CCTP_PROVIDER_ID;
+use stellarroute_routing::health::policy::OverrideDirective;
+
+struct CountingContractIris {
+    fee_calls: AtomicUsize,
+}
+
+impl CountingContractIris {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            fee_calls: AtomicUsize::new(0),
+        })
+    }
+    fn fee_count(&self) -> usize {
+        self.fee_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl IrisClient for CountingContractIris {
+    async fn fetch_burn_fees(
+        &self,
+        _: u32,
+        _: u32,
+    ) -> Result<IrisFeeQuote, stellarroute_api::cctp::iris::IrisError> {
+        self.fee_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(IrisFeeQuote {
+            standard_fee: Some("1".into()),
+            fast_fee: None,
+        })
+    }
+    async fn poll_messages_by_tx(
+        &self,
+        _: u32,
+        _: &str,
+    ) -> Result<IrisPollOutcome, stellarroute_api::cctp::iris::IrisError> {
+        Ok(IrisPollOutcome::Pending)
+    }
+    async fn reattest(&self, _: &str) -> Result<(), stellarroute_api::cctp::iris::IrisError> {
+        Ok(())
+    }
+}
+
+async fn set_circle_provider_kill(kill: &KillSwitchManager) {
+    let mut state = kill.get_state().await;
+    state
+        .providers
+        .insert(CCTP_PROVIDER_ID.into(), OverrideDirective::ForceExclude);
+    kill.update_state(state).await.unwrap();
+}
+
+#[tokio::test]
+async fn api_v2_metadata_and_quote_honor_provider_kill_snapshot() {
+    let kill = Arc::new(KillSwitchManager::new(None));
+    let iris = CountingContractIris::new();
+    let router = fully_ready_cctp_router(kill.clone(), iris.clone());
+    let mut quote_body = sample_quote_body("evm_to_stellar", "standard");
+    quote_body["mint_submitter"] = json!(VALID_STELLAR_RECIPIENT);
+
+    let (status, body) = get_json(&router, "/api/v2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["bridge_settlement_executable"], true);
+    assert!(body["data"]["supported_corridors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["executable"] == true));
+
+    let (quote_status, quote_resp) =
+        post_json(&router, "/api/v2/bridge/cctp/quote", quote_body.clone()).await;
+    assert_eq!(quote_status, StatusCode::OK);
+    assert!(quote_resp["data"]["access_token"].is_string());
+
+    set_circle_provider_kill(&kill).await;
+    let router_killed = fully_ready_cctp_router(kill.clone(), iris.clone());
+    let fees_before = iris.fee_count();
+
+    let (status2, body2) = get_json(&router_killed, "/api/v2").await;
+    assert_eq!(status2, StatusCode::OK);
+    assert_eq!(body2["data"]["bridge_settlement_executable"], false);
+    assert!(body2["data"]["supported_corridors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["executable"] == false));
+
+    let (quote_status2, quote_resp2) = post_json(
+        &router_killed,
+        "/api/v2/bridge/cctp/quote",
+        quote_body.clone(),
+    )
+    .await;
+    assert_eq!(quote_status2, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(quote_resp2["data"]["error"], "provider_killed");
+    assert_eq!(
+        iris.fee_count(),
+        fees_before,
+        "no Iris fee fetch while killed"
+    );
+
+    kill.update_state(KillSwitchState::default()).await.unwrap();
+    let router_cleared = fully_ready_cctp_router(kill, iris);
+    let (status3, body3) = get_json(&router_cleared, "/api/v2").await;
+    assert_eq!(status3, StatusCode::OK);
+    assert_eq!(body3["data"]["bridge_settlement_executable"], true);
+}
