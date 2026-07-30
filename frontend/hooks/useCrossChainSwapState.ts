@@ -19,6 +19,7 @@ import type {
   CorridorSelectionId,
   ExecutionTimelineStep,
 } from '@/lib/cross-chain/types';
+import type { CctpSessionRecoveryMeta } from '@/lib/cctp/session-vault';
 
 export function useCrossChainSwapState(options?: {
   timelineStepsOverride?: ExecutionTimelineStep[];
@@ -80,6 +81,14 @@ export function useCrossChainSwapState(options?: {
     setDestChainId(id);
   }, []);
 
+  const restoreFromRecovery = useCallback((recovery: CctpSessionRecoveryMeta) => {
+    setSourceChainId(recovery.sourceChainId as ChainDisplayId);
+    setDestChainId(recovery.destChainId as ChainDisplayId);
+    setSourceAmount(recovery.amount);
+    setRecipientOverride(recovery.recipient);
+    setUseRecipientOverride(true);
+  }, []);
+
   const isCctpCorridor =
     !isUncatalogued &&
     Boolean(resolveCctpDirection(sourceChainId, destChainId));
@@ -129,6 +138,7 @@ export function useCrossChainSwapState(options?: {
     selectCorridor,
     selectSourceChain,
     selectDestChain,
+    restoreFromRecovery,
     timelineSteps,
   };
 }

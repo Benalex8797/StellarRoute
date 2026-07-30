@@ -3,56 +3,111 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 
-const EVM_ADDR = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
 const STELLAR_G = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+const EVM_RECIPIENT = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
+const USDC_SEPOLIA = '0x1c7d4b196cb0c7b01d743fbc6116a902379c7238';
+const APPROVE_CALLDATA =
+  '0x095ea7b3000000000000000000000000ab583c48284244c440797b756cad4614310b7489000000000000000000000000000000000000000000000000000000000000000a';
+const BURN_CALLDATA = '0x00000001';
 
 function jsonData(payload: unknown) {
   return JSON.stringify({ data: payload });
 }
 
 function installFakeWallets(page: Page) {
-  return page.addInitScript(() => {
-    (window as unknown as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
-      swap_ui_v2: true,
-    };
-    localStorage.setItem('stellarroute:onboarding:dismissed', 'true');
-    localStorage.setItem('stellarroute.onboarding.seen', 'true');
-    localStorage.setItem('stellarroute.onboarding.completed', 'true');
+  return page.addInitScript(
+    ({ stellarG }: { stellarG: string }) => {
+      (window as unknown as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ =
+        { swap_ui_v2: true };
+      localStorage.setItem('stellarroute:onboarding:dismissed', 'true');
+      localStorage.setItem('stellarroute.onboarding.seen', 'true');
+      localStorage.setItem('stellarroute.onboarding.completed', 'true');
+      localStorage.setItem('stellarroute.wallet.address', stellarG);
+      localStorage.setItem('stellarroute.wallet.walletId', 'freighter');
+      localStorage.setItem('stellarroute.wallet.autoReconnect', 'true');
 
-    let sendCount = 0;
-    (window as unknown as { __cctpWalletSendCount?: () => number }).__cctpWalletSendCount = () =>
-      sendCount;
+      let evmSendCount = 0;
+      let stellarSignCount = 0;
+      (window as unknown as { __cctpWalletSendCount?: () => number }).__cctpWalletSendCount =
+        () => evmSendCount;
+      (window as unknown as { __cctpStellarSignCount?: () => number }).__cctpStellarSignCount =
+        () => stellarSignCount;
 
-    const ethereum = {
-      isMetaMask: true,
-      request: async ({ method, params }: { method: string; params?: unknown[] }) => {
-        if (method === 'eth_requestAccounts' || method === 'eth_accounts') {
-          return ['0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0'];
-        }
-        if (method === 'eth_chainId') return '0xaa36a7';
-        if (method === 'wallet_switchEthereumChain') return null;
-        if (method === 'eth_sendTransaction') {
-          sendCount += 1;
-          return '0xdeadbeef';
-        }
-        if (method === 'personal_sign') return '0xsig';
-        return null;
-      },
-    };
-    Object.defineProperty(window, 'ethereum', { value: ethereum, configurable: true });
+      const ethereum = {
+        isMetaMask: true,
+        request: async ({ method }: { method: string }) => {
+          if (method === 'eth_requestAccounts' || method === 'eth_accounts') {
+            return ['0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0'];
+          }
+          if (method === 'eth_chainId') return '0xaa36a7';
+          if (method === 'wallet_switchEthereumChain') return null;
+          if (method === 'eth_sendTransaction') {
+            evmSendCount += 1;
+            return '0xdeadbeef';
+          }
+          if (method === 'eth_getTransactionReceipt') {
+            return { status: '0x1', transactionHash: '0xdeadbeef' };
+          }
+          if (method === 'personal_sign') return '0x' + 'ab'.repeat(32);
+          return null;
+        },
+      };
+      Object.defineProperty(window, 'ethereum', { value: ethereum, configurable: true });
 
-    (window as unknown as { freighter?: unknown }).freighter = {
-      isConnected: async () => true,
-      isAllowed: async () => true,
-      getPublicKey: async () => 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-      getNetwork: async () => 'TESTNET',
-      signTransaction: async () => 'signed-xdr-mock',
-    };
-  });
+      (window as unknown as { freighter?: unknown }).freighter = {
+        isConnected: async () => true,
+        isAllowed: async () => true,
+        getPublicKey: async () => stellarG,
+        getNetwork: async () => 'TESTNET',
+        signTransaction: async () => {
+          stellarSignCount += 1;
+          return 'signed-xdr-mock';
+        },
+      };
+    },
+    { stellarG: STELLAR_G },
+  );
 }
 
-function mockCctpApi(page: Page) {
-  const transferId = 'transfer-e2e-1';
+function mockNetworkIsolation(page: Page) {
+  return Promise.all([
+    page.route('**/horizon-testnet.stellar.org/**', async (route) => {
+      const method = route.request().method();
+      if (method === 'POST') {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ hash: 'stellar-tx-hash-mock' }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ hash: 'stellar-tx-hash-mock' }),
+      });
+    }),
+    page.route('**/horizon.stellar.org/**', (route) =>
+      route.fulfill({ status: 404, body: '{}' }),
+    ),
+    page.route('**/api/health**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'ok' }),
+      }),
+    ),
+  ]);
+}
+
+function mockCctpApi(
+  page: Page,
+  opts: {
+    direction?: 'evm_to_stellar' | 'stellar_to_evm';
+    transferId?: string;
+  } = {},
+) {
+  const transferId = opts.transferId ?? 'transfer-e2e-1';
+  const direction = opts.direction ?? 'evm_to_stellar';
   let burnPhase: 'approval' | 'burn' = 'approval';
   let status = 'burn_prepared';
 
@@ -66,33 +121,54 @@ function mockCctpApi(page: Page) {
         contentType: 'application/json',
         body: jsonData({
           version: 2,
-            chain_aware_assets: true,
-            bridge_venues_metadata_only: false,
-            bridge_settlement_executable: true,
-            supported_chain_namespaces: ['stellar', 'eip155'],
-            supported_corridors: [
-              {
-                corridor_id: 'circle-cctp:usdc:stellar-testnet:ethereum-sepolia',
-                provider: 'circle-cctp',
-                direction: 'evm_to_stellar',
-                source_chain_id: 'eip155:11155111',
-                destination_chain_id: 'stellar:testnet',
-                source_asset: {
-                  chain_id: 'eip155:11155111',
-                  asset: 'erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238',
-                  canonical: 'eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238',
-                  symbol: 'USDC',
-                },
-                destination_asset: {
-                  chain_id: 'stellar:testnet',
-                  asset: 'erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
-                  canonical:
-                    'stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
-                  symbol: 'USDC',
-                },
-                executable: true,
+          chain_aware_assets: true,
+          bridge_venues_metadata_only: false,
+          bridge_settlement_executable: true,
+          supported_chain_namespaces: ['stellar', 'eip155'],
+          supported_corridors: [
+            {
+              corridor_id: 'circle-cctp:usdc:stellar-testnet:ethereum-sepolia',
+              provider: 'circle-cctp',
+              direction: 'evm_to_stellar',
+              source_chain_id: 'eip155:11155111',
+              destination_chain_id: 'stellar:testnet',
+              source_asset: {
+                chain_id: 'eip155:11155111',
+                asset: `erc20:${USDC_SEPOLIA}`,
+                canonical: `eip155:11155111/erc20:${USDC_SEPOLIA}`,
+                symbol: 'USDC',
               },
-            ],
+              destination_asset: {
+                chain_id: 'stellar:testnet',
+                asset: 'erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
+                canonical:
+                  'stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
+                symbol: 'USDC',
+              },
+              executable: true,
+            },
+            {
+              corridor_id: 'circle-cctp:usdc:stellar-testnet:ethereum-sepolia',
+              provider: 'circle-cctp',
+              direction: 'stellar_to_evm',
+              source_chain_id: 'stellar:testnet',
+              destination_chain_id: 'eip155:11155111',
+              source_asset: {
+                chain_id: 'stellar:testnet',
+                asset: 'erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
+                canonical:
+                  'stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA',
+                symbol: 'USDC',
+              },
+              destination_asset: {
+                chain_id: 'eip155:11155111',
+                asset: `erc20:${USDC_SEPOLIA}`,
+                canonical: `eip155:11155111/erc20:${USDC_SEPOLIA}`,
+                symbol: 'USDC',
+              },
+              executable: true,
+            },
+          ],
         }),
       });
     }
@@ -106,7 +182,7 @@ function mockCctpApi(page: Page) {
           access_token: 'access-mock-token',
           corridor_id: 'stellar-testnet-sepolia',
           provider: 'circle-cctp',
-          direction: 'evm_to_stellar',
+          direction,
           source_amount: '10',
           destination_amount: '9.99',
           fee_quote: {},
@@ -118,7 +194,18 @@ function mockCctpApi(page: Page) {
 
     if (url.includes('/prepare-burn') && method === 'POST') {
       const approval = burnPhase === 'approval';
-      if (!approval) burnPhase = 'burn';
+      const evmPayload = {
+        type: 'evm_transaction' as const,
+        chain_id: 'eip155:11155111',
+        to: USDC_SEPOLIA,
+        data: approval ? APPROVE_CALLDATA : BURN_CALLDATA,
+        value: '0',
+      };
+      const stellarPayload = {
+        type: 'stellar_xdr' as const,
+        network_passphrase: 'Test SDF Network ; September 2015',
+        xdr_envelope: approval ? 'AAAAapproval' : 'AAAAburn',
+      };
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -127,20 +214,14 @@ function mockCctpApi(page: Page) {
           status: 'burn_prepared',
           approval_required: approval,
           expires_at: Math.floor(Date.now() / 1000) + 300,
-          payload: {
-            type: 'evm_transaction',
-            chain_id: 'eip155:11155111',
-            to: '0x1c7d4b196cb0c7b01d743fbc6116a902379c7238',
-            data: '0x',
-            value: '0',
-          },
+          payload: direction === 'stellar_to_evm' ? stellarPayload : evmPayload,
         }),
       });
     }
 
     if (url.includes('/submit-burn') && method === 'POST') {
-      if (burnPhase === 'burn') status = 'awaiting_attestation';
-      else burnPhase = 'burn';
+      if (burnPhase === 'approval') burnPhase = 'burn';
+      else status = 'awaiting_attestation';
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -160,7 +241,7 @@ function mockCctpApi(page: Page) {
           transfer_id: transferId,
           corridor_id: 'stellar-testnet-sepolia',
           provider: 'circle-cctp',
-          direction: 'evm_to_stellar',
+          direction,
           status,
           retryable: false,
         }),
@@ -171,21 +252,51 @@ function mockCctpApi(page: Page) {
   });
 }
 
+async function setupEvmCorridor(page: Page) {
+  await page.getByTestId('corridor-tab-evm-to-stellar').click();
+  await page.waitForSelector('[data-testid="cctp-source-amount"]', { timeout: 20_000 });
+  await page.getByLabel('Use custom destination recipient').click();
+  await page.getByTestId('destination-recipient-input').fill(STELLAR_G);
+  await page.getByTestId('cctp-source-amount').fill('10');
+  await page.getByTestId('wallet-chip-ethereum-sepolia').click();
+  await page.getByRole('button', { name: /EVM Wallet/i }).click();
+}
+
+async function setupStellarCorridor(page: Page) {
+  await page.getByTestId('corridor-tab-stellar-to-evm').click();
+  await page.waitForSelector('[data-testid="cctp-source-amount"]', { timeout: 20_000 });
+  await page.getByTestId('cctp-source-amount').fill('10');
+  await page.getByTestId('wallet-chip-stellar').click();
+  await page.getByRole('button', { name: /Freighter/i }).click();
+  await page.keyboard.press('Escape');
+  await page.getByTestId('wallet-chip-ethereum-sepolia').click();
+  await page.getByRole('button', { name: /EVM Wallet/i }).click();
+}
+
 test.describe('CCTP swap flow (mocked)', () => {
   test.beforeEach(async ({ page }) => {
     await installFakeWallets(page);
+    await mockNetworkIsolation(page);
     await mockCctpApi(page);
   });
 
   test('desktop corridor shows deck and hides secrets in DOM', async ({ page }) => {
-    await page.goto('/swap');
-    await page.waitForSelector('[data-testid="cross-chain-swap-deck"]', {
-      timeout: 20_000,
+    const consoleLogs: string[] = [];
+    const networkBodies: string[] = [];
+    page.on('console', (msg) => consoleLogs.push(msg.text()));
+    page.on('requestfinished', async (req) => {
+      if (req.url().includes('/bridge/cctp/')) {
+        networkBodies.push((await req.postData()) ?? '');
+      }
     });
+    await page.goto('/swap');
+    await page.waitForSelector('[data-testid="cross-chain-swap-deck"]', { timeout: 20_000 });
     await page.getByTestId('corridor-tab-evm-to-stellar').click();
     const html = await page.content();
     expect(html).not.toMatch(/access-mock-token/);
     expect(html).not.toMatch(/signed-xdr-mock/);
+    expect(consoleLogs.join('\n')).not.toMatch(/access-mock-token/);
+    expect(networkBodies.join('\n')).not.toMatch(/signed-xdr-mock/);
     await page.screenshot({ path: 'test-results/cctp-deck-desktop.png' });
   });
 
@@ -196,32 +307,47 @@ test.describe('CCTP swap flow (mocked)', () => {
     await page.screenshot({ path: 'test-results/cctp-deck-mobile.png' });
   });
 
-  test('one wallet send per approval CTA click', async ({ page }) => {
+  test('EVM: prepare → approve uses exactly one wallet send', async ({ page }) => {
     await page.goto('/swap');
     await page.waitForSelector('[data-testid="cross-chain-swap-deck"]');
-    await page.getByTestId('corridor-tab-evm-to-stellar').click();
-    await page.waitForSelector('[data-testid="cctp-source-amount"]', {
-      timeout: 20_000,
-    });
+    await setupEvmCorridor(page);
 
-    await page.getByLabel('Use custom destination recipient').click();
-    await page.getByTestId('destination-recipient-input').fill(STELLAR_G);
-    await page.getByTestId('cctp-source-amount').fill('10');
-    await page.getByTestId('wallet-chip-ethereum-sepolia').click();
-    await page.getByRole('button', { name: /EVM Wallet/i }).click();
-    await expect(page.getByTestId('cross-chain-review-cta')).toBeEnabled({
-      timeout: 10_000,
-    });
     await page.getByTestId('cross-chain-review-cta').click();
-    await expect(page.getByTestId('cross-chain-review-cta')).toContainText(
-      /Approve/i,
-      { timeout: 15_000 },
-    );
+    await expect(page.getByTestId('cross-chain-review-cta')).toContainText(/Prepare/i);
+    await page.getByTestId('cross-chain-review-cta').click();
+    await expect(page.getByTestId('cross-chain-review-cta')).toContainText(/Approve/i);
     await page.getByTestId('cross-chain-review-cta').click();
 
     const sendCount = await page.evaluate(() =>
       (window as unknown as { __cctpWalletSendCount?: () => number }).__cctpWalletSendCount?.(),
     );
     expect(sendCount).toBe(1);
+    await page.screenshot({ path: 'test-results/cctp-evm-approve.png' });
+  });
+
+  test('Stellar→EVM shows server-driven Approve then Sign burn CTAs', async ({ page }) => {
+    await mockCctpApi(page, { direction: 'stellar_to_evm', transferId: 'transfer-stellar-e2e' });
+    await page.goto('/swap');
+    await setupStellarCorridor(page);
+
+    const cta = page.getByTestId('cross-chain-review-cta');
+    await cta.click();
+    await cta.click();
+    await expect(cta).toContainText(/Approve USDC spend/i);
+    await page.screenshot({ path: 'test-results/cctp-stellar-approve-stage.png' });
+  });
+
+  test('reload mid-saga shows resume without leaking token', async ({ page }) => {
+    await page.goto('/swap');
+    await setupEvmCorridor(page);
+    await page.getByTestId('cross-chain-review-cta').click();
+    await page.getByTestId('cross-chain-review-cta').click();
+    await page.reload();
+    await page.waitForSelector('[data-testid="cross-chain-swap-deck"]');
+    await page.waitForSelector('[data-testid="cctp-execution-panel"]', { timeout: 20_000 });
+    await expect(page.getByTestId('cross-chain-review-cta')).toContainText(/Approve|Resume/i);
+    const html = await page.content();
+    expect(html).not.toMatch(/access-mock-token/);
+    await page.screenshot({ path: 'test-results/cctp-reload-resume.png' });
   });
 });

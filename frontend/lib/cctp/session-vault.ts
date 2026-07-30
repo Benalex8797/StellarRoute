@@ -1,6 +1,15 @@
 const VAULT_KEY = 'stellarroute:cctp:v1';
 const VAULT_VERSION = 1;
 const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
+const PENDING_EVM_TX_TTL_MS = 30 * 60 * 1000;
+
+export type BurnPrepareStep = 'unknown' | 'approval_ready' | 'burn_ready';
+
+export interface CctpPendingEvmTx {
+  txHash: string;
+  purpose: 'approval' | 'burn' | 'mint';
+  expiresAt: number;
+}
 
 export interface CctpSessionRecoveryMeta {
   corridorId: string;
@@ -10,6 +19,9 @@ export interface CctpSessionRecoveryMeta {
   amount: string;
   recipient: string;
   quoteExpiresAt?: number;
+  burnPrepareStep?: BurnPrepareStep;
+  lastPreparedFingerprint?: string;
+  pendingEvmTx?: CctpPendingEvmTx;
 }
 
 export interface CctpSessionRecord {
@@ -75,11 +87,49 @@ export function loadCctpSession(now = Date.now()): CctpSessionLoadResult {
       clearCctpSession();
       return { ok: false, reason: 'expired' };
     }
+    if (
+      parsed.recovery.pendingEvmTx &&
+      parsed.recovery.pendingEvmTx.expiresAt <= now
+    ) {
+      parsed.recovery.pendingEvmTx = undefined;
+      saveCctpSession(parsed);
+    }
     return { ok: true, record: parsed };
   } catch {
     clearCctpSession();
     return { ok: false, reason: 'invalid' };
   }
+}
+
+export function patchCctpSessionRecovery(
+  patch: Partial<CctpSessionRecoveryMeta>,
+  now = Date.now(),
+): CctpSessionRecord | null {
+  const loaded = loadCctpSession(now);
+  if (!loaded.ok) return null;
+  const next: CctpSessionRecord = {
+    ...loaded.record,
+    recovery: { ...loaded.record.recovery, ...patch },
+  };
+  saveCctpSession(next);
+  return next;
+}
+
+export function setPendingEvmTx(
+  input: Omit<CctpPendingEvmTx, 'expiresAt'> & { ttlMs?: number },
+  now = Date.now(),
+): CctpSessionRecord | null {
+  return patchCctpSessionRecovery({
+    pendingEvmTx: {
+      txHash: input.txHash,
+      purpose: input.purpose,
+      expiresAt: now + (input.ttlMs ?? PENDING_EVM_TX_TTL_MS),
+    },
+  });
+}
+
+export function clearPendingEvmTx(): CctpSessionRecord | null {
+  return patchCctpSessionRecovery({ pendingEvmTx: undefined });
 }
 
 export function clearCctpSession(): void {
@@ -114,7 +164,10 @@ export function buildCctpSessionRecord(input: {
     idempotencyKey: input.idempotencyKey,
     createdAt: now,
     expiresAt: Math.min(now + ttl, quoteExpiryMs + 30 * 60 * 1000),
-    recovery: input.recovery,
+    recovery: {
+      burnPrepareStep: 'unknown',
+      ...input.recovery,
+    },
   };
 }
 

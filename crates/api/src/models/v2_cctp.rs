@@ -405,6 +405,9 @@ pub struct CctpTransferStatusResponse {
     pub retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<CctpStatusDetails>,
+    /// Unix seconds (UTC) until re-attest may be requested again; safe for UI countdown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reattest_cooldown_until: Option<i64>,
 }
 
 /// `POST /api/v2/bridge/cctp/{transfer_id}/prepare-burn` response.

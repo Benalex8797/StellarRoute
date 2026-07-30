@@ -433,6 +433,7 @@ pub fn to_status_response(transfer: &CctpTransfer) -> CctpTransferStatusResponse
         support_reference_id: Some(transfer.support_reference_id.clone()),
         retryable,
         error: redacted_status_error(transfer),
+        reattest_cooldown_until: transfer.reattest_cooldown_until.map(|t| t.timestamp()),
     }
 }
 
@@ -621,6 +622,16 @@ mod tests {
             reattest_attempt_count: 0,
             reattest_cooldown_until: None,
         }
+    }
+
+    #[test]
+    fn status_response_includes_reattest_cooldown_when_set() {
+        let mut transfer = sample_transfer(CctpTransferStatus::AttestationFailed);
+        transfer.reattest_cooldown_until = Some(Utc::now() + chrono::Duration::seconds(120));
+        let json = serde_json::to_string(&to_status_response(&transfer)).unwrap();
+        assert!(json.contains("reattest_cooldown_until"));
+        assert!(!json.contains("reattest_lease_owner"));
+        assert!(!json.contains("access_token"));
     }
 
     #[test]

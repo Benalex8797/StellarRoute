@@ -6,6 +6,7 @@ import type { CctpTraderError } from '@/lib/cctp/errors';
 import type { CctpQuoteResponse, CctpTransferStatusResponse } from '@/lib/cctp/types';
 import type { CctpSagaStage } from '@/hooks/useCctpSaga';
 import type { CctpSessionRecoveryMeta } from '@/lib/cctp/session-vault';
+import { formatCctpTraderStatus } from '@/lib/cctp/status-copy';
 import { cn } from '@/lib/utils';
 
 interface CctpExecutionPanelProps {
@@ -182,7 +183,5 @@ export function CctpExecutionPanel({
 }
 
 function formatStatus(stage: CctpSagaStage, status?: string): string {
-  if (stage === 'completed' || status === 'completed') return 'Complete';
-  if (status) return status.replace(/_/g, ' ');
-  return stage.replace(/_/g, ' ');
+  return formatCctpTraderStatus(stage, status);
 }

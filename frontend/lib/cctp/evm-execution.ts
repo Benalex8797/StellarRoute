@@ -7,12 +7,21 @@ import {
 import { WalletAdapterError } from '@/lib/wallet/adapters';
 import { caip2ToChainIdHex } from '@/lib/wallet/adapters/evm/networks';
 import { assertSepoliaCaip, caip2FromChainIdHex } from './caip-evm';
+import {
+  pollEvmTransactionReceipt,
+  type EvmReceiptPollDeps,
+  type EvmReceiptStatus,
+  DEFAULT_RECEIPT_TIMEOUT_MS,
+} from './evm-receipt';
 import type { PreparedWalletPayload } from './types';
 import { validatePreparedPayload } from './payload-validation';
 
-export const DEFAULT_RECEIPT_POLL_MS = 2_000;
-export const DEFAULT_RECEIPT_TIMEOUT_MS = 120_000;
 export const MAX_EVM_CALLDATA_BYTES = 24_576;
+
+export type EvmExecutionOutcome =
+  | { status: 'confirmed'; txHash: string }
+  | { status: 'pending'; txHash: string }
+  | { status: 'reverted'; txHash: string };
 
 export type EvmSendDeps = {
   sendTransaction: (
@@ -27,7 +36,7 @@ export type EvmSendDeps = {
   waitForReceipt?: (
     txHash: string,
     opts: { signal?: AbortSignal; timeoutMs?: number },
-  ) => Promise<'success' | 'reverted' | 'timeout' | 'dropped'>;
+  ) => Promise<EvmReceiptStatus>;
 };
 
 const defaultDeps: EvmSendDeps = {
@@ -55,16 +64,21 @@ const defaultDeps: EvmSendDeps = {
     const info = await adapter.getNetwork();
     return caip2ToChainIdHex(info.network);
   },
-  waitForReceipt: waitForSepoliaReceipt,
+  waitForReceipt: (txHash, opts) =>
+    pollEvmTransactionReceipt(txHash, {
+      signal: opts.signal,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_RECEIPT_TIMEOUT_MS,
+    }),
 };
 
 export async function executeEvmPreparedPayload(input: {
   payload: Extract<PreparedWalletPayload, { type: 'evm_transaction' }>;
   evmAdapterId: string;
   expiresAtSec?: number;
-  deps?: Partial<EvmSendDeps>;
+  deps?: Partial<EvmSendDeps> & { receiptDeps?: EvmReceiptPollDeps };
   signal?: AbortSignal;
-}): Promise<{ txHash: string; receiptStatus: 'success' | 'timeout' | 'dropped' }> {
+  receiptTimeoutMs?: number;
+}): Promise<EvmExecutionOutcome> {
   const deps = { ...defaultDeps, ...input.deps };
   const validation = validatePreparedPayload(input.payload, {
     expiresAtSec: input.expiresAtSec,
@@ -125,25 +139,22 @@ export async function executeEvmPreparedPayload(input: {
   const sent = await deps.sendTransaction(input.evmAdapterId, sendReq);
   const receiptStatus = await deps.waitForReceipt!(sent.hash, {
     signal: input.signal,
-    timeoutMs: DEFAULT_RECEIPT_TIMEOUT_MS,
+    timeoutMs: input.receiptTimeoutMs ?? DEFAULT_RECEIPT_TIMEOUT_MS,
   });
 
-  if (receiptStatus === 'dropped') {
-    const err = new Error(
-      'Transaction was not mined within the timeout. It may have been dropped or replaced — reconcile via explorer before resubmitting.',
-    ) as Error & { code: string };
-    err.code = 'pending_ambiguous';
+  if (receiptStatus === 'reverted') {
+    const err = new Error('EVM transaction reverted on-chain.') as Error & {
+      code: string;
+    };
+    err.code = 'nonretryable';
     throw err;
   }
 
-  if (receiptStatus === 'reverted') {
-    throw new Error('EVM transaction reverted on-chain.');
+  if (receiptStatus === 'pending') {
+    return { status: 'pending', txHash: sent.hash };
   }
 
-  return {
-    txHash: sent.hash,
-    receiptStatus: receiptStatus === 'success' ? 'success' : 'timeout',
-  };
+  return { status: 'confirmed', txHash: sent.hash };
 }
 
 function normalizeEvmValueHex(value: string): string {
@@ -160,63 +171,4 @@ function isUserRejected(err: unknown): boolean {
     return true;
   }
   return false;
-}
-
-/** Poll Sepolia receipt via public RPC. Replacement detection is not available via EIP-1193 alone. */
-export async function waitForSepoliaReceipt(
-  txHash: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; pollMs?: number } = {},
-): Promise<'success' | 'reverted' | 'timeout' | 'dropped'> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_RECEIPT_TIMEOUT_MS;
-  const pollMs = opts.pollMs ?? DEFAULT_RECEIPT_POLL_MS;
-  const rpcUrl = 'https://ethereum-sepolia.publicnode.com';
-  const started = Date.now();
-
-  while (Date.now() - started < timeoutMs) {
-    if (opts.signal?.aborted) return 'timeout';
-    try {
-      const response = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'eth_getTransactionReceipt',
-          params: [txHash],
-        }),
-        signal: opts.signal,
-      });
-      if (response.ok) {
-        const body = (await response.json()) as {
-          result?: { status?: string } | null;
-        };
-        if (body.result) {
-          const status = body.result.status ?? '0x1';
-          return status === '0x0' ? 'reverted' : 'success';
-        }
-      }
-    } catch {
-      // keep polling until timeout
-    }
-    await sleep(pollMs, opts.signal);
-  }
-  return 'dropped';
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
 }

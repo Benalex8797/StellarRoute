@@ -91,7 +91,6 @@ export function CrossChainSwapDeck({
       Boolean(walletRoles.direction) &&
       readiness.cctpGloballyReady,
     quoteInputsKey,
-    evmSourceBurn: state.sourceChain.chainFamily === 'evm',
   });
 
   useEffect(() => {
@@ -99,6 +98,18 @@ export function CrossChainSwapDeck({
       void saga.reconcileOnLoad();
     }
   }, [state.executable, walletRoles.direction, saga.reconcileOnLoad]);
+
+  useEffect(() => {
+    const recovery = saga.sessionPublic?.recovery;
+    if (!recovery?.sourceChainId || !recovery.destChainId) return;
+    if (
+      saga.stage === 'resume_pending' ||
+      saga.stage === 'quoted' ||
+      saga.stage === 'pending_reconcile'
+    ) {
+      state.restoreFromRecovery(recovery);
+    }
+  }, [saga.sessionPublic?.recovery, saga.stage, state.restoreFromRecovery]);
 
   const panelId =
     state.corridorId === UNMATCHED_CORRIDOR_ID

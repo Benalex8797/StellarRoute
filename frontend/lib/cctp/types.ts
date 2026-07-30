@@ -102,6 +102,8 @@ export interface CctpTransferStatusResponse {
   support_reference_id?: string;
   retryable: boolean;
   error?: CctpStatusDetails;
+  /** Unix seconds (UTC) until re-attest may be requested again. */
+  reattest_cooldown_until?: number;
 }
 
 export interface CctpPrepareBurnResponse {

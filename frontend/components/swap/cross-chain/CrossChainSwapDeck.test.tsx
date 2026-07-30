@@ -76,9 +76,9 @@ vi.mock('@/hooks/useChainWallet', () => ({
   })),
 }));
 
-function renderDeck(
-  presentation?: Parameters<typeof CrossChainSwapDeck>[0]['storyPresentation']
-) {
+import type { CrossChainDeckStoryPresentation } from './crossChainStoryPresentation';
+
+function renderDeck(presentation?: CrossChainDeckStoryPresentation) {
   return render(
     <SettingsProvider>
       <WalletProvider>
