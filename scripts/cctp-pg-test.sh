@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Disposable Postgres for CCTP store + prepare-lock integration tests.
-# Prefers Docker when healthy; falls back to local initdb in a temp directory.
+# Prefers Docker when healthy; falls back to local initdb or existing local server.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,8 +17,37 @@ LOCAL_PG_HOST="${LOCAL_PG_HOST:-127.0.0.1}"
 LOCAL_PG_PORT="${LOCAL_PG_PORT:-5432}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 
+# Sanitized connection metadata (never log database URLs or credentials).
+PG_BACKEND=""
+PG_HOST=""
+PG_PORT_META=""
+PG_USER=""
+
+assert_script_output_redacted() {
+  local script="$ROOT/scripts/cctp-pg-test.sh"
+  if grep -v '^[[:space:]]*#' "$script" \
+    | grep -E '(^|[[:space:]])(echo|printf).+(\$TEST_DATABASE_URL|postgres://)' \
+    >/dev/null 2>&1; then
+    echo "Script redaction assertion failed: URL or credential echo detected in $script" >&2
+    exit 1
+  fi
+}
+
+print_pg_meta() {
+  echo "Postgres backend=${PG_BACKEND} host=${PG_HOST} port=${PG_PORT_META} database=${DB_NAME}"
+}
+
+on_err() {
+  echo "CCTP PG harness failed (backend=${PG_BACKEND:-unknown} host=${PG_HOST:-?} port=${PG_PORT_META:-?} database=${DB_NAME})" >&2
+}
+trap on_err ERR
+
 psql_admin() {
   psql -h "$LOCAL_PG_HOST" -p "$LOCAL_PG_PORT" -U "$LOCAL_PG_SUPERUSER" -d postgres "$@"
+}
+
+psql_test_db() {
+  psql -h "$PG_HOST" -p "$PG_PORT_META" -U "$PG_USER" -d "$DB_NAME" "$@"
 }
 
 cleanup() {
@@ -34,7 +63,6 @@ cleanup() {
 trap cleanup EXIT
 
 apply_migrations() {
-  local db_url="$1"
   local mig_dir="$ROOT/crates/api/migrations"
   for f in \
     "$mig_dir/0015_cctp_transfers.sql" \
@@ -46,16 +74,19 @@ apply_migrations() {
     "$mig_dir/20260731_cctp_prepare_lock_hardening.sql"
   do
     echo "Applying $(basename "$f")"
-    psql "$db_url" -v ON_ERROR_STOP=1 -f "$f" >/dev/null
+    if ! psql_test_db -v ON_ERROR_STOP=1 -f "$f" >/dev/null 2>&1; then
+      echo "Migration failed: $(basename "$f") (backend=${PG_BACKEND} host=${PG_HOST} port=${PG_PORT_META} database=${DB_NAME})" >&2
+      return 1
+    fi
   done
 }
 
 wait_for_pg() {
   local tries=0
-  until pg_isready -h 127.0.0.1 -p "$PORT" >/dev/null 2>&1; do
+  until pg_isready -h "$PG_HOST" -p "$PG_PORT_META" >/dev/null 2>&1; do
     tries=$((tries + 1))
     if [[ "$tries" -ge 60 ]]; then
-      echo "Postgres did not become ready on port $PORT" >&2
+      echo "Postgres did not become ready (backend=${PG_BACKEND} host=${PG_HOST} port=${PG_PORT_META})" >&2
       return 1
     fi
     sleep 1
@@ -80,9 +111,14 @@ start_docker_pg() {
     sleep 1
   done
   docker exec "$CONTAINER" psql -U postgres -c "CREATE DATABASE ${DB_NAME};" >/dev/null
-  export TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:${PORT}/${DB_NAME}"
+  PG_BACKEND="docker"
+  PG_HOST="127.0.0.1"
+  PG_PORT_META="$PORT"
+  PG_USER="postgres"
+  export PGPASSWORD="postgres"
+  export TEST_DATABASE_URL="postgres://${PG_USER}:${PGPASSWORD}@${PG_HOST}:${PG_PORT_META}/${DB_NAME}"
   USE_DOCKER=1
-  echo "Using Docker Postgres on port $PORT (db=$DB_NAME)"
+  print_pg_meta
 }
 
 start_local_pg() {
@@ -97,10 +133,15 @@ start_local_pg() {
     return 1
   fi
   LOCAL_PG_PID=1
+  PG_BACKEND="initdb"
+  PG_HOST="127.0.0.1"
+  PG_PORT_META="$PORT"
+  PG_USER="postgres"
+  unset PGPASSWORD
   wait_for_pg
-  psql "postgres://postgres@127.0.0.1:${PORT}/postgres" -c "CREATE DATABASE ${DB_NAME};" >/dev/null
-  export TEST_DATABASE_URL="postgres://postgres@127.0.0.1:${PORT}/${DB_NAME}"
-  echo "Using local initdb Postgres on port $PORT (pgdata=$PGDATA, db=$DB_NAME)"
+  psql -h "$PG_HOST" -p "$PG_PORT_META" -U "$PG_USER" -d postgres -c "CREATE DATABASE ${DB_NAME};" >/dev/null
+  export TEST_DATABASE_URL="postgres://${PG_USER}@${PG_HOST}:${PG_PORT_META}/${DB_NAME}"
+  print_pg_meta
 }
 
 start_existing_local_pg() {
@@ -112,10 +153,17 @@ start_existing_local_pg() {
   fi
   psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME};" >/dev/null 2>&1 || true
   psql_admin -c "CREATE DATABASE ${DB_NAME};" >/dev/null
-  export TEST_DATABASE_URL="postgres://${LOCAL_PG_SUPERUSER}@${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${DB_NAME}"
+  PG_BACKEND="existing-local"
+  PG_HOST="$LOCAL_PG_HOST"
+  PG_PORT_META="$LOCAL_PG_PORT"
+  PG_USER="$LOCAL_PG_SUPERUSER"
+  unset PGPASSWORD
+  export TEST_DATABASE_URL="postgres://${PG_USER}@${PG_HOST}:${PG_PORT_META}/${DB_NAME}"
   USE_EXISTING_LOCAL=1
-  echo "Using existing local Postgres on ${LOCAL_PG_HOST}:${LOCAL_PG_PORT} (db=$DB_NAME)"
+  print_pg_meta
 }
+
+assert_script_output_redacted
 
 if start_docker_pg; then
   :
@@ -128,7 +176,7 @@ else
   exit 1
 fi
 
-apply_migrations "$TEST_DATABASE_URL"
+apply_migrations
 
 cd "$ROOT"
 run_pg_tests() {
@@ -136,10 +184,12 @@ run_pg_tests() {
   echo "=== PG test run: $label ==="
   cargo test -p stellarroute-api --test cctp_store_integration -- --ignored --nocapture
   cargo test -p stellarroute-api --test cctp_prepare_lock_pg -- --ignored --nocapture
+  cargo test -p stellarroute-api --test cctp_prepare_lock_pg memory_pg_parity_core_semantics -- --nocapture
 }
 
 export CARGO_TARGET_DIR
 run_pg_tests "pass-1"
 run_pg_tests "pass-2"
 
-echo "CCTP PG tests passed twice against $TEST_DATABASE_URL"
+print_pg_meta
+echo "CCTP PG tests passed twice (store + prepare-lock + memory/PG parity)"

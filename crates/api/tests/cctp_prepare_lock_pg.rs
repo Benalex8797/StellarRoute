@@ -335,16 +335,24 @@ async fn memory_pg_parity_core_semantics() {
             .await
             .expect("connect");
         let locks = PgCctpPrepareLockStore::new(pool.clone());
-        let pg_source = unique_source("parity-pg");
+        let pg_source_idem = unique_source("parity-pg-idem");
         let pg_tid = Uuid::new_v4();
-        insert_transfer(&pool, pg_tid, &pg_source).await;
-        assert_same_transfer_idempotent(&locks, &pg_source, pg_tid, "hash-p", "payload-p").await;
+        insert_transfer(&pool, pg_tid, &pg_source_idem).await;
+        assert_same_transfer_idempotent(&locks, &pg_source_idem, pg_tid, "hash-p", "payload-p")
+            .await;
+
+        let pg_source_mismatch = unique_source("parity-pg-mismatch");
         let pg_mismatch_tid = Uuid::new_v4();
-        insert_transfer(&pool, pg_mismatch_tid, &pg_source).await;
-        assert_payload_hash_mismatch(&locks, &pg_source, pg_mismatch_tid).await;
+        insert_transfer(&pool, pg_mismatch_tid, &pg_source_mismatch).await;
+        assert_payload_hash_mismatch(&locks, &pg_source_mismatch, pg_mismatch_tid).await;
+
+        let pg_source_large = unique_source("parity-pg-large");
         let pg_large_tid = Uuid::new_v4();
-        insert_transfer(&pool, pg_large_tid, &pg_source).await;
-        assert_payload_too_large(&locks, &pg_source, pg_large_tid).await;
-        cleanup_rows(&pool, &pg_source, &[pg_tid, pg_mismatch_tid, pg_large_tid]).await;
+        insert_transfer(&pool, pg_large_tid, &pg_source_large).await;
+        assert_payload_too_large(&locks, &pg_source_large, pg_large_tid).await;
+
+        cleanup_rows(&pool, &pg_source_idem, &[pg_tid]).await;
+        cleanup_rows(&pool, &pg_source_mismatch, &[pg_mismatch_tid]).await;
+        cleanup_rows(&pool, &pg_source_large, &[pg_large_tid]).await;
     }
 }
