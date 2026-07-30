@@ -28,16 +28,16 @@ fn map_validation(err: CctpValidationError) -> ApiError {
         CctpValidationError::InvalidAmount => {
             ApiError::InvalidAmount("amount must be a positive decimal string".to_string())
         }
-        CctpValidationError::InvalidSender => {
-            ApiError::Validation("sender must be a valid address for the source chain".to_string())
-        }
+        CctpValidationError::InvalidSender => ApiError::Validation(
+            "sender must be a valid G-address for Stellar or 0x address for EVM source".to_string(),
+        ),
     }
 }
 
 fn parse_transfer_id_param(transfer_id: &str) -> Result<()> {
     parse_transfer_id(transfer_id)
         .map(|_| ())
-        .map_err(|msg| ApiError::Validation(msg))
+        .map_err(ApiError::Validation)
 }
 
 fn validate_submit_tx_hash(tx_hash: &str) -> Result<()> {

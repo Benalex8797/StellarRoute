@@ -170,7 +170,9 @@ pub struct CctpQuoteRequest {
     pub destination_asset: CctpChainAsset,
     /// Decimal string amount (never float).
     pub amount: String,
+    /// Destination recipient: EVM `0x` address for `stellar_to_evm`, or Stellar G-address only for `evm_to_stellar` (no M/C muxed/contract strkeys).
     pub recipient: String,
+    /// Optional source sender: Stellar G-address when burning from Stellar, EVM address when burning from EVM.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
     pub finality: CctpFinality,
@@ -197,18 +199,24 @@ impl CctpQuoteRequest {
             expected_source_chain,
             expected_dest_chain,
             expected_source_asset,
+            expected_source_canonical,
             expected_dest_asset,
+            expected_dest_canonical,
         ) = match self.direction {
             CctpDirection::StellarToEvm => (
                 STELLAR_TESTNET_CHAIN_ID,
                 SEPOLIA_CHAIN_ID,
+                STELLAR_TESTNET_USDC_ASSET,
                 STELLAR_TESTNET_USDC_CANONICAL,
+                SEPOLIA_USDC_ASSET,
                 SEPOLIA_USDC_CANONICAL,
             ),
             CctpDirection::EvmToStellar => (
                 SEPOLIA_CHAIN_ID,
                 STELLAR_TESTNET_CHAIN_ID,
+                SEPOLIA_USDC_ASSET,
                 SEPOLIA_USDC_CANONICAL,
+                STELLAR_TESTNET_USDC_ASSET,
                 STELLAR_TESTNET_USDC_CANONICAL,
             ),
         };
@@ -219,11 +227,13 @@ impl CctpQuoteRequest {
                 &self.source_asset,
                 expected_source_chain,
                 expected_source_asset,
+                expected_source_canonical,
             )
             || !asset_matches_frozen(
                 &self.destination_asset,
                 expected_dest_chain,
                 expected_dest_asset,
+                expected_dest_canonical,
             )
         {
             return Err(CctpValidationError::UnsupportedCorridor);
@@ -263,8 +273,13 @@ impl CctpQuoteRequest {
     }
 }
 
-fn asset_matches_frozen(asset: &CctpChainAsset, chain_id: &str, canonical: &str) -> bool {
-    asset.chain_id == chain_id && asset.canonical == canonical
+fn asset_matches_frozen(
+    asset: &CctpChainAsset,
+    chain_id: &str,
+    asset_id: &str,
+    canonical: &str,
+) -> bool {
+    asset.chain_id == chain_id && asset.asset == asset_id && asset.canonical == canonical
 }
 
 /// Positive decimal string: digits with optional single `.` fraction; no sign/exponent/whitespace.
@@ -505,6 +520,23 @@ mod tests {
             "amount":"1","recipient":"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0","finality":"standard"
         }"#;
         assert!(serde_json::from_str::<CctpQuoteRequest>(json).is_err());
+    }
+
+    #[test]
+    fn rejects_inconsistent_asset_and_canonical() {
+        let mut req = base_quote(CctpDirection::StellarToEvm, CctpFinality::Standard);
+        req.source_asset.asset = SEPOLIA_USDC_ASSET.into();
+        assert_eq!(
+            req.validate(),
+            Err(CctpValidationError::UnsupportedCorridor)
+        );
+
+        let mut req2 = base_quote(CctpDirection::EvmToStellar, CctpFinality::Standard);
+        req2.source_asset.canonical = STELLAR_TESTNET_USDC_CANONICAL.into();
+        assert_eq!(
+            req2.validate(),
+            Err(CctpValidationError::UnsupportedCorridor)
+        );
     }
 
     #[test]

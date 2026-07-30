@@ -7,7 +7,7 @@ persistence, and Iris attestation polling are **not implemented** on this branch
 ## Status (non-executable)
 
 - `GET /api/v2` keeps `bridge_settlement_executable: false`.
-- `supported_corridors` is an empty array unless a test-only injection is used.
+- `supported_corridors` remains an empty array until backend health gates execution.
 - All CCTP handlers return typed **`503 cctp_not_enabled`** — no fake quotes,
   prepares, or transfer status payloads.
 - `/api/v1/swap/*` remains classic Stellar XDR only and is unchanged.
@@ -59,6 +59,12 @@ hardcoding the default contract addresses below.
 | `POST` | `/api/v2/bridge/cctp/{transfer_id}/prepare-mint` | Wallet mint payload |
 | `POST` | `/api/v2/bridge/cctp/{transfer_id}/submit-mint` | Record destination `tx_hash` only |
 | `POST` | `/api/v2/bridge/cctp/{transfer_id}/reattest` | Re-poll attestation |
+
+### Recipient and sender constraints
+
+- **Stellar `recipient` / optional `sender`**: Stellar account **G-address only** (ed25519 public key strkey). Muxed **M-addresses** and contract **C-addresses** are **not** accepted on quote validation.
+- **EVM `recipient` / optional `sender`**: `0x`-prefixed 20-byte hex address (42 characters).
+- Invalid optional `sender` returns generic `validation_error` (HTTP 400) before any fail-closed `cctp_not_enabled` response.
 
 ### Submit trust boundary
 

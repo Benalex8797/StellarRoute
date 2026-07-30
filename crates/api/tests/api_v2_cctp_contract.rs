@@ -151,6 +151,46 @@ async fn api_v2_info_backward_compatible_with_empty_supported_corridors() {
 }
 
 #[tokio::test]
+async fn cctp_quote_rejects_invalid_sender_before_not_enabled() {
+    let router = setup_test_router().await;
+    let mut body = sample_quote_body("stellar_to_evm", "standard");
+    body["sender"] = json!(VALID_EVM_RECIPIENT);
+
+    let (status, resp) = post_json(&router, "/api/v2/bridge/cctp/quote", body).await;
+    assert_validation_error(status, &resp);
+}
+
+#[tokio::test]
+async fn openapi_registers_all_seven_cctp_paths_and_tag() {
+    let router = setup_test_router().await;
+    let (status, body) = get_json(&router, "/api-docs/openapi.json").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let paths = [
+        ("/api/v2/bridge/cctp/quote", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/prepare-burn", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/submit-burn", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}", "get"),
+        ("/api/v2/bridge/cctp/{transfer_id}/prepare-mint", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/submit-mint", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/reattest", "post"),
+    ];
+
+    for (path, method) in paths {
+        let op = &body["paths"][path][method];
+        assert!(
+            !op.is_null(),
+            "{method} {path} must be registered in OpenAPI"
+        );
+        let tags = op["tags"].as_array().expect("tags");
+        assert!(
+            tags.iter().any(|t| t == "cctp"),
+            "{method} {path} must use cctp tag"
+        );
+    }
+}
+
+#[tokio::test]
 async fn cctp_quote_rejects_stellar_source_fast_finality_before_not_enabled() {
     let router = setup_test_router().await;
     let (status, body) = post_json(

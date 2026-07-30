@@ -121,8 +121,17 @@ export interface CctpQuoteRequest {
   destination_chain_id: string;
   source_asset: ChainAsset;
   destination_asset: ChainAsset;
+  /** Decimal string; never a float. */
   amount: string;
+  /**
+   * Destination recipient. `stellar_to_evm`: EVM `0x` address.
+   * `evm_to_stellar`: Stellar account G-address only (no muxed M or contract C strkeys).
+   */
   recipient: string;
+  /**
+   * Optional source sender. Stellar burn: G-address only. EVM burn: `0x` address.
+   * Invalid sender returns `validation_error` (HTTP 400).
+   */
   sender?: string;
   finality: CctpFinality;
 }
