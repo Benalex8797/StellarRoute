@@ -27,9 +27,18 @@ use stellarroute_routing::health::policy::OverrideDirective;
 
 pub const REATTEST_MAX_ATTEMPTS: u32 = 5;
 pub const REATTEST_COOLDOWN_SECS: i64 = 60;
+pub const REATTEST_LEASE_SECS: i64 = 30;
 pub const CCTP_CHAIN_KILL_STELLAR: &str = "cctp:chain:stellar-testnet";
 pub const CCTP_CHAIN_KILL_SEPOLIA: &str = "cctp:chain:sepolia";
 pub const POLL_LEASE_SECS: i64 = 15;
+
+pub fn reattest_lease_secs() -> i64 {
+    std::env::var("CCTP_REATTEST_LEASE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(REATTEST_LEASE_SECS)
+}
 
 /// Direction-specific executability — all mandatory prepare+verify components ready.
 pub fn direction_executable(
@@ -59,8 +68,8 @@ pub async fn bridge_settlement_publicly_executable(
         return false;
     }
     for direction in [CctpDirection::StellarToEvm, CctpDirection::EvmToStellar] {
-        if direction_executable(runtime, config, direction)
-            && !chain_killed(kill_switch, direction).await
+        if direction_publicly_executable(runtime, config, kill_switch, dependency_health, direction)
+            .await
         {
             return true;
         }
@@ -74,15 +83,33 @@ pub async fn supported_corridors_with_gates(
     kill_switch: &KillSwitchManager,
     dependency_health: &ExternalDependencyHealth,
 ) -> Vec<SupportedCorridor> {
-    let deps_ok = dependency_health.guard_live_path().is_ok();
     let mut out = Vec::new();
     for direction in [CctpDirection::StellarToEvm, CctpDirection::EvmToStellar] {
         let mut corridor = corridor_descriptor(direction, runtime, config);
-        corridor.executable =
-            corridor.executable && deps_ok && !chain_killed(kill_switch, direction).await;
+        corridor.executable = direction_publicly_executable(
+            runtime,
+            config,
+            kill_switch,
+            dependency_health,
+            direction,
+        )
+        .await;
         out.push(corridor);
     }
     out
+}
+
+/// Per-direction public executability: readiness + symmetric source/dest chain kills + chain health.
+pub async fn direction_publicly_executable(
+    runtime: &CctpRuntime,
+    config: &CctpConfig,
+    kill_switch: &KillSwitchManager,
+    dependency_health: &ExternalDependencyHealth,
+    direction: CctpDirection,
+) -> bool {
+    direction_executable(runtime, config, direction)
+        && !corridor_chain_killed(kill_switch, direction).await
+        && dependency_health.guard_cctp_direction(direction).is_ok()
 }
 
 pub fn supported_corridors(runtime: &CctpRuntime, config: &CctpConfig) -> Vec<SupportedCorridor> {
@@ -168,7 +195,7 @@ pub async fn ensure_public_gate(
             "Circle CCTP provider is temporarily unavailable".into(),
         ));
     }
-    if chain_killed(kill_switch, direction).await {
+    if corridor_chain_killed(kill_switch, direction).await {
         metrics::record_cctp_endpoint_outcome("gate", "chain_killed");
         return Err(ApiError::ProviderKilled(
             "CCTP corridor chain is temporarily unavailable".into(),
@@ -178,17 +205,9 @@ pub async fn ensure_public_gate(
         metrics::record_cctp_endpoint_outcome("gate", "dependency_unhealthy");
         return Err(err);
     }
-    if direction == CctpDirection::StellarToEvm && dependency_health.soroban_breaker_is_open() {
-        metrics::record_cctp_endpoint_outcome("gate", "soroban_unhealthy");
-        return Err(ApiError::DependencyUnavailable(
-            "Stellar RPC dependency is temporarily unavailable".into(),
-        ));
-    }
-    if direction == CctpDirection::EvmToStellar && dependency_health.soroban_breaker_is_open() {
-        metrics::record_cctp_endpoint_outcome("gate", "soroban_unhealthy");
-        return Err(ApiError::DependencyUnavailable(
-            "Stellar RPC dependency is temporarily unavailable".into(),
-        ));
+    if let Err(err) = dependency_health.guard_cctp_direction(direction) {
+        metrics::record_cctp_endpoint_outcome("gate", "chain_dependency_unhealthy");
+        return Err(err);
     }
     if !direction_executable(&service.runtime, config, direction) {
         metrics::record_cctp_endpoint_outcome("gate", "direction_not_ready");
@@ -199,13 +218,25 @@ pub async fn ensure_public_gate(
     Ok(())
 }
 
-async fn chain_killed(kill_switch: &KillSwitchManager, direction: CctpDirection) -> bool {
+pub(crate) async fn corridor_chain_killed(
+    kill_switch: &KillSwitchManager,
+    direction: CctpDirection,
+) -> bool {
     let state = kill_switch.get_state().await;
-    let key = match direction {
-        CctpDirection::StellarToEvm => CCTP_CHAIN_KILL_STELLAR,
-        CctpDirection::EvmToStellar => CCTP_CHAIN_KILL_SEPOLIA,
-    };
-    matches!(state.venues.get(key), Some(OverrideDirective::ForceExclude))
+    let stellar_killed = matches!(
+        state.venues.get(CCTP_CHAIN_KILL_STELLAR),
+        Some(OverrideDirective::ForceExclude)
+    );
+    let sepolia_killed = matches!(
+        state.venues.get(CCTP_CHAIN_KILL_SEPOLIA),
+        Some(OverrideDirective::ForceExclude)
+    );
+    match direction {
+        // Stellar source + Sepolia destination must both be live.
+        CctpDirection::StellarToEvm => stellar_killed || sepolia_killed,
+        // Sepolia source + Stellar destination must both be live.
+        CctpDirection::EvmToStellar => sepolia_killed || stellar_killed,
+    }
 }
 
 pub fn uniform_transfer_not_found(transfer_id: Uuid) -> ApiError {
@@ -369,6 +400,7 @@ fn redacted_status_error(transfer: &CctpTransfer) -> Option<CctpStatusDetails> {
         "mint_retryable",
         "mint_reconciliation_nonce",
         "attestation_pending",
+        "iris_reattest_failed",
     ];
     if !safe_codes.contains(&code) {
         return None;
@@ -472,6 +504,15 @@ mod tests {
     use super::*;
     use crate::cctp::access::generate_access_token;
     use chrono::Utc;
+    use stellarroute_routing::health::policy::OverrideDirective;
+
+    async fn set_chain_kill(kill_switch: &KillSwitchManager, venue: &str) {
+        let mut state = kill_switch.get_state().await;
+        state
+            .venues
+            .insert(venue.to_string(), OverrideDirective::ForceExclude);
+        kill_switch.update_state(state).await.unwrap();
+    }
 
     fn sample_transfer(status: CctpTransferStatus) -> CctpTransfer {
         let (token, hash) = generate_access_token();
@@ -523,6 +564,10 @@ mod tests {
             access_token_hash: Some(hash),
             last_polled_at: None,
             poll_lease_until: None,
+            reattest_lease_owner_hash: None,
+            reattest_lease_until: None,
+            reattest_attempt_count: 0,
+            reattest_cooldown_until: None,
         }
     }
 
@@ -536,5 +581,52 @@ mod tests {
         assert!(!json.contains("\"attestation\""));
         assert!(!json.contains("http://"));
         assert!(!json.contains("access_token_hash"));
+    }
+
+    #[tokio::test]
+    async fn corridor_chain_kill_blocks_both_directions_symmetrically() {
+        let kill = KillSwitchManager::new(None);
+        assert!(!corridor_chain_killed(&kill, CctpDirection::StellarToEvm).await);
+        assert!(!corridor_chain_killed(&kill, CctpDirection::EvmToStellar).await);
+
+        set_chain_kill(&kill, CCTP_CHAIN_KILL_STELLAR).await;
+        assert!(corridor_chain_killed(&kill, CctpDirection::StellarToEvm).await);
+        assert!(corridor_chain_killed(&kill, CctpDirection::EvmToStellar).await);
+
+        let kill2 = KillSwitchManager::new(None);
+        set_chain_kill(&kill2, CCTP_CHAIN_KILL_SEPOLIA).await;
+        assert!(corridor_chain_killed(&kill2, CctpDirection::StellarToEvm).await);
+        assert!(corridor_chain_killed(&kill2, CctpDirection::EvmToStellar).await);
+    }
+
+    #[tokio::test]
+    async fn direction_dependency_guard_blocks_each_corridor_side() {
+        use crate::models::v2_cctp::CctpDirection;
+
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
+        assert!(health
+            .guard_cctp_direction(CctpDirection::StellarToEvm)
+            .is_ok());
+
+        for _ in 0..3 {
+            health.record_soroban_result(false);
+        }
+        assert!(health
+            .guard_cctp_direction(CctpDirection::StellarToEvm)
+            .is_err());
+        assert!(health
+            .guard_cctp_direction(CctpDirection::EvmToStellar)
+            .is_err());
+
+        let health2 = ExternalDependencyHealth::new(vec![], vec![]);
+        for _ in 0..3 {
+            health2.record_evm_rpc_result(false);
+        }
+        assert!(health2
+            .guard_cctp_direction(CctpDirection::StellarToEvm)
+            .is_err());
+        assert!(health2
+            .guard_cctp_direction(CctpDirection::EvmToStellar)
+            .is_err());
     }
 }

@@ -11,7 +11,7 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use stellarroute_api::{
     cctp::{
@@ -20,6 +20,7 @@ use stellarroute_api::{
         bootstrap::CctpHttpContext,
         builders::{BuilderError, PreparedMintBundle, StellarCctpMintBuilder},
         config::CctpConfig,
+        gate::{CCTP_CHAIN_KILL_SEPOLIA, CCTP_CHAIN_KILL_STELLAR, REATTEST_MAX_ATTEMPTS},
         idempotency::{canonical_quote_request_hash, PgCctpQuoteIdempotencyStore},
         iris::{IrisClient, IrisFeeQuote, IrisPollOutcome},
         prepare_lock::PgCctpPrepareLockStore,
@@ -36,6 +37,7 @@ use stellarroute_api::{
     },
     state::{AppState, DatabasePools},
 };
+use stellarroute_routing::health::policy::OverrideDirective;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -47,6 +49,7 @@ struct CountingIris {
     fee_calls: AtomicUsize,
     poll_calls: AtomicUsize,
     reattest_calls: AtomicUsize,
+    fail_reattest: AtomicBool,
 }
 
 impl CountingIris {
@@ -55,7 +58,12 @@ impl CountingIris {
             fee_calls: AtomicUsize::new(0),
             poll_calls: AtomicUsize::new(0),
             reattest_calls: AtomicUsize::new(0),
+            fail_reattest: AtomicBool::new(false),
         }
+    }
+
+    fn set_fail_reattest(&self, fail: bool) {
+        self.fail_reattest.store(fail, Ordering::SeqCst);
     }
 
     fn fee_count(&self) -> usize {
@@ -94,6 +102,11 @@ impl IrisClient for CountingIris {
 
     async fn reattest(&self, _: &str) -> Result<(), stellarroute_api::cctp::iris::IrisError> {
         self.reattest_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_reattest.load(Ordering::SeqCst) {
+            return Err(stellarroute_api::cctp::iris::IrisError::Http(
+                "simulated iris outage".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -173,6 +186,7 @@ async fn apply_migrations(pool: &PgPool) {
         include_str!("../migrations/20260731_cctp_prepare_lock_hardening.sql"),
         include_str!("../migrations/20260801_cctp_http_gate.sql"),
         include_str!("../migrations/20260802_cctp_http_hardening.sql"),
+        include_str!("../migrations/20260803_cctp_reattest_lease.sql"),
     ] {
         for stmt in migration
             .split(';')
@@ -239,9 +253,21 @@ impl PgHarness {
     }
 
     async fn fresh_router(&self) -> axum::Router {
+        self.fresh_router_with(None, None).await
+    }
+
+    async fn fresh_router_with(
+        &self,
+        dependency_health: Option<Arc<ExternalDependencyHealth>>,
+        kill_switch: Option<Arc<KillSwitchManager>>,
+    ) -> axum::Router {
         let mut state = AppState::new(DatabasePools::new(self.pool.clone(), None))
             .with_cctp(self.build_context());
-        state.external_dependency_health = Arc::new(ExternalDependencyHealth::new(vec![], vec![]));
+        state.external_dependency_health = dependency_health
+            .unwrap_or_else(|| Arc::new(ExternalDependencyHealth::new(vec![], vec![])));
+        if let Some(ks) = kill_switch {
+            state.kill_switch = ks;
+        }
         stellarroute_api::routes::create_router(state.into_arc())
     }
 }
@@ -403,6 +429,10 @@ fn sample_pg_transfer(id: Uuid, access_hash: &str) -> CctpTransfer {
         access_token_hash: Some(access_hash.into()),
         last_polled_at: None,
         poll_lease_until: None,
+        reattest_lease_owner_hash: None,
+        reattest_lease_until: None,
+        reattest_attempt_count: 0,
+        reattest_cooldown_until: None,
     }
 }
 
@@ -820,7 +850,220 @@ async fn pg_concurrent_reattest_single_claim_and_iris_call() {
             .unwrap();
     assert_eq!(retry_count, 1);
 
+    let attempt_count: i32 = sqlx::query_scalar(
+        "SELECT reattest_attempt_count FROM cctp_transfers WHERE transfer_id = $1",
+    )
+    .bind(transfer_id)
+    .fetch_one(&harness.pool)
+    .await
+    .unwrap();
+    assert_eq!(attempt_count, 1);
+
+    let status_row: String =
+        sqlx::query_scalar("SELECT status FROM cctp_transfers WHERE transfer_id = $1")
+            .bind(transfer_id)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap();
+    assert_eq!(status_row, "awaiting_attestation");
+
     let router2 = harness.fresh_router().await;
     let (cooldown_status, _) = post_reattest(&router2, &transfer_id.to_string(), token).await;
     assert_eq!(cooldown_status, StatusCode::BAD_REQUEST);
+}
+
+async fn set_chain_kill(kill: &KillSwitchManager, venue: &str) {
+    let mut state = kill.get_state().await;
+    state
+        .venues
+        .insert(venue.to_string(), OverrideDirective::ForceExclude);
+    kill.update_state(state).await.unwrap();
+}
+
+async fn get_v2(router: &axum::Router) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(json!({})))
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL with CCTP migrations applied"]
+async fn pg_reattest_iris_failure_keeps_failed_state_and_cooldown() {
+    let harness = PgHarness::connect().await;
+    truncate_cctp(&harness.pool).await;
+    harness.iris.set_fail_reattest(true);
+
+    let transfer_id = Uuid::new_v4();
+    let token = "reattest-fail-token-abcdefghijklmnop";
+    let access_hash = hash_access_token(token);
+    let mut transfer = sample_pg_transfer(transfer_id, &access_hash);
+    transfer.status = CctpTransferStatus::AttestationFailed;
+    transfer.message_nonce = Some("nonce-fail-1".into());
+    seed_transfer_row(&harness.pool, &transfer).await;
+
+    let router = harness.fresh_router().await;
+    let (status, _) = post_reattest(&router, &transfer_id.to_string(), token).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(harness.iris.reattest_count(), 1);
+
+    let row: (String, i32, i32, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
+        "SELECT status, retry_count, reattest_attempt_count, reattest_cooldown_until FROM cctp_transfers WHERE transfer_id = $1",
+    )
+    .bind(transfer_id)
+    .fetch_one(&harness.pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "attestation_failed");
+    assert_eq!(row.1, 0);
+    assert_eq!(row.2, 1);
+    assert!(row.3.is_some());
+
+    let (retry_status, _) = post_reattest(&router, &transfer_id.to_string(), token).await;
+    assert_eq!(retry_status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        harness.iris.reattest_count(),
+        1,
+        "cooldown blocks second Iris call"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL with CCTP migrations applied"]
+async fn pg_reattest_lease_expiry_allows_recovery_without_corrupting_nonce() {
+    let harness = PgHarness::connect().await;
+    truncate_cctp(&harness.pool).await;
+
+    let transfer_id = Uuid::new_v4();
+    let token = "reattest-lease-token-abcdefghijklmnop";
+    let access_hash = hash_access_token(token);
+    let nonce = "nonce-lease-expiry-1";
+    let mut transfer = sample_pg_transfer(transfer_id, &access_hash);
+    transfer.status = CctpTransferStatus::AttestationFailed;
+    transfer.message_nonce = Some(nonce.into());
+    seed_transfer_row(&harness.pool, &transfer).await;
+
+    sqlx::query(
+        r#"
+        UPDATE cctp_transfers
+        SET reattest_lease_owner_hash = 'stale-owner',
+            reattest_lease_until = NOW() - INTERVAL '1 second'
+        WHERE transfer_id = $1
+        "#,
+    )
+    .bind(transfer_id)
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+
+    let router = harness.fresh_router().await;
+    let (status, _) = post_reattest(&router, &transfer_id.to_string(), token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(harness.iris.reattest_count(), 1);
+
+    let stored_nonce: String =
+        sqlx::query_scalar("SELECT message_nonce FROM cctp_transfers WHERE transfer_id = $1")
+            .bind(transfer_id)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_nonce, nonce);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL with CCTP migrations applied"]
+async fn pg_reattest_attempt_cap_blocks_further_provider_calls() {
+    let harness = PgHarness::connect().await;
+    truncate_cctp(&harness.pool).await;
+
+    let transfer_id = Uuid::new_v4();
+    let token = "reattest-cap-token-abcdefghijklmnop";
+    let access_hash = hash_access_token(token);
+    let mut transfer = sample_pg_transfer(transfer_id, &access_hash);
+    transfer.status = CctpTransferStatus::AttestationFailed;
+    transfer.message_nonce = Some("nonce-cap".into());
+    transfer.reattest_attempt_count = REATTEST_MAX_ATTEMPTS;
+    seed_transfer_row(&harness.pool, &transfer).await;
+
+    sqlx::query("UPDATE cctp_transfers SET reattest_attempt_count = $2 WHERE transfer_id = $1")
+        .bind(transfer_id)
+        .bind(REATTEST_MAX_ATTEMPTS as i32)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+
+    let router = harness.fresh_router().await;
+    let (status, _) = post_reattest(&router, &transfer_id.to_string(), token).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(harness.iris.reattest_count(), 0);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL with CCTP migrations applied"]
+async fn pg_symmetric_chain_and_dependency_gates_block_without_iris() {
+    let harness = PgHarness::connect().await;
+    truncate_cctp(&harness.pool).await;
+
+    let health = Arc::new(ExternalDependencyHealth::new(vec![], vec![]));
+    let kill = Arc::new(KillSwitchManager::new(None));
+    let router = harness
+        .fresh_router_with(Some(health.clone()), Some(kill.clone()))
+        .await;
+
+    let body = sample_quote_body();
+    let baseline = post_quote(&router, &body, Some("gate-baseline")).await;
+    assert_ne!(harness.iris.fee_count(), usize::MAX);
+
+    set_chain_kill(&kill, CCTP_CHAIN_KILL_SEPOLIA).await;
+    let router2 = harness
+        .fresh_router_with(Some(health.clone()), Some(kill.clone()))
+        .await;
+    let fees_before = harness.iris.fee_count();
+    let (status, _) = post_quote(&router2, &body, Some("gate-sepolia-kill")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(harness.iris.fee_count(), fees_before);
+
+    let kill2 = Arc::new(KillSwitchManager::new(None));
+    set_chain_kill(&kill2, CCTP_CHAIN_KILL_STELLAR).await;
+    let router3 = harness
+        .fresh_router_with(Some(health.clone()), Some(kill2))
+        .await;
+    let fees_before2 = harness.iris.fee_count();
+    let (status2, _) = post_quote(&router3, &body, Some("gate-stellar-kill")).await;
+    assert_eq!(status2, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(harness.iris.fee_count(), fees_before2);
+
+    let health3 = Arc::new(ExternalDependencyHealth::new(vec![], vec![]));
+    for _ in 0..3 {
+        health3.record_evm_rpc_result(false);
+    }
+    let router4 = harness
+        .fresh_router_with(
+            Some(health3.clone()),
+            Some(Arc::new(KillSwitchManager::new(None))),
+        )
+        .await;
+    let fees_before3 = harness.iris.fee_count();
+    let (status3, _) = post_quote(&router4, &body, Some("gate-evm-unhealthy")).await;
+    assert_eq!(status3, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(harness.iris.fee_count(), fees_before3);
+
+    let (_, v2) = get_v2(&router4).await;
+    let corridors = &v2["data"]["supported_corridors"];
+    assert!(corridors
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["executable"] == false));
+
+    let _ = baseline;
 }

@@ -460,6 +460,10 @@ impl CctpService {
             access_token_hash: Some(access_token_hash),
             last_polled_at: None,
             poll_lease_until: None,
+            reattest_lease_owner_hash: None,
+            reattest_lease_until: None,
+            reattest_attempt_count: 0,
+            reattest_cooldown_until: None,
         };
 
         Ok(transfer)
@@ -494,34 +498,79 @@ impl CctpService {
         transfer_id: Uuid,
         max_attempts: u32,
         cooldown_secs: i64,
+        lease_secs: i64,
     ) -> Result<CctpTransfer, CctpServiceError> {
+        use crate::cctp::idempotency::{lease_owner_hash_from_nonce, new_lease_owner_nonce};
+
+        let lease_owner = lease_owner_hash_from_nonce(&new_lease_owner_nonce());
         let Some((transfer, outcome)) = self
             .store
-            .try_claim_reattest(transfer_id, max_attempts, cooldown_secs)
+            .claim_reattest_lease(transfer_id, &lease_owner, lease_secs, max_attempts)
             .await
             .map_err(CctpServiceError::Store)?
         else {
             return Err(CctpServiceError::NotFound);
         };
-        if outcome != crate::cctp::store::ReattestClaimOutcome::Claimed {
-            return Err(CctpServiceError::InvalidState);
+        match outcome {
+            crate::cctp::store::ReattestClaimOutcome::Claimed => {}
+            crate::cctp::store::ReattestClaimOutcome::InProgress => {
+                return Err(CctpServiceError::InvalidState);
+            }
+            crate::cctp::store::ReattestClaimOutcome::NotAllowed => {
+                return Err(CctpServiceError::InvalidState);
+            }
         }
 
-        if let Some(nonce) = transfer.message_nonce.as_ref() {
-            self.iris
-                .reattest(nonce)
-                .await
-                .map_err(|e| CctpServiceError::Iris(e.to_string()))?;
-        } else if transfer.source_tx_hash.is_none() {
+        let iris_result = if let Some(nonce) = transfer.message_nonce.as_ref() {
+            self.iris.reattest(nonce).await
+        } else if transfer.source_tx_hash.is_some() {
+            Ok(())
+        } else {
+            let _ = self
+                .store
+                .finalize_reattest_failure(
+                    transfer_id,
+                    &lease_owner,
+                    "invalid_state",
+                    "reattest requires message nonce or source tx hash",
+                    cooldown_secs,
+                )
+                .await;
             return Err(CctpServiceError::InvalidState);
-        }
+        };
 
-        metrics::record_cctp_transition("reattest_awaiting");
-        self.store
-            .get(transfer_id)
-            .await
-            .map_err(CctpServiceError::Store)?
-            .ok_or(CctpServiceError::NotFound)
+        match iris_result {
+            Ok(()) => {
+                let updated = self
+                    .store
+                    .finalize_reattest_success(transfer_id, &lease_owner)
+                    .await
+                    .map_err(CctpServiceError::Store)?
+                    .ok_or(CctpServiceError::InvalidState)?;
+                metrics::record_cctp_transition("reattest_awaiting");
+                Ok(updated)
+            }
+            Err(e) => {
+                let code = "iris_reattest_failed";
+                let detail = e.to_string();
+                let redacted = if detail.len() <= 120 && !detail.contains("http") {
+                    detail
+                } else {
+                    "Circle attestation reattest failed".into()
+                };
+                let _ = self
+                    .store
+                    .finalize_reattest_failure(
+                        transfer_id,
+                        &lease_owner,
+                        code,
+                        &redacted,
+                        cooldown_secs,
+                    )
+                    .await;
+                Err(CctpServiceError::Iris(redacted))
+            }
+        }
     }
 
     pub async fn record_burn_submission(
@@ -766,44 +815,17 @@ impl CctpService {
     }
 
     pub async fn reattest(&self, transfer_id: Uuid) -> Result<CctpTransfer, CctpServiceError> {
-        let transfer = self
-            .store
-            .get(transfer_id)
-            .await
-            .map_err(CctpServiceError::Store)?
-            .ok_or(CctpServiceError::NotFound)?;
+        use crate::cctp::gate::{
+            REATTEST_COOLDOWN_SECS, REATTEST_LEASE_SECS, REATTEST_MAX_ATTEMPTS,
+        };
 
-        if transfer.status != CctpTransferStatus::AttestationFailed {
-            return Err(CctpServiceError::InvalidState);
-        }
-
-        if let Some(nonce) = transfer.message_nonce.as_ref() {
-            self.iris
-                .reattest(nonce)
-                .await
-                .map_err(|e| CctpServiceError::Iris(e.to_string()))?;
-        } else if transfer.source_tx_hash.is_none() {
-            return Err(CctpServiceError::InvalidState);
-        }
-        // Without nonce: safe tx-hash repoll recovery only — never reattest without nonce.
-
-        let updated = self
-            .store
-            .transition(
-                transfer_id,
-                transfer.version,
-                CctpTransferStatus::AwaitingAttestation,
-                TransferPatch {
-                    increment_retry: true,
-                    clear_terminal_at: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(CctpServiceError::Store)?;
-
-        metrics::record_cctp_transition("reattest_awaiting");
-        Ok(updated)
+        self.reattest_with_claim(
+            transfer_id,
+            REATTEST_MAX_ATTEMPTS,
+            REATTEST_COOLDOWN_SECS,
+            REATTEST_LEASE_SECS,
+        )
+        .await
     }
 
     pub async fn record_approval_submission(

@@ -17,7 +17,7 @@ use crate::cctp::gate::{
     hash_presented_access_token, map_service_error, to_prepare_burn_response,
     to_prepare_mint_response, to_quote_response, to_reattest_response, to_status_response,
     to_submit_burn_response, to_submit_mint_response, uniform_transfer_not_found, POLL_LEASE_SECS,
-    REATTEST_COOLDOWN_SECS, REATTEST_MAX_ATTEMPTS,
+    REATTEST_COOLDOWN_SECS, REATTEST_LEASE_SECS, REATTEST_MAX_ATTEMPTS,
 };
 use crate::cctp::idempotency::{
     canonical_quote_request_hash, lease_owner_hash_from_nonce, new_lease_owner_nonce,
@@ -572,7 +572,12 @@ pub async fn cctp_reattest(
     let ctx = require_cctp(&state)?;
     let updated = match ctx
         .service
-        .reattest_with_claim(transfer_id, REATTEST_MAX_ATTEMPTS, REATTEST_COOLDOWN_SECS)
+        .reattest_with_claim(
+            transfer_id,
+            REATTEST_MAX_ATTEMPTS,
+            REATTEST_COOLDOWN_SECS,
+            REATTEST_LEASE_SECS,
+        )
         .await
     {
         Ok(t) => t,

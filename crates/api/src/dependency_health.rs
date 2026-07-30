@@ -8,6 +8,7 @@ use stellarroute_routing::health::circuit_breaker::{
 
 const HORIZON_KEY: &str = "horizon";
 const SOROBAN_KEY: &str = "soroban_rpc";
+const EVM_RPC_KEY: &str = "evm_rpc";
 const DATABASE_KEY: &str = "database";
 
 /// Dependencies whose failure makes a quote/swap answer wrong rather than slow.
@@ -44,8 +45,11 @@ pub struct ExternalDependencyHealth {
     horizon_urls: Vec<String>,
     /// Ordered list of Soroban RPC URLs: primary first, then fallbacks.
     soroban_rpc_urls: Vec<String>,
+    /// Sepolia / EVM JSON-RPC URLs for CCTP EVM burn/mint paths.
+    evm_rpc_urls: Vec<String>,
     horizon_breaker: Arc<CircuitBreakerRegistry>,
     soroban_breaker: Arc<CircuitBreakerRegistry>,
+    evm_rpc_breaker: Arc<CircuitBreakerRegistry>,
     database_breaker: Arc<CircuitBreakerRegistry>,
 }
 
@@ -64,10 +68,25 @@ impl ExternalDependencyHealth {
         let horizon_urls = parse_failover_urls(horizon_primary, "STELLAR_HORIZON_FALLBACK_URLS");
         let soroban_rpc_urls = parse_failover_urls(soroban_primary, "SOROBAN_RPC_FALLBACK_URLS");
 
-        Self::new(horizon_urls, soroban_rpc_urls)
+        let evm_primary = std::env::var("CCTP_SEPOLIA_RPC_URL")
+            .or_else(|_| std::env::var("SEPOLIA_RPC_URL"))
+            .ok()
+            .map(|v| v.trim().trim_end_matches('/').to_string())
+            .filter(|v| !v.is_empty());
+        let evm_rpc_urls = parse_failover_urls(evm_primary, "CCTP_SEPOLIA_RPC_FALLBACK_URLS");
+
+        Self::with_evm_rpc(horizon_urls, soroban_rpc_urls, evm_rpc_urls)
     }
 
     pub fn new(horizon_urls: Vec<String>, soroban_rpc_urls: Vec<String>) -> Self {
+        Self::with_evm_rpc(horizon_urls, soroban_rpc_urls, Vec::new())
+    }
+
+    pub fn with_evm_rpc(
+        horizon_urls: Vec<String>,
+        soroban_rpc_urls: Vec<String>,
+        evm_rpc_urls: Vec<String>,
+    ) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(3))
             .build()
@@ -83,8 +102,10 @@ impl ExternalDependencyHealth {
             client,
             horizon_urls,
             soroban_rpc_urls,
+            evm_rpc_urls,
             horizon_breaker: Arc::new(CircuitBreakerRegistry::new(cfg.clone())),
             soroban_breaker: Arc::new(CircuitBreakerRegistry::new(cfg.clone())),
+            evm_rpc_breaker: Arc::new(CircuitBreakerRegistry::new(cfg.clone())),
             database_breaker: Arc::new(CircuitBreakerRegistry::new(cfg)),
         }
     }
@@ -93,6 +114,7 @@ impl ExternalDependencyHealth {
         match key {
             DATABASE_KEY => &self.database_breaker,
             SOROBAN_KEY => &self.soroban_breaker,
+            EVM_RPC_KEY => &self.evm_rpc_breaker,
             _ => &self.horizon_breaker,
         }
     }
@@ -157,6 +179,10 @@ impl ExternalDependencyHealth {
         self.probe_soroban_with_client(&self.client).await
     }
 
+    pub async fn probe_evm_rpc(&self) -> String {
+        self.probe_evm_rpc_with_client(&self.client).await
+    }
+
     pub fn soroban_breaker_is_open(&self) -> bool {
         self.soroban_breaker.is_venue_excluded(SOROBAN_KEY)
     }
@@ -181,6 +207,52 @@ impl ExternalDependencyHealth {
     pub fn record_horizon_result(&self, success: bool) {
         self.horizon_breaker.record_result(HORIZON_KEY, success);
         self.refresh_gauge(HORIZON_KEY);
+    }
+
+    pub fn evm_rpc_breaker_is_open(&self) -> bool {
+        self.evm_rpc_breaker.is_venue_excluded(EVM_RPC_KEY)
+    }
+
+    pub fn record_evm_rpc_result(&self, success: bool) {
+        self.evm_rpc_breaker.record_result(EVM_RPC_KEY, success);
+        self.refresh_gauge(EVM_RPC_KEY);
+    }
+
+    /// Symmetric CCTP corridor chain health: source + destination per direction.
+    pub fn guard_cctp_direction(
+        &self,
+        direction: crate::models::v2_cctp::CctpDirection,
+    ) -> crate::error::Result<()> {
+        use crate::models::v2_cctp::CctpDirection;
+
+        let (source_open, dest_open, source_label, dest_label) = match direction {
+            CctpDirection::StellarToEvm => (
+                self.soroban_breaker_is_open(),
+                self.evm_rpc_breaker_is_open(),
+                "stellar_rpc",
+                "sepolia_rpc",
+            ),
+            CctpDirection::EvmToStellar => (
+                self.evm_rpc_breaker_is_open(),
+                self.soroban_breaker_is_open(),
+                "sepolia_rpc",
+                "stellar_rpc",
+            ),
+        };
+        if source_open || dest_open {
+            let mut parts = Vec::new();
+            if source_open {
+                parts.push(source_label);
+            }
+            if dest_open {
+                parts.push(dest_label);
+            }
+            return Err(crate::error::ApiError::DependencyUnavailable(format!(
+                "CCTP corridor dependency unavailable: {}. Circuit breaker is open; retry shortly.",
+                parts.join(", ")
+            )));
+        }
+        Ok(())
     }
 
     async fn probe_horizon_with_client(&self, client: &Client) -> String {
@@ -245,6 +317,41 @@ impl ExternalDependencyHealth {
 
         // All URLs failed
         self.soroban_breaker.record_result(SOROBAN_KEY, false);
+        "degraded".to_string()
+    }
+
+    async fn probe_evm_rpc_with_client(&self, client: &Client) -> String {
+        if self.evm_rpc_urls.is_empty() {
+            return "not_configured".to_string();
+        }
+
+        if self.evm_rpc_breaker.is_venue_excluded(EVM_RPC_KEY) {
+            return "degraded (circuit_open)".to_string();
+        }
+
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": "dep-health-evm-probe",
+            "method": "eth_chainId",
+            "params": []
+        });
+
+        for url in &self.evm_rpc_urls {
+            let success = client
+                .post(url)
+                .json(&req)
+                .send()
+                .await
+                .and_then(|resp| resp.error_for_status())
+                .is_ok();
+
+            if success {
+                self.evm_rpc_breaker.record_result(EVM_RPC_KEY, true);
+                return "healthy".to_string();
+            }
+        }
+
+        self.evm_rpc_breaker.record_result(EVM_RPC_KEY, false);
         "degraded".to_string()
     }
 }
@@ -374,5 +481,54 @@ mod tests {
         // sync check
         assert!(health.horizon_urls.is_empty());
         assert!(health.soroban_rpc_urls.is_empty());
+        assert!(health.evm_rpc_urls.is_empty());
+    }
+
+    #[test]
+    fn evm_rpc_breaker_independent_from_soroban() {
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
+        for _ in 0..3 {
+            health.record_evm_rpc_result(false);
+        }
+        assert!(health.evm_rpc_breaker_is_open());
+        assert!(!health.soroban_breaker_is_open());
+    }
+
+    #[test]
+    fn guard_cctp_direction_blocks_per_corridor_side() {
+        use crate::models::v2_cctp::CctpDirection;
+
+        let health = ExternalDependencyHealth::new(vec![], vec![]);
+        assert!(health
+            .guard_cctp_direction(CctpDirection::StellarToEvm)
+            .is_ok());
+        assert!(health
+            .guard_cctp_direction(CctpDirection::EvmToStellar)
+            .is_ok());
+
+        for _ in 0..3 {
+            health.record_soroban_result(false);
+        }
+        let err = health
+            .guard_cctp_direction(CctpDirection::StellarToEvm)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::ApiError::DependencyUnavailable(_)
+        ));
+        assert!(health
+            .guard_cctp_direction(CctpDirection::EvmToStellar)
+            .is_err());
+
+        let health2 = ExternalDependencyHealth::new(vec![], vec![]);
+        for _ in 0..3 {
+            health2.record_evm_rpc_result(false);
+        }
+        assert!(health2
+            .guard_cctp_direction(CctpDirection::StellarToEvm)
+            .is_err());
+        assert!(health2
+            .guard_cctp_direction(CctpDirection::EvmToStellar)
+            .is_err());
     }
 }

@@ -158,6 +158,27 @@ Successful idempotent finalize runs in one transaction: insert `cctp_transfers` 
 `cctp_quote_idempotency.state = completed`. No `response_json`, plaintext token, raw XDR,
 message bytes, or attestation blobs are persisted.
 
+### Reattest (`POST /{transfer_id}/reattest`)
+
+- **Claim → Iris → finalize:** handler acquires a short `reattest_lease_*` while status stays
+  `attestation_failed`, calls Circle Iris (idempotent by `message_nonce`), then atomically finalizes.
+- **`reattest_attempt_count`:** incremented once per Iris provider call (success or failure);
+  capped at `REATTEST_MAX_ATTEMPTS` (default 5). Blocks further claims when at cap.
+- **`retry_count`:** incremented only on successful finalize → `awaiting_attestation` (clears
+  failure fields and `terminal_at`). Not incremented on Iris failure.
+- **Failure finalize:** releases lease, keeps `attestation_failed`, sets `reattest_cooldown_until`,
+  stores redacted `iris_reattest_failed` provider code only.
+- **Crash recovery:** expired lease allows a new claim; success finalize is idempotent on lease owner.
+
+### Symmetric corridor gating
+
+Public executability (quote + mutations + `/api/v2` metadata) requires, per direction:
+
+- `stellar_to_evm`: Stellar **and** Sepolia chain kills off + Soroban (source) **and** EVM RPC
+  (destination) dependency breakers closed.
+- `evm_to_stellar`: Sepolia **and** Stellar chain kills off + EVM RPC (source) **and** Soroban
+  (destination) dependency breakers closed.
+
 ## Verification
 
 ```bash

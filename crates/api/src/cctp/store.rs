@@ -65,6 +65,13 @@ pub struct CctpTransfer {
     pub access_token_hash: Option<String>,
     pub last_polled_at: Option<DateTime<Utc>>,
     pub poll_lease_until: Option<DateTime<Utc>>,
+    /// Lease owner hash while a reattest Iris call is in flight (`attestation_failed` unchanged).
+    pub reattest_lease_owner_hash: Option<String>,
+    pub reattest_lease_until: Option<DateTime<Utc>>,
+    /// Iris reattest provider calls (success or failure); capped by `REATTEST_MAX_ATTEMPTS`.
+    pub reattest_attempt_count: u32,
+    /// Durable cooldown after failed reattest finalize.
+    pub reattest_cooldown_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +84,7 @@ pub enum PollLeaseOutcome {
 pub enum ReattestClaimOutcome {
     Claimed,
     NotAllowed,
+    InProgress,
 }
 
 #[derive(Debug, Error)]
@@ -120,13 +128,31 @@ pub trait CctpTransferStore: Send + Sync {
         min_interval_secs: i64,
     ) -> Result<Option<(CctpTransfer, PollLeaseOutcome)>, CctpStoreError>;
 
-    /// Atomically claim reattest slot (cooldown + max attempts + state).
-    async fn try_claim_reattest(
+    /// Atomically claim reattest lease without changing saga status.
+    async fn claim_reattest_lease(
         &self,
         transfer_id: Uuid,
+        lease_owner_hash: &str,
+        lease_secs: i64,
         max_attempts: u32,
-        cooldown_secs: i64,
     ) -> Result<Option<(CctpTransfer, ReattestClaimOutcome)>, CctpStoreError>;
+
+    /// After successful Iris reattest: transition to awaiting_attestation, bump counters once.
+    async fn finalize_reattest_success(
+        &self,
+        transfer_id: Uuid,
+        lease_owner_hash: &str,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError>;
+
+    /// After Iris failure: release lease, keep attestation_failed, count provider attempt, cooldown.
+    async fn finalize_reattest_failure(
+        &self,
+        transfer_id: Uuid,
+        lease_owner_hash: &str,
+        provider_code: &str,
+        provider_error: &str,
+        cooldown_secs: i64,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError>;
 
     async fn transition(
         &self,
@@ -326,30 +352,36 @@ impl CctpTransferStore for PgCctpTransferStore {
         Ok(current.map(|t| (t, PollLeaseOutcome::Skipped)))
     }
 
-    async fn try_claim_reattest(
+    async fn claim_reattest_lease(
         &self,
         transfer_id: Uuid,
+        lease_owner_hash: &str,
+        lease_secs: i64,
         max_attempts: u32,
-        cooldown_secs: i64,
     ) -> Result<Option<(CctpTransfer, ReattestClaimOutcome)>, CctpStoreError> {
+        let lease_until = Utc::now() + chrono::Duration::seconds(lease_secs);
         let row = sqlx::query_as::<_, TransferRow>(
             r#"
             UPDATE cctp_transfers
-            SET retry_count = retry_count + 1,
-                status = 'awaiting_attestation',
-                updated_at = NOW(),
-                terminal_at = NULL,
-                version = version + 1
+            SET reattest_lease_owner_hash = $2,
+                reattest_lease_until = $3,
+                updated_at = NOW()
             WHERE transfer_id = $1
               AND status = 'attestation_failed'
-              AND retry_count < $2
-              AND updated_at <= NOW() - ($3 * INTERVAL '1 second')
+              AND reattest_attempt_count < $4
+              AND (reattest_cooldown_until IS NULL OR reattest_cooldown_until <= NOW())
+              AND (
+                reattest_lease_until IS NULL
+                OR reattest_lease_until <= NOW()
+                OR reattest_lease_owner_hash = $2
+              )
             RETURNING *
             "#,
         )
         .bind(transfer_id)
+        .bind(lease_owner_hash)
+        .bind(lease_until)
         .bind(max_attempts as i32)
-        .bind(cooldown_secs)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -361,7 +393,87 @@ impl CctpTransferStore for PgCctpTransferStore {
         }
 
         let current = self.get(transfer_id).await?;
-        Ok(current.map(|t| (t, ReattestClaimOutcome::NotAllowed)))
+        let Some(transfer) = current else {
+            return Ok(None);
+        };
+        if transfer.status != CctpTransferStatus::AttestationFailed {
+            return Ok(Some((transfer, ReattestClaimOutcome::NotAllowed)));
+        }
+        let lease_active = transfer
+            .reattest_lease_until
+            .is_some_and(|exp| exp > Utc::now());
+        if lease_active && transfer.reattest_lease_owner_hash.as_deref() != Some(lease_owner_hash) {
+            return Ok(Some((transfer, ReattestClaimOutcome::InProgress)));
+        }
+        Ok(Some((transfer, ReattestClaimOutcome::NotAllowed)))
+    }
+
+    async fn finalize_reattest_success(
+        &self,
+        transfer_id: Uuid,
+        lease_owner_hash: &str,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError> {
+        let row = sqlx::query_as::<_, TransferRow>(
+            r#"
+            UPDATE cctp_transfers
+            SET status = 'awaiting_attestation',
+                retry_count = retry_count + 1,
+                reattest_attempt_count = reattest_attempt_count + 1,
+                reattest_lease_owner_hash = NULL,
+                reattest_lease_until = NULL,
+                reattest_cooldown_until = NULL,
+                last_provider_error = NULL,
+                last_provider_code = NULL,
+                terminal_at = NULL,
+                version = version + 1,
+                updated_at = NOW()
+            WHERE transfer_id = $1
+              AND status = 'attestation_failed'
+              AND reattest_lease_owner_hash = $2
+            RETURNING *
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(lease_owner_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_into_transfer()).transpose()?)
+    }
+
+    async fn finalize_reattest_failure(
+        &self,
+        transfer_id: Uuid,
+        lease_owner_hash: &str,
+        provider_code: &str,
+        provider_error: &str,
+        cooldown_secs: i64,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError> {
+        let row = sqlx::query_as::<_, TransferRow>(
+            r#"
+            UPDATE cctp_transfers
+            SET reattest_attempt_count = reattest_attempt_count + 1,
+                reattest_lease_owner_hash = NULL,
+                reattest_lease_until = NULL,
+                reattest_cooldown_until = NOW() + ($5 * INTERVAL '1 second'),
+                last_provider_code = $3,
+                last_provider_error = $4,
+                status = 'attestation_failed',
+                version = version + 1,
+                updated_at = NOW()
+            WHERE transfer_id = $1
+              AND status = 'attestation_failed'
+              AND reattest_lease_owner_hash = $2
+            RETURNING *
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(lease_owner_hash)
+        .bind(provider_code)
+        .bind(provider_error)
+        .bind(cooldown_secs)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_into_transfer()).transpose()?)
     }
 
     async fn transition(
@@ -685,11 +797,12 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
         Ok(Some((transfer.clone(), PollLeaseOutcome::Acquired)))
     }
 
-    async fn try_claim_reattest(
+    async fn claim_reattest_lease(
         &self,
         transfer_id: Uuid,
+        lease_owner_hash: &str,
+        lease_secs: i64,
         max_attempts: u32,
-        cooldown_secs: i64,
     ) -> Result<Option<(CctpTransfer, ReattestClaimOutcome)>, CctpStoreError> {
         use chrono::Duration;
         let mut guard = self.transfers.lock().unwrap();
@@ -698,17 +811,83 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
         };
         let now = Utc::now();
         if transfer.status != CctpTransferStatus::AttestationFailed
-            || transfer.retry_count >= max_attempts
-            || transfer.updated_at + Duration::seconds(cooldown_secs) > now
+            || transfer.reattest_attempt_count >= max_attempts
+            || transfer
+                .reattest_cooldown_until
+                .is_some_and(|until| until > now)
         {
             return Ok(Some((transfer.clone(), ReattestClaimOutcome::NotAllowed)));
         }
-        transfer.retry_count += 1;
-        transfer.status = CctpTransferStatus::AwaitingAttestation;
-        transfer.terminal_at = None;
-        transfer.version += 1;
+        let lease_active = transfer.reattest_lease_until.is_some_and(|exp| exp > now);
+        if lease_active && transfer.reattest_lease_owner_hash.as_deref() != Some(lease_owner_hash) {
+            return Ok(Some((transfer.clone(), ReattestClaimOutcome::InProgress)));
+        }
+        if lease_active && transfer.reattest_lease_owner_hash.as_deref() == Some(lease_owner_hash) {
+            transfer.reattest_lease_until = Some(now + Duration::seconds(lease_secs));
+            transfer.updated_at = now;
+            return Ok(Some((transfer.clone(), ReattestClaimOutcome::Claimed)));
+        }
+        transfer.reattest_lease_owner_hash = Some(lease_owner_hash.to_string());
+        transfer.reattest_lease_until = Some(now + Duration::seconds(lease_secs));
         transfer.updated_at = now;
         Ok(Some((transfer.clone(), ReattestClaimOutcome::Claimed)))
+    }
+
+    async fn finalize_reattest_success(
+        &self,
+        transfer_id: Uuid,
+        lease_owner_hash: &str,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError> {
+        let mut guard = self.transfers.lock().unwrap();
+        let Some(transfer) = guard.get_mut(&transfer_id) else {
+            return Ok(None);
+        };
+        if transfer.status != CctpTransferStatus::AttestationFailed
+            || transfer.reattest_lease_owner_hash.as_deref() != Some(lease_owner_hash)
+        {
+            return Ok(None);
+        }
+        transfer.status = CctpTransferStatus::AwaitingAttestation;
+        transfer.retry_count += 1;
+        transfer.reattest_attempt_count += 1;
+        transfer.reattest_lease_owner_hash = None;
+        transfer.reattest_lease_until = None;
+        transfer.reattest_cooldown_until = None;
+        transfer.last_provider_error = None;
+        transfer.last_provider_code = None;
+        transfer.terminal_at = None;
+        transfer.version += 1;
+        transfer.updated_at = Utc::now();
+        Ok(Some(transfer.clone()))
+    }
+
+    async fn finalize_reattest_failure(
+        &self,
+        transfer_id: Uuid,
+        lease_owner_hash: &str,
+        provider_code: &str,
+        provider_error: &str,
+        cooldown_secs: i64,
+    ) -> Result<Option<CctpTransfer>, CctpStoreError> {
+        use chrono::Duration;
+        let mut guard = self.transfers.lock().unwrap();
+        let Some(transfer) = guard.get_mut(&transfer_id) else {
+            return Ok(None);
+        };
+        if transfer.status != CctpTransferStatus::AttestationFailed
+            || transfer.reattest_lease_owner_hash.as_deref() != Some(lease_owner_hash)
+        {
+            return Ok(None);
+        }
+        transfer.reattest_attempt_count += 1;
+        transfer.reattest_lease_owner_hash = None;
+        transfer.reattest_lease_until = None;
+        transfer.reattest_cooldown_until = Some(Utc::now() + Duration::seconds(cooldown_secs));
+        transfer.last_provider_code = Some(provider_code.to_string());
+        transfer.last_provider_error = Some(provider_error.to_string());
+        transfer.version += 1;
+        transfer.updated_at = Utc::now();
+        Ok(Some(transfer.clone()))
     }
 
     async fn transition(
@@ -996,6 +1175,10 @@ struct TransferRow {
     access_token_hash: Option<String>,
     last_polled_at: Option<DateTime<Utc>>,
     poll_lease_until: Option<DateTime<Utc>>,
+    reattest_lease_owner_hash: Option<String>,
+    reattest_lease_until: Option<DateTime<Utc>>,
+    reattest_attempt_count: i32,
+    reattest_cooldown_until: Option<DateTime<Utc>>,
 }
 
 impl TransferRow {
@@ -1047,6 +1230,10 @@ impl TransferRow {
             access_token_hash: self.access_token_hash,
             last_polled_at: self.last_polled_at,
             poll_lease_until: self.poll_lease_until,
+            reattest_lease_owner_hash: self.reattest_lease_owner_hash,
+            reattest_lease_until: self.reattest_lease_until,
+            reattest_attempt_count: self.reattest_attempt_count as u32,
+            reattest_cooldown_until: self.reattest_cooldown_until,
         })
     }
 }
@@ -1139,6 +1326,7 @@ fn validate_patch(patch: &TransferPatch) -> Result<(), CctpStoreError> {
 mod tests {
     use super::*;
     use chrono::Duration;
+    use std::sync::Arc;
 
     fn sample_transfer() -> CctpTransfer {
         let now = Utc::now();
@@ -1189,6 +1377,10 @@ mod tests {
             access_token_hash: None,
             last_polled_at: None,
             poll_lease_until: None,
+            reattest_lease_owner_hash: None,
+            reattest_lease_until: None,
+            reattest_attempt_count: 0,
+            reattest_cooldown_until: None,
         }
     }
 
@@ -1333,8 +1525,99 @@ mod tests {
             access_token_hash: None,
             last_polled_at: None,
             poll_lease_until: None,
+            reattest_lease_owner_hash: None,
+            reattest_lease_until: None,
+            reattest_attempt_count: 0,
+            reattest_cooldown_until: None,
         };
         let err = row.try_into_transfer().unwrap_err();
         assert!(matches!(err, CctpStoreError::InvalidDirection(_)));
+    }
+
+    #[tokio::test]
+    async fn in_memory_reattest_claim_finalize_success_increments_counters_once() {
+        let store = InMemoryCctpTransferStore::default();
+        let mut t = sample_transfer();
+        t.status = CctpTransferStatus::AttestationFailed;
+        t.message_nonce = Some("nonce-1".into());
+        let id = t.transfer_id;
+        store.insert(&t).await.unwrap();
+
+        let (_, claim) = store
+            .claim_reattest_lease(id, "owner-a", 30, 5)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim, ReattestClaimOutcome::Claimed);
+        let mid = store.get(id).await.unwrap().unwrap();
+        assert_eq!(mid.status, CctpTransferStatus::AttestationFailed);
+        assert_eq!(mid.reattest_lease_owner_hash.as_deref(), Some("owner-a"));
+
+        let updated = store
+            .finalize_reattest_success(id, "owner-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, CctpTransferStatus::AwaitingAttestation);
+        assert_eq!(updated.retry_count, 1);
+        assert_eq!(updated.reattest_attempt_count, 1);
+        assert!(updated.reattest_lease_owner_hash.is_none());
+        assert!(updated.last_provider_code.is_none());
+    }
+
+    #[tokio::test]
+    async fn in_memory_reattest_failure_sets_cooldown_without_retry_count() {
+        let store = InMemoryCctpTransferStore::default();
+        let mut t = sample_transfer();
+        t.status = CctpTransferStatus::AttestationFailed;
+        t.message_nonce = Some("nonce-2".into());
+        let id = t.transfer_id;
+        store.insert(&t).await.unwrap();
+
+        store
+            .claim_reattest_lease(id, "owner-b", 30, 5)
+            .await
+            .unwrap();
+        let failed = store
+            .finalize_reattest_failure(id, "owner-b", "iris_reattest_failed", "provider down", 60)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.status, CctpTransferStatus::AttestationFailed);
+        assert_eq!(failed.retry_count, 0);
+        assert_eq!(failed.reattest_attempt_count, 1);
+        assert_eq!(
+            failed.last_provider_code.as_deref(),
+            Some("iris_reattest_failed")
+        );
+        assert!(failed.reattest_cooldown_until.is_some());
+    }
+
+    #[tokio::test]
+    async fn in_memory_reattest_concurrent_claim_single_owner() {
+        let store = Arc::new(InMemoryCctpTransferStore::default());
+        let mut t = sample_transfer();
+        t.status = CctpTransferStatus::AttestationFailed;
+        t.message_nonce = Some("nonce-3".into());
+        let id = t.transfer_id;
+        store.insert(&t).await.unwrap();
+
+        let s1 = store.clone();
+        let s2 = store.clone();
+        let (r1, r2) = tokio::join!(
+            s1.claim_reattest_lease(id, "owner-1", 30, 5),
+            s2.claim_reattest_lease(id, "owner-2", 30, 5),
+        );
+        let outcomes: Vec<_> = [r1.unwrap().unwrap(), r2.unwrap().unwrap()]
+            .into_iter()
+            .map(|(_, o)| o)
+            .collect();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == ReattestClaimOutcome::Claimed)
+                .count(),
+            1
+        );
     }
 }

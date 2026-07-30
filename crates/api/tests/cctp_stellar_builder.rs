@@ -76,6 +76,10 @@ fn sample_burn_transfer() -> CctpTransfer {
         access_token_hash: None,
         last_polled_at: None,
         poll_lease_until: None,
+        reattest_lease_owner_hash: None,
+        reattest_lease_until: None,
+        reattest_attempt_count: 0,
+        reattest_cooldown_until: None,
     }
 }
 
