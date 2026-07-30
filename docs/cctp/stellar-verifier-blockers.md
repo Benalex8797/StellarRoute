@@ -49,3 +49,11 @@ nonce-used semantics per Circle Stellar reference.
 2. Binding recipient G-address from forwarder hook / event evidence.
 
 Until implemented, destination mint on `evm_to_stellar` cannot complete via service path.
+
+## Runtime vs library readiness
+
+- `ProductionEvmCctpBuilder` / `EvmRpc*Verifier` types are production-capable when
+  `sepolia_rpc_url` is set.
+- `CctpRuntime::production_defaults()` wires **NotReady** placeholders for public HTTP.
+- `CctpRuntime::from_config()` upgrades EVM builders + verifiers only; Stellar + attestation
+  remain NotReady, so `is_public_executable()` stays **false**.

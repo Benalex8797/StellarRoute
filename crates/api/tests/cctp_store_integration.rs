@@ -1,4 +1,4 @@
-//! Postgres integration tests for CCTP store (migrations 0015–0018).
+//! Postgres integration tests for CCTP store (migrations 0015–0019).
 //! Run with isolated local Postgres: `TEST_DATABASE_URL=postgres://... cargo test -p stellarroute-api --test cctp_store_integration -- --ignored`
 
 use chrono::{Duration, Utc};
