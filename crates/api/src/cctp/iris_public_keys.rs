@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::cctp::attestation_crypto::eth_address_from_pubkey_xy;
-use crate::cctp::bounds::MAX_IRIS_JSON_BYTES;
+use crate::cctp::bounds::{MAX_IRIS_JSON_BYTES, MAX_IRIS_PUBLIC_KEYS};
 use crate::cctp::config::{parse_service_url, redact_url, CctpConfig, IRIS_SANDBOX_HOST};
 use crate::metrics;
 
@@ -241,6 +241,9 @@ pub(crate) fn parse_iris_public_keys(
     }
     if out.is_empty() {
         return Err(IrisPublicKeyError::Malformed("no v2 keys".into()));
+    }
+    if out.len() > MAX_IRIS_PUBLIC_KEYS {
+        return Err(IrisPublicKeyError::Malformed("too many keys".into()));
     }
     out.sort();
     out.dedup();

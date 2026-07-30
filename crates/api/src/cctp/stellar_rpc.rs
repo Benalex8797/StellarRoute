@@ -1,5 +1,8 @@
 //! Minimal Soroban JSON-RPC client for read-only contract simulation.
+//!
+//! Redirect policy: no redirects; URL must match configured host exactly.
 
+use reqwest::redirect::Policy;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -7,7 +10,7 @@ use std::time::Duration;
 use stellar_xdr::curr::{ReadXdr, ScVal};
 
 use crate::cctp::builders::stellar::encoder::encode_invoke_at_sequence;
-use crate::cctp::config::CctpConfig;
+use crate::cctp::config::{parse_service_url, CctpConfig};
 use crate::cctp::verifiers::VerifierError;
 
 pub const MAX_JSON_BODY_BYTES: usize = 256 * 1024;
@@ -17,6 +20,7 @@ pub const SIMULATE_SOURCE: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 pub struct StellarRpcClient {
     pub client: Client,
     pub rpc_url: String,
+    pub allowed_host: String,
     pub network_passphrase: String,
 }
 
@@ -25,12 +29,19 @@ impl StellarRpcClient {
         if config.stellar_rpc_url.trim().is_empty() {
             return Err(VerifierError::NotReady);
         }
+        let parsed = parse_service_url(&config.stellar_rpc_url)
+            .map_err(|e| VerifierError::Failed(e.to_string()))?;
+        if !cfg!(test) && parsed.scheme != "https" {
+            return Err(VerifierError::Failed("stellar rpc must be https".into()));
+        }
         Ok(Self {
             client: Client::builder()
+                .redirect(Policy::none())
                 .timeout(Duration::from_secs(15))
                 .build()
                 .map_err(|e| VerifierError::Transient(e.to_string()))?,
             rpc_url: config.stellar_rpc_url.clone(),
+            allowed_host: parsed.host,
             network_passphrase: config.stellar_network_passphrase.clone(),
         })
     }
@@ -39,11 +50,23 @@ impl StellarRpcClient {
         !self.rpc_url.trim().is_empty()
     }
 
+    fn ensure_url(&self, url: &str) -> Result<(), VerifierError> {
+        let parsed = parse_service_url(url).map_err(|_| VerifierError::Failed("rpc url".into()))?;
+        if parsed.host != self.allowed_host {
+            return Err(VerifierError::Failed("rpc host mismatch".into()));
+        }
+        if !cfg!(test) && parsed.scheme != "https" {
+            return Err(VerifierError::Failed("rpc scheme".into()));
+        }
+        Ok(())
+    }
+
     async fn call<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
     ) -> Result<T, VerifierError> {
+        self.ensure_url(&self.rpc_url)?;
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -139,10 +162,31 @@ pub fn scval_to_u32(val: &ScVal) -> Result<u32, VerifierError> {
     }
 }
 
+pub fn scval_to_option_u32(val: &ScVal) -> Result<Option<u32>, VerifierError> {
+    match val {
+        ScVal::U32(v) => Ok(Some(*v)),
+        ScVal::Void => Ok(None),
+        ScVal::I32(v) if *v >= 0 => Ok(Some(*v as u32)),
+        _ => Err(VerifierError::Failed("expected option u32".into())),
+    }
+}
+
 pub fn scval_to_bool(val: &ScVal) -> Result<bool, VerifierError> {
     match val {
         ScVal::Bool(v) => Ok(*v),
         _ => Err(VerifierError::Failed("expected bool".into())),
+    }
+}
+
+pub fn scval_to_bytes20(val: &ScVal) -> Result<[u8; 20], VerifierError> {
+    use stellar_xdr::curr::ScBytes;
+    match val {
+        ScVal::Bytes(ScBytes(bytes)) if bytes.len() == 20 => {
+            let mut out = [0u8; 20];
+            out.copy_from_slice(bytes);
+            Ok(out)
+        }
+        _ => Err(VerifierError::Failed("expected bytes20".into())),
     }
 }
 
@@ -154,4 +198,45 @@ pub fn bytes20_scval(bytes: [u8; 20]) -> stellar_xdr::curr::ScVal {
             .try_into()
             .unwrap_or_else(|_| panic!("bytes20")),
     ))
+}
+
+pub fn u32_scval(value: u32) -> stellar_xdr::curr::ScVal {
+    stellar_xdr::curr::ScVal::U32(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stellar_xdr::curr::WriteXdr;
+
+    #[test]
+    fn decodes_option_u32_some_and_none() {
+        assert_eq!(scval_to_option_u32(&ScVal::U32(7)).unwrap(), Some(7));
+        assert_eq!(scval_to_option_u32(&ScVal::Void).unwrap(), None);
+    }
+
+    #[test]
+    fn decodes_simulated_rpc_envelope_base64() {
+        let val = ScVal::Bool(true);
+        let xdr = val
+            .to_xdr_base64(stellar_xdr::curr::Limits::none())
+            .unwrap();
+        let decoded = ScVal::from_xdr_base64(&xdr, stellar_xdr::curr::Limits::none()).unwrap();
+        assert!(scval_to_bool(&decoded).unwrap());
+    }
+
+    #[test]
+    fn decodes_bytes20_from_scval() {
+        let bytes = [0xAB; 20];
+        let val = bytes20_scval(bytes);
+        assert_eq!(scval_to_bytes20(&val).unwrap(), bytes);
+    }
+
+    #[test]
+    fn rejects_redirecting_client_policy() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
+        let client = StellarRpcClient::new(&cfg).unwrap();
+        assert_eq!(client.allowed_host, "soroban-testnet.stellar.org");
+    }
 }
