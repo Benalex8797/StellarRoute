@@ -1,6 +1,8 @@
 {
-  "timestamp": "2026-07-30T21:05:38Z",
-  "git_head": "1a7a2e4756939cbc3345d044840e7ea3dde07709",
+  "timestamp": "2026-07-30T22:02:05Z",
+  "tested_git_head": "cac865ed5c6a96a98da1540efc8ee7557416ed42",
+  "proof_script_sha256": "5273678cd01f5e02cb79349037ae2aaddd85ff9dadd2b7d1b6a46b5b197987a2",
+  "evidence_scope": "unsigned_testnet_probes_no_chain_writes",
   "public_endpoints": {
     "stellar_rpc_host": "soroban-testnet.stellar.org",
     "sepolia_rpc_host": "sepolia.drpc.org"
@@ -11,17 +13,39 @@
   },
   "readiness": {
     "stellar_to_evm_executable": true,
-    "evm_to_stellar_executable": true
+    "evm_to_stellar_executable": true,
+    "public_get_api_v2_status": 200
+  },
+  "verified_claims": {
+    "stellar_to_evm_prepare_live_simulation": true,
+    "evm_to_stellar_approval_or_burn_construction": true,
+    "evm_rpc_semantic_readiness": true,
+    "mint_not_prepared": true,
+    "signed_corridor_not_claimed": true
   },
   "http": {
-    "quote_status": 200,
-    "prepare_burn_status": 200
+    "stellar_to_evm": {
+      "quote_status": 200,
+      "prepare_burn_status": 200
+    },
+    "evm_to_stellar": {
+      "quote_status": 200,
+      "prepare_burn_status": 200
+    }
   },
-  "transfer_id_redacted": "2f20a8eb…6e5c",
-  "prepare_sanitized": {
+  "transfer_id_redacted": "7db7d0be…50d5",
+  "evm_transfer_id_redacted": "eb49666f…22e1",
+  "stellar_to_evm_prepare_sanitized": {
     "payload_type": "stellar_xdr",
     "network": "stellar_testnet",
-    "expires_at": 1785445833,
+    "expires_at": 1785449220,
+    "payload_hash_present": true
+  },
+  "evm_to_stellar_prepare_sanitized": {
+    "payload_type": "evm_transaction",
+    "chain_id": "eip155:11155111",
+    "contract": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+    "expires_at": 1785449224,
     "payload_hash_present": true
   }
 }
