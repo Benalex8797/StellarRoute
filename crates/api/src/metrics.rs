@@ -666,6 +666,13 @@ lazy_static! {
         &["destination", "outcome"]
     )
     .expect("Can't create CCTP_ATTESTER_SNAPSHOT_REFRESH counter");
+
+    pub static ref CCTP_STELLAR_VERIFIER_READINESS: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_stellar_verifier_readiness_total",
+        "Stellar CCTP verifier bootstrap readiness outcomes",
+        &["component", "outcome"]
+    )
+    .expect("Can't create CCTP_STELLAR_VERIFIER_READINESS counter");
 }
 
 /// Record a swap prepare outcome.
@@ -798,5 +805,11 @@ pub fn record_cctp_iris_keys_refresh(outcome: &str, detail: &str) {
 pub fn record_cctp_attester_snapshot_refresh(destination: &str, outcome: &str) {
     CCTP_ATTESTER_SNAPSHOT_REFRESH
         .with_label_values(&[destination, outcome])
+        .inc();
+}
+
+pub fn record_cctp_stellar_verifier_readiness(component: &str, outcome: &str) {
+    CCTP_STELLAR_VERIFIER_READINESS
+        .with_label_values(&[component, outcome])
         .inc();
 }

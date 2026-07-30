@@ -85,7 +85,8 @@ impl CctpRuntime {
 
     /// Wire production EVM RPC builders/verifiers when configured.
     /// Attestation verifier remains NotReady until `from_config_async` bootstraps trust cache.
-    /// Stellar burn/approval/mint remain NotReady; `is_public_executable` stays false.
+    /// Stellar verifiers wire when Soroban RPC + contracts pass non-mutating probes.
+    /// `is_public_executable` stays false until builders + all verifiers are ready.
     pub fn from_config(config: &CctpConfig) -> Self {
         let mut runtime = Self::production_defaults();
         if !config.sepolia_rpc_url.trim().is_empty() {
@@ -109,9 +110,13 @@ impl CctpRuntime {
     /// Async bootstrap for attestation trust cache and production verifier wiring.
     pub async fn from_config_async(config: &CctpConfig) -> Self {
         let mut runtime = Self::from_config(config);
+        wire_stellar_verifiers(config, &mut runtime).await;
         if let Some(verifier) = try_build_attestation_verifier_async(config).await {
             runtime.attestation_verifier = verifier;
+        } else {
+            crate::metrics::record_cctp_stellar_verifier_readiness("attestation", "not_ready");
         }
+        log_stellar_verifier_readiness(&runtime, config);
         runtime
     }
 
@@ -186,6 +191,81 @@ impl CctpRuntime {
             && self.evm_approval_verifier.is_ready()
             && self.stellar_approval_verifier.is_ready()
             && self.attestation_verifier.is_ready()
+    }
+}
+
+async fn wire_stellar_verifiers(config: &CctpConfig, runtime: &mut CctpRuntime) {
+    if config.stellar_rpc_url.trim().is_empty() {
+        crate::metrics::record_cctp_stellar_verifier_readiness("rpc", "missing");
+        return;
+    }
+    match crate::cctp::stellar_approval_verifier::StellarRpcApprovalVerifier::new(config).await {
+        Ok(v) if v.is_ready() => {
+            runtime.stellar_approval_verifier = Arc::new(v);
+            crate::metrics::record_cctp_stellar_verifier_readiness("approval", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("approval", "probe_failed");
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("approval", "not_ready");
+        }
+    }
+    match crate::cctp::stellar_burn_verifier::StellarRpcBurnVerifier::new(config).await {
+        Ok(v) if v.is_ready() => {
+            runtime.stellar_burn_verifier = Arc::new(v);
+            crate::metrics::record_cctp_stellar_verifier_readiness("burn", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("burn", "probe_failed");
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("burn", "not_ready");
+        }
+    }
+    match crate::cctp::stellar_mint_verifier::StellarRpcMintVerifier::new(config).await {
+        Ok(v) if v.is_ready() => {
+            runtime.stellar_mint_verifier = Arc::new(v);
+            crate::metrics::record_cctp_stellar_verifier_readiness("mint", "ready");
+        }
+        Ok(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("mint", "probe_failed");
+        }
+        Err(_) => {
+            crate::metrics::record_cctp_stellar_verifier_readiness("mint", "not_ready");
+        }
+    }
+}
+
+fn log_stellar_verifier_readiness(runtime: &CctpRuntime, config: &CctpConfig) {
+    use tracing::warn;
+
+    let stellar_ready = runtime.stellar_approval_verifier.is_ready()
+        && runtime.stellar_burn_verifier.is_ready()
+        && runtime.stellar_mint_verifier.is_ready();
+    let attestation_ready = runtime.attestation_verifier.is_ready();
+
+    if !stellar_ready {
+        warn!(
+            corridor = %config.corridor_id(),
+            stellar_approval = runtime.stellar_approval_verifier.is_ready(),
+            stellar_burn = runtime.stellar_burn_verifier.is_ready(),
+            stellar_mint = runtime.stellar_mint_verifier.is_ready(),
+            "CCTP Stellar transaction verifiers not fully ready"
+        );
+    }
+    if !attestation_ready {
+        warn!(
+            corridor = %config.corridor_id(),
+            "CCTP attestation verifier not ready after bootstrap"
+        );
+    }
+    if !runtime.is_public_executable(config) {
+        warn!(
+            corridor = %config.corridor_id(),
+            enabled = config.enabled,
+            "CCTP public execution remains disabled"
+        );
     }
 }
 
