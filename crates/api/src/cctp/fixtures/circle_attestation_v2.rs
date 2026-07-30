@@ -1,6 +1,6 @@
 //! Official Circle CCTP v2 attestation fixtures — copied from pinned stellar-cctp source.
 //!
-//! Source: `circlefin/stellar-cctp` @ master
+//! Source: `circlefin/stellar-cctp` @ `45746f2c8031`
 //! `packages/cctp-roles/src/test_utils/attestable.rs`
 
 /// Attester 1 from stellar-cctp `ATTESTER_ADDRESS_1`.
@@ -15,7 +15,7 @@ pub const ATTESTER_ADDRESS_2: [u8; 20] = [
     0xc8, 0x34, 0xbc, 0xef,
 ];
 
-/// Attester 3 — enabled in tests but not a fixture signer.
+/// Local test-only enabled attester (not from Circle fixtures).
 pub const ATTESTER_ADDRESS_3: [u8; 20] = [
     0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
     0xaa, 0xbb, 0xcc, 0xdd,

@@ -1,8 +1,11 @@
 //! Pure CCTP v2 attestation cryptography — contract-parity with Circle Attestable.
 //!
 //! Pinned sources:
-//! - `circlefin/evm-cctp-contracts` `src/roles/Attestable.sol` @ master
-//! - `circlefin/stellar-cctp` `packages/cctp-roles/src/attestable/storage.rs` @ master
+//! - `circlefin/evm-cctp-contracts` `src/roles/Attestable.sol` @ `a92a2b4e7e6e`
+//! - `circlefin/stellar-cctp` `packages/cctp-roles/src/attestable/storage.rs` @ `45746f2c8031`
+//!
+//! Low-s policy: reject high-s signatures on both EVM and Stellar destination paths
+//! (intersection with Soroban SDK malleability rules).
 
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use tiny_keccak::{Hasher, Keccak};

@@ -4,20 +4,24 @@
 
 - **On-chain destination `MessageTransmitterV2` attester set is authoritative** for `signatureThreshold` and enabled attester membership.
 - **Iris `/v2/publicKeys`** is discovery/cross-check only; never used as threshold authority.
+- **Every on-chain enabled attester must appear in Iris v2 key-derived addresses** before a generation is considered ready (fail closed).
 - **Cryptographic verification** mirrors Circle `Attestable` / Stellar `attestable::storage` rules:
   - digest = `keccak256(raw_message)` (no personal-sign prefix)
   - attestation length = `65 * signatureThreshold`
-  - low-`s` enforced; `v` ∈ {27, 28, 0, 1}
+  - low-`s` enforced on both destination paths (intersection with Soroban SDK rules)
+  - `v` ∈ {27, 28, 0, 1}
   - recovered addresses strictly increasing; all must be enabled on destination
 
 ## Pinned sources
 
 | Component | Source |
 |-----------|--------|
-| EVM rules | `circlefin/evm-cctp-contracts` `src/roles/Attestable.sol` @ master |
-| Stellar rules | `circlefin/stellar-cctp` `packages/cctp-roles/src/attestable/storage.rs` @ master |
-| Test vectors | `stellar-cctp` `packages/cctp-roles/src/test_utils/attestable.rs` @ master |
+| EVM rules | `circlefin/evm-cctp-contracts` `src/roles/Attestable.sol` @ `a92a2b4e7e6e` |
+| Stellar rules | `circlefin/stellar-cctp` `packages/cctp-roles/src/attestable/storage.rs` @ `45746f2c8031` |
+| Test vectors | `stellar-cctp` `packages/cctp-roles/src/test_utils/attestable.rs` @ `45746f2c8031` |
 | Iris API | `GET /v2/publicKeys` (sandbox: `iris-api-sandbox.circle.com`) |
+
+`ATTESTER_ADDRESS_3` in local fixtures is a **test-only** enabled attester, not a Circle fixture signer.
 
 ## Crypto dependencies
 
@@ -28,10 +32,11 @@
 
 | Cache | Default TTL | Max stale | Refresh |
 |-------|-------------|-----------|---------|
-| Iris public keys | 15m | 24h | scheduled + single-flight on unknown signer |
-| Destination attester snapshots (Sepolia + Stellar) | 15m | 24h | atomic swap; fail closed beyond max stale |
+| Attestation trust generation (Iris + Sepolia + Stellar) | 15m | 24h | `ensure_fresh` on verify + background task; single-flight atomic swap |
 
 Env overrides: `CCTP_IRIS_KEYS_TTL_SECS`, `CCTP_IRIS_KEYS_STALE_MAX_SECS`, `CCTP_ATTESTER_SNAPSHOT_TTL_SECS`, `CCTP_ATTESTER_SNAPSHOT_STALE_MAX_SECS`.
+
+Protocol caps: `MAX_IRIS_PUBLIC_KEYS=256`, `MAX_ENABLED_ATTESTERS=256`, `MAX_SIGNATURE_THRESHOLD=64`.
 
 ## Operator alerts
 
@@ -39,8 +44,19 @@ Env overrides: `CCTP_IRIS_KEYS_TTL_SECS`, `CCTP_IRIS_KEYS_STALE_MAX_SECS`, `CCTP
 - `stellarroute_cctp_attester_snapshot_refresh_total{outcome="failure"}`
 - `stellarroute_cctp_attestation_verify_total{reason!="ok"}`
 
+## Bootstrap
+
+- Use `CctpRuntime::from_config_async` during server startup to bootstrap attestation trust.
+- Sync `from_config` wires EVM components only; attestation verifier stays `NotReady` (no `block_on`).
+
 ## Public safety (current phase)
 
 - HTTP handlers remain **503**; capabilities **false**.
 - `CircleAttestationVerifier` may become **ready** when Iris + EVM + Stellar RPC readers bootstrap, but **corridor is not live** until Stellar burn/approval/mint verifiers ship.
 - `is_public_executable()` stays **false** until all runtime components ready.
+
+## Live read-only checks
+
+```bash
+./scripts/cctp-live-attester-read.sh
+```
