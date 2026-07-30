@@ -575,6 +575,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepts_independent_cast_calldata_fixture() {
+        use crate::cctp::fixtures::circle_evm_burn_v2::{
+            FIXTURE_AMOUNT, FIXTURE_BURN_TOKEN, FIXTURE_DEPOSITOR, FIXTURE_DESTINATION_DOMAIN,
+            FIXTURE_MAX_FEE, FIXTURE_MIN_FINALITY, INDEPENDENT_DEPOSIT_FOR_BURN_INPUT,
+        };
+        use alloy_primitives::{Address, Bytes, FixedBytes, B256, U256};
+        use alloy_sol_types::SolEvent;
+        use wiremock::matchers::{body_string_contains, method, path};
+
+        let server = MockServer::start().await;
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.sepolia_rpc_url = server.uri();
+        let verifier = EvmRpcBurnVerifier::with_confirmations(&cfg, 1).unwrap();
+
+        let from: Address = FIXTURE_DEPOSITOR.parse().unwrap();
+        let burn_token: Address = FIXTURE_BURN_TOKEN.parse().unwrap();
+        let mint_recipient =
+            evm_address_to_bytes32("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0").unwrap();
+        let input = INDEPENDENT_DEPOSIT_FOR_BURN_INPUT;
+        let tx_hash = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+
+        let event = DepositForBurn {
+            burnToken: burn_token,
+            amount: U256::from(FIXTURE_AMOUNT),
+            depositor: from,
+            mintRecipient: FixedBytes::from_slice(&mint_recipient),
+            destinationDomain: FIXTURE_DESTINATION_DOMAIN,
+            destinationTokenMessenger: B256::ZERO,
+            destinationCaller: FixedBytes::from_slice(&ANY_DESTINATION_CALLER),
+            maxFee: U256::from(FIXTURE_MAX_FEE),
+            minFinalityThreshold: FIXTURE_MIN_FINALITY,
+            hookData: Bytes::new(),
+        };
+        let log_data = event.encode_log_data();
+        let topics: Vec<String> = log_data
+            .topics()
+            .iter()
+            .map(|t| format!("{:#x}", t))
+            .collect();
+        let log_body = format!("0x{}", hex::encode(log_data.data));
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("eth_getTransactionByHash"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {
+                    "from": FIXTURE_DEPOSITOR,
+                    "to": cfg.contracts.sepolia_token_messenger,
+                    "input": input
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_getTransactionReceipt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {
+                    "status": "0x1",
+                    "blockNumber": "0x10",
+                    "logs": [{
+                        "address": cfg.contracts.sepolia_token_messenger,
+                        "topics": topics,
+                        "data": log_body
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_chainId"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1, "result": "0xaa36a7"
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("eth_blockNumber"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": 1, "result": "0x10"
+            })))
+            .mount(&server)
+            .await;
+
+        let facts = verifier.verify_burn(tx_hash).await.unwrap();
+        assert_eq!(facts.amount_cctp_subunits, FIXTURE_AMOUNT);
+        assert_eq!(facts.destination_domain, FIXTURE_DESTINATION_DOMAIN);
+        let decoded = EvmRpcBurnVerifier::decode_calldata(input).unwrap();
+        assert_eq!(decoded.amount, U256::from(FIXTURE_AMOUNT));
+        assert_eq!(decoded.destination_domain, FIXTURE_DESTINATION_DOMAIN);
+        assert_eq!(decoded.min_finality, FIXTURE_MIN_FINALITY);
+    }
+
+    #[tokio::test]
     async fn insufficient_confirmations_rejected() {
         use wiremock::matchers::{body_string_contains, method, path};
 

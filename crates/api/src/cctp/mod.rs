@@ -12,6 +12,7 @@ pub mod evm_burn_verifier;
 pub mod evm_mint_verifier;
 pub mod evm_rpc;
 pub mod expectations;
+pub mod fixtures;
 pub mod iris;
 pub mod message;
 pub mod readiness;
