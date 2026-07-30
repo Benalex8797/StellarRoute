@@ -184,9 +184,11 @@ cd "$ROOT"
 run_pg_tests() {
   local label="$1"
   echo "=== PG test run: $label ==="
+  export CCTP_IDEMPOTENCY_LEASE_SECS="${CCTP_IDEMPOTENCY_LEASE_SECS:-2}"
   cargo test -p stellarroute-api --test cctp_store_integration -- --ignored --nocapture
   cargo test -p stellarroute-api --test cctp_prepare_lock_pg -- --ignored --nocapture
   cargo test -p stellarroute-api --test cctp_prepare_lock_pg memory_pg_parity_core_semantics -- --nocapture
+  cargo test -p stellarroute-api --test api_v2_cctp_http_pg -- --ignored --test-threads=1 --nocapture
 }
 
 export CARGO_TARGET_DIR
@@ -194,4 +196,4 @@ run_pg_tests "pass-1"
 run_pg_tests "pass-2"
 
 print_pg_meta
-echo "CCTP PG tests passed twice (store + prepare-lock + memory/PG parity)"
+echo "CCTP PG tests passed twice (store + prepare-lock + memory/PG parity + HTTP PG)"

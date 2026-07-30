@@ -91,6 +91,22 @@ PostgreSQL connection strings and pool tuning. Used by the API, indexer, replay 
 
 ---
 
+## Circle CCTP v2 bridge (API)
+
+Default-off public bridge settlement. See [`docs/api/cctp-v2-contract.md`](../api/cctp-v2-contract.md).
+
+| Variable | Type | Default | Required | Service(s) | Description |
+|----------|------|---------|----------|------------|-------------|
+| `CCTP_ENABLED` | boolean | `false` | Optional | API | Master switch; when `false`, all `/api/v2/bridge/cctp/*` handlers return `503 cctp_not_enabled` |
+| `CCTP_ACCESS_TOKEN_HMAC_KEY` | string (hex / base64 / base64url) | — | **Required** when `CCTP_ENABLED=true` | API | HMAC key for deterministic idempotent quote tokens. Minimum **32 decoded bytes**. Generate: `python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"` |
+| `CCTP_ACCESS_TOKEN_HMAC_PREVIOUS_KEYS` | string (comma-separated keys) | — | Optional | API | Up to **2** prior HMAC keys for idempotent replay after rotation (same encodings as primary). See contract doc for drain procedure |
+| `CCTP_IDEMPOTENCY_LEASE_SECS` | integer (seconds) | `30` | Optional | API | Exclusive lease duration for in-flight idempotent quotes (tests often use `2`) |
+| `CCTP_IRIS_BASE_URL` | string (HTTPS URL) | `https://iris-api-sandbox.circle.com` | Optional | API | Circle Iris API base URL (sandbox host enforced on testnet) |
+| `CCTP_SEPOLIA_RPC_URL` | string (URL) | — | Optional | API | Sepolia JSON-RPC for EVM burn/mint builders and verifiers |
+| `CCTP_STELLAR_RPC_URL` | string (URL) | `https://soroban-testnet.stellar.org` | Optional | API | Soroban RPC for Stellar CCTP builders/verifiers |
+
+---
+
 ## Deployment profile & security (M5)
 
 Single switch that flips several hardened defaults on for public deployments. See

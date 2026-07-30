@@ -102,9 +102,68 @@ saga `status` values.
 - [Finality and block confirmations](https://developers.circle.com/cctp/concepts/finality-and-block-confirmations)
 - [Retry failed mint](https://developers.circle.com/cctp/howtos/retry-failed-mint)
 
+## Access tokens and idempotency (HTTP gate)
+
+### `x-cctp-transfer-access`
+
+- Issued once on successful `POST /quote` (`access_token` in response body).
+- Required on `GET /{transfer_id}` and every transfer mutation endpoint.
+- **Persistence:** only `SHA-256` hex hash stored in `cctp_transfers.access_token_hash`.
+- **Uniform 404:** missing transfer, missing header, malformed token, and wrong token all return
+  `404 transfer_not_found` with the same envelope (no distinction that would leak existence).
+
+### `Idempotency-Key` (quote only)
+
+- Optional header, 1–128 UTF-8 characters (trimmed).
+- Same key + byte-identical canonical JSON body → replay original `transfer_id` and access token.
+- Same key + different body → `409` idempotency conflict (no extra transfer / Iris fee call).
+- In-flight quote for another lease owner → `425`; retry with the same key until completed.
+
+### `CCTP_ACCESS_TOKEN_HMAC_KEY`
+
+Required when `CCTP_ENABLED=true`. Decoding (first match wins):
+
+1. Hex (even length)
+2. Base64url (no padding)
+3. Standard base64
+
+Minimum **32 decoded bytes**. Generate without embedding a live value:
+
+```bash
+python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"
+```
+
+### Key rotation (`CCTP_ACCESS_TOKEN_HMAC_PREVIOUS_KEYS`)
+
+Optional comma-separated list (max **2** entries) using the same encodings as the primary key.
+
+- **New quotes** always derive idempotent tokens with the **current** key.
+- **Idempotent replay** tries current then previous keys against the stored hash.
+- Client-held tokens remain valid while their hash matches a row; rotation does not invalidate
+  already-issued ephemeral tokens.
+- If replay cannot be recovered (key rotated without previous ring), API returns
+  `503 cctp_not_enabled` with a message to request a new quote — never a fresh invalid token.
+- Operational procedure: add old key to `CCTP_ACCESS_TOKEN_HMAC_PREVIOUS_KEYS`, deploy, drain
+  idempotency TTL, then remove the old key from the ring.
+
+### Token loss / new quote
+
+Losing the access token cannot be recovered from the API (hash-only storage). Request a new
+non-idempotent quote (omit `Idempotency-Key`) or a new idempotency key. Prior transfers remain
+in the saga store but are unreachable without the original token.
+
+### Quote DB-write smoke
+
+Successful idempotent finalize runs in one transaction: insert `cctp_transfers` row + mark
+`cctp_quote_idempotency.state = completed`. No `response_json`, plaintext token, raw XDR,
+message bytes, or attestation blobs are persisted.
+
 ## Verification
 
 ```bash
 cargo test -p stellarroute-api --test api_v2_cctp_contract
+cargo test -p stellarroute-api --test api_v2_cctp_http
+TEST_DATABASE_URL=postgres://... cargo test -p stellarroute-api --test api_v2_cctp_http_pg -- --ignored
+./scripts/cctp-pg-test.sh
 npm --prefix sdk-js run test -- src/cctp.test.ts
 ```

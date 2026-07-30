@@ -530,3 +530,65 @@ fn cctp_error_codes_present_in_taxonomy_source_of_truth() {
         assert!(!code.as_str().is_empty());
     }
 }
+
+#[tokio::test]
+async fn openapi_cctp_documents_access_and_idempotency_headers() {
+    let router = setup_test_router().await;
+    let (status, body) = get_json(&router, "/api-docs/openapi.json").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let quote = &body["paths"]["/api/v2/bridge/cctp/quote"]["post"];
+    let quote_params = quote["parameters"].as_array().expect("quote parameters");
+    let idem = quote_params
+        .iter()
+        .find(|p| p["name"] == "Idempotency-Key")
+        .expect("Idempotency-Key header on quote");
+    assert_eq!(idem["in"], "header");
+    assert_eq!(idem["required"], false);
+
+    let transfer_paths = [
+        ("/api/v2/bridge/cctp/{transfer_id}", "get"),
+        ("/api/v2/bridge/cctp/{transfer_id}/prepare-burn", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/submit-burn", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/prepare-mint", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/submit-mint", "post"),
+        ("/api/v2/bridge/cctp/{transfer_id}/reattest", "post"),
+    ];
+
+    for (path, method) in transfer_paths {
+        let op = &body["paths"][path][method];
+        let params = op["parameters"].as_array().expect("transfer parameters");
+        let access = params
+            .iter()
+            .find(|p| p["name"] == "x-cctp-transfer-access")
+            .unwrap_or_else(|| panic!("x-cctp-transfer-access on {method} {path}"));
+        assert_eq!(access["in"], "header");
+        assert_eq!(access["required"], true);
+    }
+
+    let quote_resp = quote["responses"]["409"]["description"]
+        .as_str()
+        .unwrap_or("");
+    assert!(quote_resp.contains("Idempotency") || quote_resp.contains("idempotency"));
+    assert!(quote["responses"]["425"].is_object());
+    assert!(quote["responses"]["429"].is_object());
+
+    let schemas = &body["components"]["schemas"];
+    let openapi_blob = serde_json::to_string(&schemas).unwrap();
+    for forbidden in [
+        "access_token_hash",
+        "response_json",
+        "raw_message",
+        "attestation",
+        "xdr_envelope",
+    ] {
+        assert!(
+            !schemas.as_object().unwrap().contains_key(forbidden),
+            "schema must not expose secret field {forbidden}"
+        );
+    }
+    assert!(
+        !openapi_blob.contains("\"access_token\"") || openapi_blob.contains("CctpQuoteResponse"),
+        "only quote response may document access_token wire field"
+    );
+}
