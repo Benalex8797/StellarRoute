@@ -341,3 +341,62 @@ async fn evm_source_chain_mismatch() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn evm_tx_hash_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| {
+        f.tx_hash = "0xdeadbeef".into();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn evm_source_domain_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| f.source_domain = 99).await;
+}
+
+#[tokio::test]
+async fn evm_destination_domain_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| f.destination_domain = 99)
+        .await;
+}
+
+#[tokio::test]
+async fn evm_burn_token_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| {
+        f.burn_token_bytes32[0] ^= 0xff;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn evm_mint_recipient_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| {
+        f.mint_recipient_bytes32[0] ^= 0xff;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn evm_destination_caller_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| {
+        f.destination_caller_bytes32[0] ^= 0xff;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn evm_finality_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| {
+        f.min_finality_threshold = 1000;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn evm_token_messenger_mismatch() {
+    assert_field_mismatch_rejected(CctpDirection::EvmToStellar, |f| {
+        f.token_messenger_bytes32[0] ^= 0xff;
+    })
+    .await;
+}
