@@ -360,6 +360,20 @@ describe('SwapCard network resilience and states', () => {
     });
   });
 
+  it('announces quote refreshes via the polite live region (#673)', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SwapCard />);
+
+    await connectWalletAndWaitForBalance(user);
+
+    const payInput = screen.getByLabelText(/you pay/i);
+    fireEvent.change(payInput, { target: { value: '10' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/quote updated/i)).toBeInTheDocument();
+    });
+  });
+
   it('shows high price impact warning for large amounts', async () => {
     configureQuoteRefresh({ total: '50', priceImpact: '15.0' });
 
