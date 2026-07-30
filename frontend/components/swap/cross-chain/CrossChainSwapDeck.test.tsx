@@ -60,7 +60,7 @@ describe('CrossChainSwapDeck', () => {
     );
   });
 
-  it('blocks uncatalogued Sepolia → Bitcoin with unsupported badge and no CTA', async () => {
+  it('blocks uncatalogued Sepolia to Bitcoin with unsupported badge and no CTA', async () => {
     const user = userEvent.setup();
     renderDeck();
 
@@ -72,25 +72,25 @@ describe('CrossChainSwapDeck', () => {
       /unsupported pair/i
     );
     expect(screen.queryByTestId('cross-chain-review-cta')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cctp-route-rail')).not.toBeInTheDocument();
     expect(screen.queryByText(/99\./)).not.toBeInTheDocument();
   });
 
-  it('renders CCTP preview rail without destination amount', () => {
+  it('renders CCTP preview rail for catalogued cross-chain corridor only', () => {
     renderDeck({
       initialSourceChainId: 'ethereum-sepolia',
       initialDestChainId: 'stellar',
     });
-    expect(screen.getByLabelText('CCTP protocol steps')).toBeInTheDocument();
+    expect(screen.getByTestId('cctp-route-rail')).toBeInTheDocument();
     expect(screen.getAllByText(/preview — not live/i).length).toBeGreaterThan(0);
   });
 
-  it('keeps cross-chain review CTA disabled without handler', () => {
+  it('does not render cross-chain review CTA without backend handler', () => {
     renderDeck({
       initialSourceChainId: 'ethereum-sepolia',
       initialDestChainId: 'stellar',
     });
-    const cta = screen.getByTestId('cross-chain-review-cta');
-    expect(cta).toBeDisabled();
+    expect(screen.queryByTestId('cross-chain-review-cta')).not.toBeInTheDocument();
   });
 
   it('exposes timeline list semantics with aria-current on active step', () => {
@@ -102,7 +102,7 @@ describe('CrossChainSwapDeck', () => {
 });
 
 describe('CrossChainSwapDeck recipient validation', () => {
-  it('blocks review when override address is invalid', async () => {
+  it('shows validation error for invalid recipient override', async () => {
     const user = userEvent.setup();
     renderDeck({
       initialSourceChainId: 'ethereum-sepolia',
@@ -115,6 +115,5 @@ describe('CrossChainSwapDeck recipient validation', () => {
     expect(
       alerts.some((el) => /Stellar account/i.test(el.textContent ?? ''))
     ).toBe(true);
-    expect(screen.getByTestId('cross-chain-review-cta')).toBeDisabled();
   });
 });
