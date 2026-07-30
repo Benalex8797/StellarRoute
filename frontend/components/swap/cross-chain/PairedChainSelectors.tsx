@@ -124,7 +124,7 @@ function ChainSelector({
             <label
               key={id}
               className={cn(
-                'inline-flex min-h-11 cursor-pointer items-center rounded-xl border px-3 py-2 transition-colors',
+                'relative inline-flex min-h-11 min-w-[4.5rem] cursor-pointer items-center rounded-xl border px-3 py-2 transition-colors',
                 'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring',
                 selected
                   ? 'border-primary/50 bg-primary/12 text-foreground'
@@ -137,10 +137,12 @@ function ChainSelector({
                 value={id}
                 checked={selected}
                 onChange={() => onChange(id)}
-                className="sr-only"
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                 data-testid={`chain-option-${role}-${id}`}
               />
-              <span className="text-xs font-semibold">{chain.shortLabel}</span>
+              <span className="relative z-[1] text-xs font-semibold pointer-events-none">
+                {chain.shortLabel}
+              </span>
             </label>
           );
         })}
