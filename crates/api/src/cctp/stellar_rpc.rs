@@ -14,6 +14,8 @@ use crate::cctp::config::{parse_service_url, CctpConfig};
 use crate::cctp::verifiers::VerifierError;
 
 pub const MAX_JSON_BODY_BYTES: usize = 256 * 1024;
+/// Soroban simulate responses can include large XDR payloads; bounded separately from requests.
+pub const MAX_JSON_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const SIMULATE_SOURCE: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 #[derive(Debug, Clone)]
@@ -88,9 +90,7 @@ impl StellarRpcClient {
             .text()
             .await
             .map_err(|e| VerifierError::Transient(e.to_string()))?;
-        if text.len() > MAX_JSON_BODY_BYTES {
-            return Err(VerifierError::Failed("rpc response too large".into()));
-        }
+        check_rpc_response_len(text.len())?;
         #[derive(Deserialize)]
         struct RpcResponse<T> {
             result: Option<T>,
@@ -204,6 +204,13 @@ pub fn u32_scval(value: u32) -> stellar_xdr::curr::ScVal {
     stellar_xdr::curr::ScVal::U32(value)
 }
 
+pub(crate) fn check_rpc_response_len(len: usize) -> Result<(), VerifierError> {
+    if len > MAX_JSON_RESPONSE_BYTES {
+        return Err(VerifierError::Failed("rpc response too large".into()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +245,22 @@ mod tests {
         cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
         let client = StellarRpcClient::new(&cfg).unwrap();
         assert_eq!(client.allowed_host, "soroban-testnet.stellar.org");
+    }
+
+    #[test]
+    fn response_cap_accepts_at_limit() {
+        assert!(check_rpc_response_len(MAX_JSON_RESPONSE_BYTES).is_ok());
+    }
+
+    #[test]
+    fn response_cap_rejects_over_limit() {
+        let err = check_rpc_response_len(MAX_JSON_RESPONSE_BYTES + 1).unwrap_err();
+        assert!(matches!(err, VerifierError::Failed(msg) if msg == "rpc response too large"));
+    }
+
+    #[test]
+    fn request_cap_unchanged_at_256_kib() {
+        assert_eq!(MAX_JSON_BODY_BYTES, 256 * 1024);
+        assert_eq!(MAX_JSON_RESPONSE_BYTES, 1024 * 1024);
     }
 }
