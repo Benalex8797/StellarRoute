@@ -604,6 +604,9 @@ test.describe("Cross-chain deck a11y", () => {
       (window as unknown as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
         swap_ui_v2: true,
       };
+      localStorage.setItem("stellarroute:onboarding:dismissed", "true");
+      localStorage.setItem("stellarroute.onboarding.seen", "true");
+      localStorage.setItem("stellarroute.onboarding.completed", "true");
     });
   });
 
