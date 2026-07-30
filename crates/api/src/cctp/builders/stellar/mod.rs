@@ -82,7 +82,7 @@ impl OfflineStellarXdrEncoder {
             source,
             token,
             "approve",
-            approve_args(spender, amount, expiration_ledger)?,
+            approve_args(source, spender, amount, expiration_ledger)?,
             account_sequence,
         )
     }
@@ -395,6 +395,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
                     &config.contracts.stellar_usdc,
                     "approve",
                     approve_args(
+                        &transfer.sender,
                         &config.contracts.stellar_token_messenger,
                         stellar_amount,
                         approval_exp,
@@ -704,5 +705,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, BuilderError::Validation(_)));
+    }
+
+    #[tokio::test]
+    #[ignore = "live Stellar Testnet RPC; run with --ignored for configured-ready diagnostics"]
+    async fn live_prepare_burn_uses_pinned_burn_fixture_sender() {
+        use crate::cctp::fixtures::stellar_live_xdr::burn_envelope_xdr;
+        use crate::cctp::stellar_tx::parse_invoke_envelope;
+
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.enabled = true;
+        cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
+        cfg.sepolia_rpc_url = std::env::var("CCTP_SEPOLIA_RPC_URL")
+            .unwrap_or_else(|_| "https://sepolia.drpc.org".into());
+
+        let sender = parse_invoke_envelope(&burn_envelope_xdr())
+            .expect("burn fixture")
+            .operation_source;
+        let builder = ProductionStellarCctpBuilder::try_new(&cfg)
+            .await
+            .expect("builder try_new");
+        assert!(builder.is_production_ready(), "builder must be probe-ready");
+
+        let mut transfer = sample_stellar_burn_transfer(None);
+        transfer.sender = sender;
+        transfer.amount = "10.0000000".into();
+        transfer.destination_amount = "10.0000000".into();
+
+        let bundle = builder
+            .prepare_burn(&transfer, &cfg)
+            .await
+            .unwrap_or_else(|e| panic!("live prepare_burn failed: {e:?}"));
+        assert!(
+            bundle.approval_required || matches!(bundle.step, BurnPrepareStep::Burn),
+            "expected approval or burn payload"
+        );
     }
 }

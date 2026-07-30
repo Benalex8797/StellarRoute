@@ -232,10 +232,11 @@ async fn live_allowance_simulation_probe() {
 #[test]
 fn approve_args_include_expiration_ledger() {
     let args = approve_args(
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
         "CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP",
         1,
         42,
     )
     .unwrap();
-    assert_eq!(args.len(), 3);
+    assert_eq!(args.len(), 4);
 }

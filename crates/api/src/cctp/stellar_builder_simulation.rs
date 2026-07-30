@@ -408,12 +408,13 @@ mod tests {
     #[test]
     fn approve_args_include_expiration_ledger() {
         let args = approve_args(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
             "CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP",
             1_000_000,
             9_999,
         )
         .unwrap();
-        assert_eq!(args.len(), 3);
-        assert!(matches!(args[2], stellar_xdr::curr::ScVal::U32(9_999)));
+        assert_eq!(args.len(), 4);
+        assert!(matches!(args[3], stellar_xdr::curr::ScVal::U32(9_999)));
     }
 }

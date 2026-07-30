@@ -55,12 +55,15 @@ fn u32_scval(v: u32) -> ScVal {
     ScVal::U32(v)
 }
 
+/// SEP-41 `approve(from, spender, amount, live_until_ledger)` invoke args.
 pub fn approve_args(
+    owner: &str,
     spender_contract: &str,
     amount: i128,
     expiration_ledger: u32,
 ) -> Result<Vec<ScVal>, BuilderError> {
     Ok(vec![
+        ScVal::Address(account_address(owner)?),
         ScVal::Address(contract_address(spender_contract)?),
         i128_scval(amount),
         u32_scval(expiration_ledger),
@@ -207,14 +210,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn approve_args_three_tuple() {
+    fn approve_args_sep41_tuple() {
         let args = approve_args(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
             "CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP",
             1,
             42,
         )
         .unwrap();
-        assert_eq!(args.len(), 3);
+        assert_eq!(args.len(), 4);
     }
 
     #[test]
@@ -239,7 +243,7 @@ mod tests {
             source,
             "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
             "approve",
-            approve_args(contract, 1_000_000, 9_999).unwrap(),
+            approve_args(source, contract, 1_000_000, 9_999).unwrap(),
             100,
         )
         .unwrap();
