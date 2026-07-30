@@ -58,6 +58,13 @@ fn sample_transfer() -> CctpTransfer {
     }
 }
 
+fn sample_transfer_unique() -> CctpTransfer {
+    let mut t = sample_transfer();
+    t.transfer_id = Uuid::new_v4();
+    t.support_reference_id = format!("sup-db-{}", t.transfer_id);
+    t
+}
+
 #[tokio::test]
 async fn in_memory_approval_and_mint_paths() {
     let store = InMemoryCctpTransferStore::default();
@@ -144,9 +151,11 @@ async fn pg_store_prepare_submit_retry_paths() {
             sqlx::query(stmt).execute(&pool).await.ok();
         }
     }
-    let store = PgCctpTransferStore::new(pool);
-    let t = sample_transfer();
+    let store = PgCctpTransferStore::new(pool.clone());
+    let t = sample_transfer_unique();
     let id = t.transfer_id;
+    let approval_hash = format!("stellar-approve-{id}");
+    let burn_hash = format!("stellar-burn-{id}");
     store.insert(&t).await.unwrap();
     let prepared = store
         .transition(
@@ -158,13 +167,18 @@ async fn pg_store_prepare_submit_retry_paths() {
         .await
         .unwrap();
     let approved = store
-        .record_approval_submission(id, prepared.version, "stellar-approve-hash", Utc::now())
+        .record_approval_submission(id, prepared.version, &approval_hash, Utc::now())
         .await
         .unwrap();
     assert!(approved.source_approval_tx_hash.is_some());
     let burned = store
-        .record_verified_burn(id, approved.version, "stellar-burn-hash")
+        .record_verified_burn(id, approved.version, &burn_hash)
         .await
         .unwrap();
     assert_eq!(burned.status, CctpTransferStatus::AwaitingAttestation);
+    sqlx::query("DELETE FROM cctp_transfers WHERE transfer_id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
 }

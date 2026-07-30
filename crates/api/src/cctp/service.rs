@@ -898,7 +898,8 @@ impl CctpService {
             PrepareAcquireResult::Acquired => {}
             PrepareAcquireResult::Idempotent(active) => {
                 if let Some(payload) = active.prepared_payload {
-                    return deserialize_burn_bundle(&payload).map_err(Self::map_payload_cache_error);
+                    return deserialize_burn_bundle(&payload)
+                        .map_err(Self::map_payload_cache_error);
                 }
             }
             PrepareAcquireResult::ConflictOtherTransfer { .. } => {

@@ -13,6 +13,7 @@ use crate::cctp::stellar_contract_events::{
     MintAndForwardEvent,
 };
 use crate::cctp::stellar_payload::payload_hash_from_envelope_xdr;
+use crate::cctp::stellar_readiness_probes::{probe_stellar_contracts, StellarContractProbeResult};
 use crate::cctp::stellar_rpc::StellarRpcClient;
 use crate::cctp::stellar_tx::{
     ensure_testnet_binding, parse_invoke_envelope, scval_to_bytes, FinalizedTx, TxStatus,
@@ -37,19 +38,22 @@ struct BoundMintEvents {
 }
 
 impl StellarRpcMintVerifier {
+    /// Shared readiness decision for mint verifier construction (test + production).
+    pub fn contract_probe_ready(probe: &StellarContractProbeResult) -> bool {
+        probe.all_ok()
+    }
+
+    pub async fn evaluate_contract_probe(config: &CctpConfig) -> bool {
+        Self::contract_probe_ready(&probe_stellar_contracts(config).await)
+    }
+
     pub async fn new(config: &CctpConfig) -> Result<Self, VerifierError> {
         ensure_testnet_binding(config)?;
         if config.stellar_rpc_url.trim().is_empty() {
             return Err(VerifierError::NotReady);
         }
         let rpc = Arc::new(StellarRpcClient::new(config)?);
-        let probe_ok = if cfg!(test) {
-            rpc.latest_ledger().await.is_ok()
-        } else {
-            crate::cctp::stellar_readiness_probes::probe_stellar_contracts(config)
-                .await
-                .all_ok()
-        };
+        let probe_ok = Self::evaluate_contract_probe(config).await;
         Ok(Self {
             rpc,
             forwarder: config.contracts.stellar_cctp_forwarder.clone(),
@@ -415,6 +419,26 @@ mod tests {
             StellarRpcMintVerifier::new(&cfg).await,
             Err(VerifierError::NotReady)
         ));
+    }
+
+    #[test]
+    fn contract_probe_ready_matches_semantic_flags() {
+        let partial = StellarContractProbeResult {
+            rpc_ok: true,
+            message_transmitter_ok: true,
+            forwarder_ok: false,
+            token_messenger_ok: true,
+            usdc_ok: true,
+        };
+        assert!(!StellarRpcMintVerifier::contract_probe_ready(&partial));
+        let ready = StellarContractProbeResult {
+            rpc_ok: true,
+            message_transmitter_ok: true,
+            forwarder_ok: true,
+            token_messenger_ok: true,
+            usdc_ok: true,
+        };
+        assert!(StellarRpcMintVerifier::contract_probe_ready(&ready));
     }
 
     #[test]
