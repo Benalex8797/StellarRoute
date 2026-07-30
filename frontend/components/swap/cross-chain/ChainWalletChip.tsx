@@ -14,14 +14,34 @@ import { shortenAddress } from '@/lib/cross-chain/format';
 import type { ChainDefinition } from '@/lib/cross-chain/types';
 import { cn } from '@/lib/utils';
 import { Loader2, Plug, Unplug, Wallet } from 'lucide-react';
+import type { CrossChainWalletStoryState } from './crossChainStoryPresentation';
 
 interface ChainWalletChipProps {
   chain: ChainDefinition;
-  storyState?: 'disconnected' | 'connecting' | 'connected' | 'mismatch' | 'unsupported';
+  storyState?: CrossChainWalletStoryState;
   className?: string;
 }
 
 export function ChainWalletChip({
+  chain,
+  storyState,
+  className,
+}: ChainWalletChipProps) {
+  if (chain.chainFamily === 'stellar') {
+    return (
+      <StellarWalletChip className={className} storyState={storyState} />
+    );
+  }
+  return (
+    <ExternalChainWalletChip
+      chain={chain}
+      storyState={storyState}
+      className={className}
+    />
+  );
+}
+
+function ExternalChainWalletChip({
   chain,
   storyState,
   className,
@@ -32,18 +52,12 @@ export function ChainWalletChip({
   });
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  const isStellar = chain.chainFamily === 'stellar';
-  if (isStellar) {
-    return (
-      <StellarWalletChip className={className} storyState={storyState} />
-    );
-  }
-
   const isConnecting = storyState === 'connecting' || live.isLoading;
   const isConnected =
     storyState === 'connected' || (storyState === undefined && live.isConnected);
   const networkMismatch =
-    storyState === 'mismatch' || (storyState === undefined && live.networkMismatch);
+    storyState === 'mismatch' ||
+    (storyState === undefined && live.networkMismatch);
   const unsupported = storyState === 'unsupported';
 
   const statusLabel = unsupported
@@ -156,13 +170,14 @@ function StellarWalletChip({
   storyState,
 }: {
   className?: string;
-  storyState?: ChainWalletChipProps['storyState'];
+  storyState?: CrossChainWalletStoryState;
 }) {
   const wallet = useWallet();
 
   const isConnecting = storyState === 'connecting' || wallet.isLoading;
   const isConnected =
-    storyState === 'connected' || (storyState === undefined && wallet.isConnected);
+    storyState === 'connected' ||
+    (storyState === undefined && wallet.isConnected);
   const networkMismatch =
     storyState === 'mismatch' ||
     (storyState === undefined && wallet.networkMismatch);

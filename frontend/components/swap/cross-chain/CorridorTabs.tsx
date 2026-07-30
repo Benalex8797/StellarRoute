@@ -1,16 +1,18 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import type { CorridorId } from '@/lib/cross-chain/types';
+import type { CorridorId, CorridorSelectionId } from '@/lib/cross-chain/types';
+import { UNMATCHED_CORRIDOR_ID } from '@/lib/cross-chain/corridors';
 import { useCorridorCatalog } from '@/hooks/useCorridorCatalog';
 
 interface CorridorTabsProps {
-  activeId: CorridorId;
+  activeId: CorridorSelectionId;
   onSelect: (id: CorridorId) => void;
 }
 
 export function CorridorTabs({ activeId, onSelect }: CorridorTabsProps) {
   const { corridors } = useCorridorCatalog();
+  const isUnmatched = activeId === UNMATCHED_CORRIDOR_ID;
 
   return (
     <nav aria-label="Cross-chain corridors" className="space-y-2">
@@ -23,7 +25,7 @@ export function CorridorTabs({ activeId, onSelect }: CorridorTabsProps) {
         aria-orientation="horizontal"
       >
         {corridors.map((corridor) => {
-          const selected = corridor.id === activeId;
+          const selected = !isUnmatched && corridor.id === activeId;
           return (
             <button
               key={corridor.id}
@@ -32,7 +34,6 @@ export function CorridorTabs({ activeId, onSelect }: CorridorTabsProps) {
               id={`corridor-tab-${corridor.id}`}
               aria-selected={selected}
               aria-controls={`corridor-panel-${corridor.id}`}
-              disabled={false}
               onClick={() => onSelect(corridor.id)}
               className={cn(
                 'min-h-11 rounded-xl border px-3 py-2 text-left transition-colors',
@@ -52,6 +53,11 @@ export function CorridorTabs({ activeId, onSelect }: CorridorTabsProps) {
           );
         })}
       </div>
+      {isUnmatched && (
+        <p className="text-xs text-muted-foreground" id="corridor-tab-unmatched">
+          Custom chain pair — not in catalog
+        </p>
+      )}
     </nav>
   );
 }

@@ -4,19 +4,18 @@ import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import { NetworkMismatchBanner } from '@/components/shared/NetworkMismatchBanner';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
-import {
-  useCrossChainSwapState,
-  type CrossChainSwapStoryFixture,
-} from '@/hooks/useCrossChainSwapState';
+import { useCrossChainSwapState } from '@/hooks/useCrossChainSwapState';
+import { UNMATCHED_CORRIDOR_ID } from '@/lib/cross-chain/corridors';
 import { corridorStatusCopy } from '@/lib/cross-chain/format';
 import { cn } from '@/lib/utils';
-import { ChainAssetLeg } from './ChainAssetLeg';
 import { CorridorTabs } from './CorridorTabs';
 import { CrossChainExecutionTimeline } from './CrossChainExecutionTimeline';
 import { CrossChainRoutePanel } from './CrossChainRoutePanel';
 import { DestinationAddressField } from './DestinationAddressField';
+import { PairedChainSelectors } from './PairedChainSelectors';
 import { RouteDisclosurePanel } from './RouteDisclosurePanel';
 import { UnsupportedCorridorState } from './UnsupportedCorridorState';
+import type { CrossChainDeckStoryPresentation } from './crossChainStoryPresentation';
 
 const SwapCard = dynamic(
   () => import('@/components/swap/SwapCard').then((m) => m.SwapCard),
@@ -34,28 +33,32 @@ const SwapCard = dynamic(
 );
 
 export interface CrossChainSwapDeckProps {
-  storyFixture?: CrossChainSwapStoryFixture;
+  storyPresentation?: CrossChainDeckStoryPresentation;
 }
 
-function walletStoryForFixture(
-  fixture: CrossChainSwapStoryFixture,
-  leg: 'source' | 'dest'
-): 'disconnected' | 'connecting' | 'connected' | 'mismatch' | 'unsupported' | undefined {
-  if (fixture === 'wallets-partial') {
-    return leg === 'source' ? 'connected' : 'disconnected';
-  }
-  if (fixture === 'network-mismatch') {
-    return 'mismatch';
-  }
-  return undefined;
-}
-
-export function CrossChainSwapDeck({ storyFixture }: CrossChainSwapDeckProps = {}) {
-  const state = useCrossChainSwapState({ storyFixture });
+export function CrossChainSwapDeck({
+  storyPresentation,
+}: CrossChainSwapDeckProps = {}) {
+  const state = useCrossChainSwapState({
+    timelineStepsOverride: storyPresentation?.timelineSteps,
+    initialSourceChainId: storyPresentation?.initialSourceChainId,
+    initialDestChainId: storyPresentation?.initialDestChainId,
+  });
   const { enabled: routesBeta } = useFeatureFlag('routes_beta');
 
-  const sourceWalletStory = walletStoryForFixture(state.fixture, 'source');
-  const destWalletStory = walletStoryForFixture(state.fixture, 'dest');
+  const panelId =
+    state.corridorId === UNMATCHED_CORRIDOR_ID
+      ? 'corridor-panel-unmatched'
+      : `corridor-panel-${state.corridorId}`;
+  const panelLabelId =
+    state.corridorId === UNMATCHED_CORRIDOR_ID
+      ? 'corridor-tab-unmatched'
+      : `corridor-tab-${state.corridorId}`;
+
+  const showCrossChainPreview =
+    !state.isStellarNativeExecutable && !state.isUncatalogued;
+  const showUnsupported =
+    state.isUncatalogued || (!state.executable && !state.isStellarNativeExecutable);
 
   return (
     <div
@@ -73,12 +76,13 @@ export function CrossChainSwapDeck({ storyFixture }: CrossChainSwapDeckProps = {
           <span
             className={cn(
               'rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider',
-              state.executable
+              state.executable && !state.isUncatalogued
                 ? 'border-primary/40 bg-primary/10 text-primary'
                 : 'border-border/50 text-muted-foreground'
             )}
+            data-testid="corridor-status-badge"
           >
-            {corridorStatusCopy(state.executable)}
+            {corridorStatusCopy(state.executable, state.isUncatalogued)}
           </span>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
@@ -89,59 +93,61 @@ export function CrossChainSwapDeck({ storyFixture }: CrossChainSwapDeckProps = {
 
       <CorridorTabs activeId={state.corridorId} onSelect={state.selectCorridor} />
 
+      <PairedChainSelectors
+        sourceChainId={state.sourceChainId}
+        destChainId={state.destChainId}
+        onSourceChange={state.selectSourceChain}
+        onDestChange={state.selectDestChain}
+        sourceWalletState={storyPresentation?.sourceWalletState}
+        destWalletState={storyPresentation?.destWalletState}
+      />
+
       <div
         className="cross-chain-deck-grid gap-5 lg:gap-6"
-        id={`corridor-panel-${state.corridorId}`}
+        id={panelId}
         role="tabpanel"
-        aria-labelledby={`corridor-tab-${state.corridorId}`}
+        aria-labelledby={panelLabelId}
       >
         <div className="space-y-4 min-w-0">
-          {state.isStellarNative ? (
-            <div className="space-y-4" data-testid="stellar-native-delegation">
+          {state.isStellarNativeExecutable ? (
+            <div className="space-y-3" data-testid="stellar-native-delegation">
+              <p className="text-xs text-muted-foreground">
+                Amounts, assets, and quotes are edited in the Stellar swap card
+                below — your single source for live execution.
+              </p>
               <NetworkMismatchBanner />
               <SwapCard showRoutePicker={routesBeta} />
             </div>
           ) : (
             <div className="space-y-4">
-              <ChainAssetLeg
-                role="source"
-                chain={state.sourceChain}
-                chainId={state.sourceChainId}
-                onChainChange={state.selectSourceChain}
-                amount={state.sourceAmount}
-                onAmountChange={state.setSourceAmount}
-                amountDisabled={!state.executable}
-                walletStoryState={sourceWalletStory}
-              />
-              <ChainAssetLeg
-                role="destination"
-                chain={state.destChain}
-                chainId={state.destChainId}
-                onChainChange={state.selectDestChain}
-                amountReadOnly
-                amountDisabled
-                walletStoryState={destWalletStory}
-              />
-              <UnsupportedCorridorState
-                sourceChainId={state.sourceChainId}
-                destChainId={state.destChainId}
-              />
-              <DestinationAddressField
-                chain={state.destChain}
-                enabled={state.useRecipientOverride}
-                onEnabledChange={state.setUseRecipientOverride}
-                value={state.recipientOverride}
-                onChange={state.setRecipientOverride}
-                validation={state.recipientValidation}
-              />
-              <Button
-                type="button"
-                className="w-full min-h-11"
-                disabled={!state.canReview}
-                data-testid="cross-chain-review-cta"
-              >
-                Review cross-chain route
-              </Button>
+              {showUnsupported && (
+                <UnsupportedCorridorState
+                  sourceChainId={state.sourceChainId}
+                  destChainId={state.destChainId}
+                  uncatalogued={state.isUncatalogued}
+                />
+              )}
+              {showCrossChainPreview && (
+                <>
+                  <DestinationAddressField
+                    chain={state.destChain}
+                    enabled={state.useRecipientOverride}
+                    onEnabledChange={state.setUseRecipientOverride}
+                    value={state.recipientOverride}
+                    onChange={state.setRecipientOverride}
+                    validation={state.recipientValidation}
+                  />
+                  <Button
+                    type="button"
+                    className="w-full min-h-11"
+                    disabled
+                    data-testid="cross-chain-review-cta"
+                    title="Cross-chain execution is not available until backend routes exist"
+                  >
+                    Review cross-chain route
+                  </Button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -150,7 +156,7 @@ export function CrossChainSwapDeck({ storyFixture }: CrossChainSwapDeckProps = {
           <CrossChainRoutePanel
             sourceChainId={state.sourceChainId}
             destChainId={state.destChainId}
-            protocol={state.corridor.protocol}
+            protocol={state.corridor?.protocol ?? 'cctp-preview'}
             executable={state.executable}
           />
           <RouteDisclosurePanel />
