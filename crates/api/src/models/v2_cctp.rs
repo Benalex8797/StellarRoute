@@ -388,6 +388,9 @@ pub struct CctpPrepareBurnResponse {
     pub status: CctpTransferStatus,
     pub payload: PreparedWalletPayload,
     pub expires_at: i64,
+    /// When true, wallet must submit approval tx and call record-approval before requesting burn payload.
+    #[serde(default)]
+    pub approval_required: bool,
 }
 
 /// Burn submit accepts only an on-chain tx hash acknowledgement.

@@ -39,6 +39,7 @@ pub struct CctpTransfer {
     pub quote_expires_at: DateTime<Utc>,
     pub status: CctpTransferStatus,
     pub source_tx_hash: Option<String>,
+    pub source_approval_tx_hash: Option<String>,
     pub destination_tx_hash: Option<String>,
     pub iris_message_hash: Option<String>,
     pub message_nonce: Option<String>,
@@ -89,6 +90,14 @@ pub trait CctpTransferStore: Send + Sync {
         patch: TransferPatch,
     ) -> Result<CctpTransfer, CctpStoreError>;
 
+    /// Record on-chain approval tx before burn prepare may return burn payload.
+    async fn record_approval_submission(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError>;
+
     /// Atomically record verified burn: `burn_prepared` → `awaiting_attestation` with `source_tx_hash`.
     async fn record_verified_burn(
         &self,
@@ -125,6 +134,7 @@ pub trait CctpTransferStore: Send + Sync {
 #[derive(Debug, Clone, Default)]
 pub struct TransferPatch {
     pub source_tx_hash: Option<String>,
+    pub source_approval_tx_hash: Option<String>,
     pub destination_tx_hash: Option<String>,
     pub iris_message_hash: Option<String>,
     pub message_nonce: Option<String>,
@@ -241,32 +251,34 @@ impl CctpTransferStore for PgCctpTransferStore {
             UPDATE cctp_transfers SET
                 status = $2,
                 source_tx_hash = COALESCE($3, source_tx_hash),
-                destination_tx_hash = COALESCE($4, destination_tx_hash),
-                iris_message_hash = COALESCE($5, iris_message_hash),
-                message_nonce = COALESCE($6, message_nonce),
-                raw_message = COALESCE($7, raw_message),
-                attestation = COALESCE($8, attestation),
-                runtime_fee_quote = COALESCE($9, runtime_fee_quote),
-                max_fee = COALESCE($10, max_fee),
-                fee_expires_at = COALESCE($11, fee_expires_at),
-                last_provider_error = COALESCE($12, last_provider_error),
-                last_provider_code = COALESCE($13, last_provider_code),
-                mint_payload_hash = COALESCE($14, mint_payload_hash),
-                mint_payload_expires_at = COALESCE($15, mint_payload_expires_at),
-                retry_count = $16,
+                source_approval_tx_hash = COALESCE($4, source_approval_tx_hash),
+                destination_tx_hash = COALESCE($5, destination_tx_hash),
+                iris_message_hash = COALESCE($6, iris_message_hash),
+                message_nonce = COALESCE($7, message_nonce),
+                raw_message = COALESCE($8, raw_message),
+                attestation = COALESCE($9, attestation),
+                runtime_fee_quote = COALESCE($10, runtime_fee_quote),
+                max_fee = COALESCE($11, max_fee),
+                fee_expires_at = COALESCE($12, fee_expires_at),
+                last_provider_error = COALESCE($13, last_provider_error),
+                last_provider_code = COALESCE($14, last_provider_code),
+                mint_payload_hash = COALESCE($15, mint_payload_hash),
+                mint_payload_expires_at = COALESCE($16, mint_payload_expires_at),
+                retry_count = $17,
                 version = version + 1,
                 updated_at = NOW(),
                 terminal_at = CASE
-                    WHEN $17 THEN NOW()
-                    WHEN $18 THEN NULL
+                    WHEN $18 THEN NOW()
+                    WHEN $19 THEN NULL
                     ELSE terminal_at
                 END
-            WHERE transfer_id = $1 AND version = $19
+            WHERE transfer_id = $1 AND version = $20
             "#,
         )
         .bind(transfer_id)
         .bind(status_str(new_status))
         .bind(&patch.source_tx_hash)
+        .bind(&patch.source_approval_tx_hash)
         .bind(&patch.destination_tx_hash)
         .bind(&patch.iris_message_hash)
         .bind(&patch.message_nonce)
@@ -347,6 +359,48 @@ impl CctpTransferStore for PgCctpTransferStore {
 
         tx.commit().await?;
         self.get(transfer_id).await?.ok_or(CctpStoreError::NotFound)
+    }
+
+    async fn record_approval_submission(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        check_str_len("tx_hash", tx_hash, MAX_TX_HASH_LEN)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+
+        let current = self.get(transfer_id).await?;
+        let Some(current) = current else {
+            return Err(CctpStoreError::NotFound);
+        };
+        if current.version != expected_version {
+            return Err(CctpStoreError::VersionConflict);
+        }
+        if current.status != CctpTransferStatus::BurnPrepared {
+            return Err(CctpStoreError::InvalidTransition);
+        }
+
+        let result = sqlx::query(
+            r#"
+            UPDATE cctp_transfers SET
+                source_approval_tx_hash = $2,
+                version = version + 1,
+                updated_at = NOW()
+            WHERE transfer_id = $1 AND version = $3
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(tx_hash)
+        .bind(expected_version)
+        .execute(&self.pool)
+        .await;
+
+        match result {
+            Ok(r) if r.rows_affected() == 0 => Err(CctpStoreError::VersionConflict),
+            Ok(_) => self.get(transfer_id).await?.ok_or(CctpStoreError::NotFound),
+            Err(e) => Err(CctpStoreError::Database(e)),
+        }
     }
 
     async fn record_mint_prepared(
@@ -459,6 +513,9 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
             }
             transfer.source_tx_hash = Some(hash.clone());
         }
+        if let Some(v) = patch.source_approval_tx_hash {
+            transfer.source_approval_tx_hash = Some(v);
+        }
         if let Some(v) = patch.destination_tx_hash {
             transfer.destination_tx_hash = Some(v);
         }
@@ -520,6 +577,31 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
             transfer.mint_payload_hash = None;
             transfer.mint_payload_expires_at = None;
         }
+        Ok(transfer.clone())
+    }
+
+    async fn record_approval_submission(
+        &self,
+        transfer_id: Uuid,
+        expected_version: i32,
+        tx_hash: &str,
+    ) -> Result<CctpTransfer, CctpStoreError> {
+        check_str_len("tx_hash", tx_hash, MAX_TX_HASH_LEN)
+            .map_err(|_| CctpStoreError::PayloadTooLarge)?;
+
+        let mut guard = self.transfers.lock().unwrap();
+        let transfer = guard
+            .get_mut(&transfer_id)
+            .ok_or(CctpStoreError::NotFound)?;
+        if transfer.version != expected_version {
+            return Err(CctpStoreError::VersionConflict);
+        }
+        if transfer.status != CctpTransferStatus::BurnPrepared {
+            return Err(CctpStoreError::InvalidTransition);
+        }
+        transfer.source_approval_tx_hash = Some(tx_hash.to_string());
+        transfer.version += 1;
+        transfer.updated_at = Utc::now();
         Ok(transfer.clone())
     }
 
@@ -636,6 +718,7 @@ struct TransferRow {
     quote_expires_at: DateTime<Utc>,
     status: String,
     source_tx_hash: Option<String>,
+    source_approval_tx_hash: Option<String>,
     destination_tx_hash: Option<String>,
     iris_message_hash: Option<String>,
     message_nonce: Option<String>,
@@ -677,6 +760,7 @@ impl TransferRow {
             quote_expires_at: self.quote_expires_at,
             status: parse_status(&self.status)?,
             source_tx_hash: self.source_tx_hash,
+            source_approval_tx_hash: self.source_approval_tx_hash,
             destination_tx_hash: self.destination_tx_hash,
             iris_message_hash: self.iris_message_hash,
             message_nonce: self.message_nonce,
@@ -809,6 +893,7 @@ mod tests {
             quote_expires_at: now + Duration::minutes(5),
             status: CctpTransferStatus::Created,
             source_tx_hash: None,
+            source_approval_tx_hash: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,
@@ -943,6 +1028,7 @@ mod tests {
             quote_expires_at: Utc::now(),
             status: "created".into(),
             source_tx_hash: None,
+            source_approval_tx_hash: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,

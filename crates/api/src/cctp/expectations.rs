@@ -214,6 +214,7 @@ mod tests {
             quote_expires_at: now + Duration::minutes(5),
             status: CctpTransferStatus::Created,
             source_tx_hash: None,
+            source_approval_tx_hash: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,
