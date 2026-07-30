@@ -73,6 +73,10 @@ dashmap = "5.5"
 prometheus = { version = "0.14", default-features = false }
 lazy_static = "1.4"
 
+# EVM ABI encoding (Circle CCTP v2 calldata)
+alloy-primitives = "0.8"
+alloy-sol-types = "0.8"
+
 # Async utilities
 futures-util = "0.3"
 
