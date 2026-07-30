@@ -13,6 +13,10 @@ import {
 } from './types.js';
 
 const TRANSFER_ID = '550e8400-e29b-41d4-a716-446655440000';
+const VALID_EVM_TX_HASH =
+  '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+const VALID_STELLAR_TX_HASH =
+  '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
 
 const sampleQuoteRequest: CctpQuoteRequest = {
   corridor_id: CCTP_TESTNET_CORRIDOR_ID,
@@ -84,61 +88,7 @@ describe('CCTP SDK contract', () => {
     expect(parsed.message).toBe('disabled');
   });
 
-  it('cctpQuote POSTs to /api/v2/bridge/cctp/quote and surfaces 503', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      envelopeError('cctp_not_enabled', 'not enabled', 503),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
-    await expect(client.cctpQuote(sampleQuoteRequest)).rejects.toSatisfy(
-      (err: unknown) =>
-        isStellarRouteApiError(err) &&
-        err.code === 'cctp_not_enabled' &&
-        err.status === 503,
-    );
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://api.test/api/v2/bridge/cctp/quote');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body as string)).toEqual(sampleQuoteRequest);
-  });
-
-  it('cctpGetTransfer GETs encoded transfer path', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      envelopeError('cctp_not_enabled', 'not enabled', 503),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
-    await expect(client.cctpGetTransfer(TRANSFER_ID)).rejects.toBeInstanceOf(
-      StellarRouteApiError,
-    );
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(
-      `http://api.test/api/v2/bridge/cctp/${TRANSFER_ID}`,
-    );
-    expect(init.method).toBe('GET');
-  });
-
-  it('cctpSubmitBurn serializes tx_hash acknowledgement body', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      envelopeError('cctp_not_enabled', 'not enabled', 503),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
-    await expect(
-      client.cctpSubmitBurn(TRANSFER_ID, { tx_hash: '0xabc' }),
-    ).rejects.toBeInstanceOf(StellarRouteApiError);
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ tx_hash: '0xabc' });
-  });
-
-  it('getApiV2Info unwraps supported_corridors array', async () => {
+  it('getApiV2Info GETs /api/v2 and unwraps supported_corridors', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -161,5 +111,146 @@ describe('CCTP SDK contract', () => {
     const info = await client.getApiV2Info();
     expect(info.bridge_settlement_executable).toBe(false);
     expect(info.supported_corridors).toEqual([]);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://api.test/api/v2');
+    expect(init.method).toBe('GET');
+  });
+
+  it('cctpQuote POSTs quote body and surfaces nested 503 error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeError('cctp_not_enabled', 'not enabled', 503),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    await expect(client.cctpQuote(sampleQuoteRequest)).rejects.toSatisfy(
+      (err: unknown) =>
+        isStellarRouteApiError(err) &&
+        err.code === 'cctp_not_enabled' &&
+        err.status === 503,
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://api.test/api/v2/bridge/cctp/quote');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual(sampleQuoteRequest);
+  });
+
+  it('cctpPrepareBurn POSTs encoded transfer path with empty body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeError('cctp_not_enabled', 'not enabled', 503),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    await expect(client.cctpPrepareBurn(TRANSFER_ID)).rejects.toBeInstanceOf(
+      StellarRouteApiError,
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `http://api.test/api/v2/bridge/cctp/${TRANSFER_ID}/prepare-burn`,
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({});
+  });
+
+  it('cctpGetTransfer GETs encoded transfer path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeError('cctp_not_enabled', 'not enabled', 503),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    await expect(client.cctpGetTransfer(TRANSFER_ID)).rejects.toBeInstanceOf(
+      StellarRouteApiError,
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`http://api.test/api/v2/bridge/cctp/${TRANSFER_ID}`);
+    expect(init.method).toBe('GET');
+  });
+
+  it('cctpPrepareMint POSTs encoded transfer path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeError('cctp_not_enabled', 'not enabled', 503),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    await expect(client.cctpPrepareMint(TRANSFER_ID)).rejects.toBeInstanceOf(
+      StellarRouteApiError,
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `http://api.test/api/v2/bridge/cctp/${TRANSFER_ID}/prepare-mint`,
+    );
+    expect(init.method).toBe('POST');
+  });
+
+  it('cctpSubmitBurn serializes tx_hash acknowledgement body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeError('cctp_not_enabled', 'not enabled', 503),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    await expect(
+      client.cctpSubmitBurn(TRANSFER_ID, { tx_hash: VALID_EVM_TX_HASH }),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        isStellarRouteApiError(err) && err.code === 'cctp_not_enabled',
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `http://api.test/api/v2/bridge/cctp/${TRANSFER_ID}/submit-burn`,
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      tx_hash: VALID_EVM_TX_HASH,
+    });
+  });
+
+  it('cctpSubmitMint serializes tx_hash acknowledgement body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeError('cctp_not_enabled', 'not enabled', 503),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    await expect(
+      client.cctpSubmitMint(TRANSFER_ID, { tx_hash: VALID_STELLAR_TX_HASH }),
+    ).rejects.toBeInstanceOf(StellarRouteApiError);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `http://api.test/api/v2/bridge/cctp/${TRANSFER_ID}/submit-mint`,
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      tx_hash: VALID_STELLAR_TX_HASH,
+    });
+  });
+
+  it('cctpReattest POSTs encoded transfer path with empty body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      envelopeError('cctp_not_enabled', 'not enabled', 503),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new StellarRouteClient({ baseUrl: 'http://api.test', retries: 0 });
+    await expect(client.cctpReattest(TRANSFER_ID)).rejects.toBeInstanceOf(
+      StellarRouteApiError,
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      `http://api.test/api/v2/bridge/cctp/${TRANSFER_ID}/reattest`,
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({});
   });
 });

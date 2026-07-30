@@ -63,9 +63,13 @@ hardcoding the default contract addresses below.
 ### Submit trust boundary
 
 `submit-burn` and `submit-mint` accept **only** an on-chain transaction hash
-acknowledgement. Signed transaction broadcasting is the wallet/provider
-responsibility; the API records the hash for attestation polling and later
-verification.
+acknowledgement (64-hex Stellar hash or `0x` + 64-hex EVM hash). Malformed,
+empty, or unknown-field submit bodies return `validation_error` (HTTP 400).
+Signed transaction broadcasting is the wallet/provider responsibility; the API
+records the hash for attestation polling and later verification.
+
+Malformed `{transfer_id}` path parameters also return `validation_error` before
+any fail-closed `cctp_not_enabled` response.
 
 ### Saga states (`status` field)
 

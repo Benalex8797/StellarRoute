@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use super::v2::ChainAssetV2;
 
@@ -14,6 +15,58 @@ pub const CCTP_PROVIDER_ID: &str = "circle-cctp";
 
 /// Documented testnet corridor id (metadata only; not executable on this branch).
 pub const CCTP_TESTNET_CORRIDOR_ID: &str = "circle-cctp:usdc:stellar-testnet:ethereum-sepolia";
+
+pub const STELLAR_TESTNET_CHAIN_ID: &str = "stellar:testnet";
+pub const SEPOLIA_CHAIN_ID: &str = "eip155:11155111";
+
+pub const STELLAR_TESTNET_USDC_ASSET: &str =
+    "erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+pub const STELLAR_TESTNET_USDC_CANONICAL: &str =
+    "stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+
+pub const SEPOLIA_USDC_ASSET: &str = "erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238";
+pub const SEPOLIA_USDC_CANONICAL: &str =
+    "eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238";
+
+/// Strict chain-scoped asset wire shape for CCTP requests (denies unknown fields).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CctpChainAsset {
+    pub chain_id: String,
+    pub asset: String,
+    pub canonical: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+}
+
+impl CctpChainAsset {
+    pub fn stellar_testnet_usdc() -> Self {
+        Self {
+            chain_id: STELLAR_TESTNET_CHAIN_ID.into(),
+            asset: STELLAR_TESTNET_USDC_ASSET.into(),
+            canonical: STELLAR_TESTNET_USDC_CANONICAL.into(),
+            symbol: Some("USDC".into()),
+        }
+    }
+
+    pub fn sepolia_usdc() -> Self {
+        Self {
+            chain_id: SEPOLIA_CHAIN_ID.into(),
+            asset: SEPOLIA_USDC_ASSET.into(),
+            canonical: SEPOLIA_USDC_CANONICAL.into(),
+            symbol: Some("USDC".into()),
+        }
+    }
+
+    pub fn to_chain_asset_v2(&self) -> ChainAssetV2 {
+        ChainAssetV2 {
+            chain_id: self.chain_id.clone(),
+            asset: self.asset.clone(),
+            canonical: self.canonical.clone(),
+            symbol: self.symbol.clone(),
+        }
+    }
+}
 
 /// Bridge transfer direction for the Stellar <-> EVM corridor.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -58,8 +111,8 @@ pub struct SupportedCorridor {
     pub direction: CctpDirection,
     pub source_chain_id: String,
     pub destination_chain_id: String,
-    pub source_asset: ChainAssetV2,
-    pub destination_asset: ChainAssetV2,
+    pub source_asset: CctpChainAsset,
+    pub destination_asset: CctpChainAsset,
     /// Always false on the contract-freeze branch.
     pub executable: bool,
 }
@@ -75,7 +128,7 @@ pub struct CctpFeeQuote {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_fee: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fee_asset: Option<ChainAssetV2>,
+    pub fee_asset: Option<CctpChainAsset>,
 }
 
 /// Prepared wallet payload union returned by prepare-burn / prepare-mint.
@@ -113,36 +166,14 @@ pub struct CctpQuoteRequest {
     pub direction: CctpDirection,
     pub source_chain_id: String,
     pub destination_chain_id: String,
-    pub source_asset: ChainAssetV2,
-    pub destination_asset: ChainAssetV2,
+    pub source_asset: CctpChainAsset,
+    pub destination_asset: CctpChainAsset,
     /// Decimal string amount (never float).
     pub amount: String,
     pub recipient: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
     pub finality: CctpFinality,
-}
-
-impl CctpQuoteRequest {
-    /// Contract validation shared by handlers and unit tests.
-    pub fn validate(&self) -> Result<(), CctpValidationError> {
-        if self.provider != CCTP_PROVIDER_ID {
-            return Err(CctpValidationError::UnsupportedCorridor);
-        }
-        if self.corridor_id.is_empty() {
-            return Err(CctpValidationError::UnsupportedCorridor);
-        }
-        if self.amount.trim().is_empty() {
-            return Err(CctpValidationError::InvalidAmount);
-        }
-        if self.recipient.trim().is_empty() {
-            return Err(CctpValidationError::InvalidRecipient);
-        }
-        if self.direction == CctpDirection::StellarToEvm && self.finality == CctpFinality::Fast {
-            return Err(CctpValidationError::InvalidFinality);
-        }
-        Ok(())
-    }
 }
 
 /// Validation failures surfaced before fail-closed `cctp_not_enabled`.
@@ -152,6 +183,148 @@ pub enum CctpValidationError {
     InvalidFinality,
     InvalidRecipient,
     InvalidAmount,
+    InvalidSender,
+}
+
+impl CctpQuoteRequest {
+    /// Contract validation shared by handlers and unit tests.
+    pub fn validate(&self) -> Result<(), CctpValidationError> {
+        if self.corridor_id != CCTP_TESTNET_CORRIDOR_ID || self.provider != CCTP_PROVIDER_ID {
+            return Err(CctpValidationError::UnsupportedCorridor);
+        }
+
+        let (
+            expected_source_chain,
+            expected_dest_chain,
+            expected_source_asset,
+            expected_dest_asset,
+        ) = match self.direction {
+            CctpDirection::StellarToEvm => (
+                STELLAR_TESTNET_CHAIN_ID,
+                SEPOLIA_CHAIN_ID,
+                STELLAR_TESTNET_USDC_CANONICAL,
+                SEPOLIA_USDC_CANONICAL,
+            ),
+            CctpDirection::EvmToStellar => (
+                SEPOLIA_CHAIN_ID,
+                STELLAR_TESTNET_CHAIN_ID,
+                SEPOLIA_USDC_CANONICAL,
+                STELLAR_TESTNET_USDC_CANONICAL,
+            ),
+        };
+
+        if self.source_chain_id != expected_source_chain
+            || self.destination_chain_id != expected_dest_chain
+            || !asset_matches_frozen(
+                &self.source_asset,
+                expected_source_chain,
+                expected_source_asset,
+            )
+            || !asset_matches_frozen(
+                &self.destination_asset,
+                expected_dest_chain,
+                expected_dest_asset,
+            )
+        {
+            return Err(CctpValidationError::UnsupportedCorridor);
+        }
+
+        if !is_valid_positive_decimal_amount(&self.amount) {
+            return Err(CctpValidationError::InvalidAmount);
+        }
+
+        match self.direction {
+            CctpDirection::StellarToEvm => {
+                if !is_valid_evm_address(&self.recipient) {
+                    return Err(CctpValidationError::InvalidRecipient);
+                }
+                if let Some(sender) = &self.sender {
+                    if !is_valid_stellar_account(sender) {
+                        return Err(CctpValidationError::InvalidSender);
+                    }
+                }
+                if self.finality == CctpFinality::Fast {
+                    return Err(CctpValidationError::InvalidFinality);
+                }
+            }
+            CctpDirection::EvmToStellar => {
+                if !is_valid_stellar_account(&self.recipient) {
+                    return Err(CctpValidationError::InvalidRecipient);
+                }
+                if let Some(sender) = &self.sender {
+                    if !is_valid_evm_address(sender) {
+                        return Err(CctpValidationError::InvalidSender);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn asset_matches_frozen(asset: &CctpChainAsset, chain_id: &str, canonical: &str) -> bool {
+    asset.chain_id == chain_id && asset.canonical == canonical
+}
+
+/// Positive decimal string: digits with optional single `.` fraction; no sign/exponent/whitespace.
+pub fn is_valid_positive_decimal_amount(amount: &str) -> bool {
+    if amount.is_empty() || amount.contains([' ', '\t', '\n', '\r', '+', '-', 'e', 'E']) {
+        return false;
+    }
+    let mut parts = amount.split('.');
+    let whole = parts.next().unwrap_or("");
+    if whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    if whole.len() > 1 && whole.starts_with('0') {
+        return false;
+    }
+    match parts.next() {
+        None => whole != "0",
+        Some(fraction) => {
+            if parts.next().is_some()
+                || fraction.is_empty()
+                || !fraction.chars().all(|c| c.is_ascii_digit())
+            {
+                return false;
+            }
+            !(whole == "0" && fraction.chars().all(|c| c == '0'))
+        }
+    }
+}
+
+pub fn is_valid_evm_address(address: &str) -> bool {
+    let trimmed = address.trim();
+    if trimmed.len() != 42 || !trimmed.starts_with("0x") {
+        return false;
+    }
+    trimmed[2..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Stellar account recipient (G-address only; muxed M-addresses are not accepted).
+pub fn is_valid_stellar_account(address: &str) -> bool {
+    stellar_strkey::ed25519::PublicKey::from_string(address.trim()).is_ok()
+}
+
+/// Parse a transfer id path parameter (UUID v4 wire form).
+pub fn parse_transfer_id(transfer_id: &str) -> Result<Uuid, String> {
+    Uuid::parse_str(transfer_id).map_err(|_| format!("Invalid transfer ID: {transfer_id}"))
+}
+
+/// Accept Stellar (64-hex) or EVM (`0x` + 64-hex) transaction hash acknowledgement forms.
+pub fn is_valid_tx_hash(tx_hash: &str) -> bool {
+    let trimmed = tx_hash.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// `POST /api/v2/bridge/cctp/quote` success response (not returned until enabled).
@@ -257,30 +430,40 @@ pub struct CctpReattestResponse {
 mod tests {
     use super::*;
 
+    const VALID_EVM: &str = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0";
+    const VALID_STELLAR: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    const VALID_EVM_TX: &str = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+    const VALID_STELLAR_TX: &str =
+        "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+
     fn base_quote(direction: CctpDirection, finality: CctpFinality) -> CctpQuoteRequest {
+        let (source_chain, dest_chain, source_asset, dest_asset, recipient) = match direction {
+            CctpDirection::StellarToEvm => (
+                STELLAR_TESTNET_CHAIN_ID,
+                SEPOLIA_CHAIN_ID,
+                CctpChainAsset::stellar_testnet_usdc(),
+                CctpChainAsset::sepolia_usdc(),
+                VALID_EVM.to_string(),
+            ),
+            CctpDirection::EvmToStellar => (
+                SEPOLIA_CHAIN_ID,
+                STELLAR_TESTNET_CHAIN_ID,
+                CctpChainAsset::sepolia_usdc(),
+                CctpChainAsset::stellar_testnet_usdc(),
+                VALID_STELLAR.to_string(),
+            ),
+        };
+
         CctpQuoteRequest {
             corridor_id: CCTP_TESTNET_CORRIDOR_ID.into(),
             provider: CCTP_PROVIDER_ID.into(),
             direction,
-            source_chain_id: "stellar:testnet".into(),
-            destination_chain_id: "eip155:11155111".into(),
-            source_asset: ChainAssetV2 {
-                chain_id: "stellar:testnet".into(),
-                asset: "erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA".into(),
-                canonical:
-                    "stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
-                        .into(),
-                symbol: Some("USDC".into()),
-            },
-            destination_asset: ChainAssetV2 {
-                chain_id: "eip155:11155111".into(),
-                asset: "erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238".into(),
-                canonical: "eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"
-                    .into(),
-                symbol: Some("USDC".into()),
-            },
+            source_chain_id: source_chain.into(),
+            destination_chain_id: dest_chain.into(),
+            source_asset,
+            destination_asset: dest_asset,
             amount: "10.0".into(),
-            recipient: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+            recipient,
             sender: None,
             finality,
         }
@@ -299,14 +482,120 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_fields_on_quote_request() {
+    fn rejects_unknown_top_level_fields_on_quote_request() {
         let json = r#"{
-            "corridor_id":"x","provider":"circle-cctp","direction":"stellar_to_evm",
+            "corridor_id":"circle-cctp:usdc:stellar-testnet:ethereum-sepolia",
+            "provider":"circle-cctp","direction":"stellar_to_evm",
             "source_chain_id":"stellar:testnet","destination_chain_id":"eip155:11155111",
-            "source_asset":{"chain_id":"stellar:testnet","asset":"erc20:CB","canonical":"stellar:testnet/erc20:CB"},
-            "destination_asset":{"chain_id":"eip155:11155111","asset":"erc20:0x1","canonical":"eip155:11155111/erc20:0x1"},
-            "amount":"1","recipient":"0xabc","finality":"standard","extra":true
+            "source_asset":{"chain_id":"stellar:testnet","asset":"erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA","canonical":"stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"},
+            "destination_asset":{"chain_id":"eip155:11155111","asset":"erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238","canonical":"eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"},
+            "amount":"1","recipient":"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0","finality":"standard","extra":true
         }"#;
         assert!(serde_json::from_str::<CctpQuoteRequest>(json).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_nested_asset_fields() {
+        let json = r#"{
+            "corridor_id":"circle-cctp:usdc:stellar-testnet:ethereum-sepolia",
+            "provider":"circle-cctp","direction":"stellar_to_evm",
+            "source_chain_id":"stellar:testnet","destination_chain_id":"eip155:11155111",
+            "source_asset":{"chain_id":"stellar:testnet","asset":"erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA","canonical":"stellar:testnet/erc20:CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA","extra":1},
+            "destination_asset":{"chain_id":"eip155:11155111","asset":"erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238","canonical":"eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"},
+            "amount":"1","recipient":"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0","finality":"standard"
+        }"#;
+        assert!(serde_json::from_str::<CctpQuoteRequest>(json).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_corridor_id() {
+        let mut req = base_quote(CctpDirection::StellarToEvm, CctpFinality::Standard);
+        req.corridor_id = "other".into();
+        assert_eq!(
+            req.validate(),
+            Err(CctpValidationError::UnsupportedCorridor)
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_provider() {
+        let mut req = base_quote(CctpDirection::StellarToEvm, CctpFinality::Standard);
+        req.provider = "other".into();
+        assert_eq!(
+            req.validate(),
+            Err(CctpValidationError::UnsupportedCorridor)
+        );
+    }
+
+    #[test]
+    fn rejects_mismatched_direction_and_chains() {
+        let mut req = base_quote(CctpDirection::StellarToEvm, CctpFinality::Standard);
+        req.source_chain_id = SEPOLIA_CHAIN_ID.into();
+        assert_eq!(
+            req.validate(),
+            Err(CctpValidationError::UnsupportedCorridor)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_amounts() {
+        for amount in ["", " ", "0", "0.0", "-1", "1e3", "1.2.3", "00.5", "1."] {
+            assert!(
+                !is_valid_positive_decimal_amount(amount),
+                "expected invalid: {amount}"
+            );
+        }
+        assert!(is_valid_positive_decimal_amount("100.000000"));
+        assert!(is_valid_positive_decimal_amount("0.5"));
+    }
+
+    #[test]
+    fn rejects_invalid_recipient_per_direction() {
+        let mut to_evm = base_quote(CctpDirection::StellarToEvm, CctpFinality::Standard);
+        to_evm.recipient = VALID_STELLAR.into();
+        assert_eq!(
+            to_evm.validate(),
+            Err(CctpValidationError::InvalidRecipient)
+        );
+
+        let mut to_stellar = base_quote(CctpDirection::EvmToStellar, CctpFinality::Standard);
+        to_stellar.recipient = VALID_EVM.into();
+        assert_eq!(
+            to_stellar.validate(),
+            Err(CctpValidationError::InvalidRecipient)
+        );
+    }
+
+    #[test]
+    fn validates_optional_sender_per_direction() {
+        let mut to_evm = base_quote(CctpDirection::StellarToEvm, CctpFinality::Standard);
+        to_evm.sender = Some(VALID_EVM.into());
+        assert_eq!(to_evm.validate(), Err(CctpValidationError::InvalidSender));
+        to_evm.sender = Some(VALID_STELLAR.into());
+        assert!(to_evm.validate().is_ok());
+
+        let mut to_stellar = base_quote(CctpDirection::EvmToStellar, CctpFinality::Standard);
+        to_stellar.sender = Some(VALID_STELLAR.into());
+        assert_eq!(
+            to_stellar.validate(),
+            Err(CctpValidationError::InvalidSender)
+        );
+        to_stellar.sender = Some(VALID_EVM.into());
+        assert!(to_stellar.validate().is_ok());
+    }
+
+    #[test]
+    fn tx_hash_validation_accepts_stellar_and_evm_forms() {
+        assert!(is_valid_tx_hash(VALID_EVM_TX));
+        assert!(is_valid_tx_hash(VALID_STELLAR_TX));
+        assert!(!is_valid_tx_hash(""));
+        assert!(!is_valid_tx_hash("0xabc"));
+        assert!(!is_valid_tx_hash("not-a-hash"));
+    }
+
+    #[test]
+    fn parse_transfer_id_requires_uuid() {
+        assert!(parse_transfer_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(parse_transfer_id("not-a-uuid").is_err());
     }
 }

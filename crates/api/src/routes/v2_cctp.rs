@@ -12,7 +12,10 @@ use std::sync::Arc;
 use crate::error::{ApiError, Result};
 use crate::middleware::RequestId;
 use crate::models::v2_cctp::{
-    CctpQuoteRequest, CctpSubmitBurnRequest, CctpSubmitMintRequest, CctpValidationError,
+    is_valid_tx_hash, parse_transfer_id, CctpPrepareBurnResponse, CctpPrepareMintResponse,
+    CctpQuoteRequest, CctpQuoteResponse, CctpReattestResponse, CctpSubmitBurnRequest,
+    CctpSubmitBurnResponse, CctpSubmitMintRequest, CctpSubmitMintResponse,
+    CctpTransferStatusResponse, CctpValidationError,
 };
 use crate::models::ApiResponse;
 use crate::state::AppState;
@@ -23,8 +26,27 @@ fn map_validation(err: CctpValidationError) -> ApiError {
         CctpValidationError::InvalidFinality => ApiError::InvalidFinality,
         CctpValidationError::InvalidRecipient => ApiError::InvalidRecipient,
         CctpValidationError::InvalidAmount => {
-            ApiError::InvalidAmount("amount must be a non-empty decimal string".to_string())
+            ApiError::InvalidAmount("amount must be a positive decimal string".to_string())
         }
+        CctpValidationError::InvalidSender => {
+            ApiError::Validation("sender must be a valid address for the source chain".to_string())
+        }
+    }
+}
+
+fn parse_transfer_id_param(transfer_id: &str) -> Result<()> {
+    parse_transfer_id(transfer_id)
+        .map(|_| ())
+        .map_err(|msg| ApiError::Validation(msg))
+}
+
+fn validate_submit_tx_hash(tx_hash: &str) -> Result<()> {
+    if is_valid_tx_hash(tx_hash) {
+        Ok(())
+    } else {
+        Err(ApiError::Validation(
+            "tx_hash must be a 64-hex Stellar hash or 0x-prefixed 32-byte EVM hash".to_string(),
+        ))
     }
 }
 
@@ -41,7 +63,7 @@ fn cctp_not_enabled() -> ApiError {
     tag = "cctp",
     request_body = CctpQuoteRequest,
     responses(
-        (status = 200, description = "CCTP fee quote (disabled until backend is enabled)", body = crate::models::v2_cctp::CctpQuoteResponse),
+        (status = 200, description = "CCTP fee quote (disabled until backend is enabled)", body = CctpQuoteResponse),
         (status = 400, description = "Invalid request (e.g. stellar source with fast finality)"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
@@ -50,7 +72,7 @@ pub async fn cctp_quote(
     _state: State<Arc<AppState>>,
     request_id: RequestId,
     Json(body): Json<CctpQuoteRequest>,
-) -> Result<Json<ApiResponse<()>>> {
+) -> Result<Json<ApiResponse<CctpQuoteResponse>>> {
     body.validate().map_err(map_validation)?;
     let _ = request_id;
     Err(cctp_not_enabled())
@@ -63,7 +85,8 @@ pub async fn cctp_quote(
     tag = "cctp",
     params(("transfer_id" = String, Path, description = "Transfer UUID")),
     responses(
-        (status = 200, description = "Prepared burn wallet payload", body = crate::models::v2_cctp::CctpPrepareBurnResponse),
+        (status = 200, description = "Prepared burn wallet payload", body = CctpPrepareBurnResponse),
+        (status = 400, description = "Invalid transfer ID"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -71,8 +94,9 @@ pub async fn cctp_prepare_burn(
     _state: State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
-) -> Result<Json<ApiResponse<()>>> {
-    let _ = (transfer_id, request_id);
+) -> Result<Json<ApiResponse<CctpPrepareBurnResponse>>> {
+    parse_transfer_id_param(&transfer_id)?;
+    let _ = request_id;
     Err(cctp_not_enabled())
 }
 
@@ -84,7 +108,8 @@ pub async fn cctp_prepare_burn(
     params(("transfer_id" = String, Path, description = "Transfer UUID")),
     request_body = CctpSubmitBurnRequest,
     responses(
-        (status = 200, description = "Burn tx hash recorded", body = crate::models::v2_cctp::CctpSubmitBurnResponse),
+        (status = 200, description = "Burn tx hash recorded", body = CctpSubmitBurnResponse),
+        (status = 400, description = "Invalid transfer ID or tx_hash"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -93,13 +118,10 @@ pub async fn cctp_submit_burn(
     Path(transfer_id): Path<String>,
     request_id: RequestId,
     Json(body): Json<CctpSubmitBurnRequest>,
-) -> Result<Json<ApiResponse<()>>> {
-    if body.tx_hash.trim().is_empty() {
-        return Err(ApiError::Validation(
-            "tx_hash is required for burn acknowledgement".to_string(),
-        ));
-    }
-    let _ = (transfer_id, request_id);
+) -> Result<Json<ApiResponse<CctpSubmitBurnResponse>>> {
+    parse_transfer_id_param(&transfer_id)?;
+    validate_submit_tx_hash(&body.tx_hash)?;
+    let _ = request_id;
     Err(cctp_not_enabled())
 }
 
@@ -110,7 +132,8 @@ pub async fn cctp_submit_burn(
     tag = "cctp",
     params(("transfer_id" = String, Path, description = "Transfer UUID")),
     responses(
-        (status = 200, description = "Transfer saga status", body = crate::models::v2_cctp::CctpTransferStatusResponse),
+        (status = 200, description = "Transfer saga status", body = CctpTransferStatusResponse),
+        (status = 400, description = "Invalid transfer ID"),
         (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
@@ -119,8 +142,9 @@ pub async fn cctp_get_transfer(
     _state: State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
-) -> Result<Json<ApiResponse<()>>> {
-    let _ = (transfer_id, request_id);
+) -> Result<Json<ApiResponse<CctpTransferStatusResponse>>> {
+    parse_transfer_id_param(&transfer_id)?;
+    let _ = request_id;
     Err(cctp_not_enabled())
 }
 
@@ -131,7 +155,8 @@ pub async fn cctp_get_transfer(
     tag = "cctp",
     params(("transfer_id" = String, Path, description = "Transfer UUID")),
     responses(
-        (status = 200, description = "Prepared mint wallet payload", body = crate::models::v2_cctp::CctpPrepareMintResponse),
+        (status = 200, description = "Prepared mint wallet payload", body = CctpPrepareMintResponse),
+        (status = 400, description = "Invalid transfer ID"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -139,8 +164,9 @@ pub async fn cctp_prepare_mint(
     _state: State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
-) -> Result<Json<ApiResponse<()>>> {
-    let _ = (transfer_id, request_id);
+) -> Result<Json<ApiResponse<CctpPrepareMintResponse>>> {
+    parse_transfer_id_param(&transfer_id)?;
+    let _ = request_id;
     Err(cctp_not_enabled())
 }
 
@@ -152,7 +178,8 @@ pub async fn cctp_prepare_mint(
     params(("transfer_id" = String, Path, description = "Transfer UUID")),
     request_body = CctpSubmitMintRequest,
     responses(
-        (status = 200, description = "Mint tx hash recorded", body = crate::models::v2_cctp::CctpSubmitMintResponse),
+        (status = 200, description = "Mint tx hash recorded", body = CctpSubmitMintResponse),
+        (status = 400, description = "Invalid transfer ID or tx_hash"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -161,13 +188,10 @@ pub async fn cctp_submit_mint(
     Path(transfer_id): Path<String>,
     request_id: RequestId,
     Json(body): Json<CctpSubmitMintRequest>,
-) -> Result<Json<ApiResponse<()>>> {
-    if body.tx_hash.trim().is_empty() {
-        return Err(ApiError::Validation(
-            "tx_hash is required for mint acknowledgement".to_string(),
-        ));
-    }
-    let _ = (transfer_id, request_id);
+) -> Result<Json<ApiResponse<CctpSubmitMintResponse>>> {
+    parse_transfer_id_param(&transfer_id)?;
+    validate_submit_tx_hash(&body.tx_hash)?;
+    let _ = request_id;
     Err(cctp_not_enabled())
 }
 
@@ -178,7 +202,8 @@ pub async fn cctp_submit_mint(
     tag = "cctp",
     params(("transfer_id" = String, Path, description = "Transfer UUID")),
     responses(
-        (status = 200, description = "Attestation re-poll requested", body = crate::models::v2_cctp::CctpReattestResponse),
+        (status = 200, description = "Attestation re-poll requested", body = CctpReattestResponse),
+        (status = 400, description = "Invalid transfer ID"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
@@ -186,7 +211,8 @@ pub async fn cctp_reattest(
     _state: State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
-) -> Result<Json<ApiResponse<()>>> {
-    let _ = (transfer_id, request_id);
+) -> Result<Json<ApiResponse<CctpReattestResponse>>> {
+    parse_transfer_id_param(&transfer_id)?;
+    let _ = request_id;
     Err(cctp_not_enabled())
 }

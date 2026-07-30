@@ -40,6 +40,12 @@ async fn api_v2_info_exposes_non_executable_bridge_flag() {
     assert_eq!(json["data"]["version"], 2);
     assert_eq!(json["data"]["bridge_settlement_executable"], false);
     assert_eq!(json["data"]["bridge_venues_metadata_only"], true);
+    assert_eq!(
+        json["data"]["supported_corridors"]
+            .as_array()
+            .map(|a| a.len()),
+        Some(0)
+    );
 }
 
 #[tokio::test]

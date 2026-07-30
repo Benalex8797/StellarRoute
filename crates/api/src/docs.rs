@@ -97,6 +97,7 @@ use crate::models::{
         crate::models::v2::ChainAssetV2,
         crate::models::v2::CanonicalizeAssetRequest,
         crate::models::v2::CanonicalizeAssetResponse,
+        crate::models::v2_cctp::CctpChainAsset,
         crate::models::v2_cctp::SupportedCorridor,
         crate::models::v2_cctp::CctpDirection,
         crate::models::v2_cctp::CctpFinality,
