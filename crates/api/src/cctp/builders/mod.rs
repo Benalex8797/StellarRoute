@@ -4,6 +4,7 @@ pub mod evm;
 pub mod stellar;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::cctp::config::CctpConfig;
@@ -29,13 +30,14 @@ pub enum BuilderError {
 }
 
 /// Ordered burn prepare step — approval and burn are never co-returned with duplicate sequences.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BurnPrepareStep {
     Approval,
     Burn,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedBurnBundle {
     pub step: BurnPrepareStep,
     /// True when `step == Approval` and wallet must submit approval before requesting burn payload.
@@ -49,7 +51,7 @@ pub struct PreparedBurnBundle {
     pub approval_expiration_ledger: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedMintBundle {
     pub primary: PreparedWalletPayload,
     pub expires_at: i64,

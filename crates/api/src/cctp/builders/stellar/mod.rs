@@ -151,12 +151,8 @@ impl ProductionStellarCctpBuilder {
         let rpc = Arc::new(
             StellarRpcClient::new(config).map_err(|e| BuilderError::Validation(e.to_string()))?,
         );
-        let probe = if cfg!(test) {
-            rpc.latest_ledger().await.is_ok()
-        } else {
-            probe_stellar_contracts(config).await.all_ok()
-                && probe_strict_simulation_assembly(&rpc, config).await
-        };
+        let probe = probe_stellar_contracts(config).await.all_ok()
+            && probe_strict_simulation_assembly(&rpc, config).await;
         let allowance: Arc<dyn StellarAllowanceChecker> =
             match StellarRpcAllowanceChecker::new(config).await {
                 Ok(c) if c.is_ready() => Arc::new(c),

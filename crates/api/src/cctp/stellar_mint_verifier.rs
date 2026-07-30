@@ -260,6 +260,7 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
         attestation: &[u8],
         nonce: &str,
         expected_payload_hash: &str,
+        expected_mint_submitter: Option<&str>,
     ) -> Result<VerifiedMintFacts, VerifierError> {
         if !self.is_ready() {
             return Err(VerifierError::NotReady);
@@ -284,6 +285,11 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
         }
 
         let invoke = parse_invoke_envelope(&tx.envelope_xdr)?;
+        if let Some(expected) = expected_mint_submitter {
+            if invoke.operation_source != expected {
+                return Err(VerifierError::Failed("mint submitter mismatch".into()));
+            }
+        }
         if invoke.contract_strkey != self.forwarder {
             return Err(VerifierError::Failed("wrong contract".into()));
         }
@@ -360,7 +366,8 @@ mod tests {
     use crate::cctp::config::CctpConfig;
     use crate::cctp::encoding::stellar_contract_to_bytes32;
     use crate::cctp::fixtures::stellar_live_xdr::{
-        mint_contract_events_xdr, mint_envelope_xdr, MINT_LEDGER, MINT_LOCAL_AMOUNT, MINT_TX_HASH,
+        mint_contract_events_xdr, mint_envelope_xdr, mint_fixture_json, MINT_LEDGER,
+        MINT_LOCAL_AMOUNT, MINT_TX_HASH,
     };
     use crate::cctp::stellar_contract_events::{collect_contract_events, contract_hash};
 
@@ -632,6 +639,41 @@ mod tests {
                 &events,
             ),
             Err(VerifierError::Failed(ref m)) if m.contains("recipient")
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_mint_submission_rejects_wrong_submitter() {
+        use crate::cctp::fixtures::stellar_live_xdr::{mint_envelope_xdr, MINT_TX_HASH};
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.stellar_rpc_url = server.uri();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(mint_fixture_json()))
+            .mount(&server)
+            .await;
+
+        let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
+        let invoke = parse_invoke_envelope(&mint_envelope_xdr()).unwrap();
+        let message = scval_to_bytes(&invoke.args[0]).unwrap();
+        let attestation = scval_to_bytes(&invoke.args[1]).unwrap();
+        let err = verifier
+            .verify_mint_submission(
+                MINT_TX_HASH,
+                &message,
+                &attestation,
+                "0x00",
+                "deadbeef",
+                Some("GWRONGSUBMITTERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            VerifierError::Failed(ref m) if m.contains("submitter")
         ));
     }
 

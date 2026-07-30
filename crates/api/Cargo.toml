@@ -18,6 +18,10 @@ path = "src/bin/replay_cli.rs"
 name = "m2-readiness"
 path = "src/bin/m2_readiness.rs"
 
+[[bin]]
+name = "cctp-live-readiness-probe"
+path = "src/bin/cctp-live-readiness-probe.rs"
+
 [dependencies]
 # Workspace dependencies
 tokio.workspace = true

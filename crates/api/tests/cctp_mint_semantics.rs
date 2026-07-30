@@ -381,6 +381,7 @@ async fn poll_mint_pending_then_completes() {
             _: &[u8],
             _: &str,
             _: &str,
+            _: Option<&str>,
         ) -> Result<VerifiedMintFacts, VerifierError> {
             Err(VerifierError::NotReady)
         }

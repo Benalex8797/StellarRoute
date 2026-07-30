@@ -71,3 +71,10 @@ pub fn burn_envelope_sha256() -> String {
 pub fn mint_envelope_sha256() -> String {
     hex::encode(Sha256::digest(mint_envelope_xdr().as_bytes()))
 }
+
+/// Fee-payer / operation source G from pinned live mint fixture (exists on Testnet).
+pub fn mint_operation_source() -> String {
+    crate::cctp::stellar_tx::parse_invoke_envelope(&mint_envelope_xdr())
+        .expect("mint invoke")
+        .operation_source
+}

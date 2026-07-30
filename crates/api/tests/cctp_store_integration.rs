@@ -133,6 +133,8 @@ async fn pg_store_prepare_submit_retry_paths() {
         include_str!("../migrations/0017_cctp_mint_metadata.sql"),
         include_str!("../migrations/0018_cctp_approval_tx_hash.sql"),
         include_str!("../migrations/0019_cctp_approval_verified_at.sql"),
+        include_str!("../migrations/20260730_cctp_review_fixes.sql"),
+        include_str!("../migrations/20260731_cctp_prepare_lock_hardening.sql"),
     ] {
         for stmt in migration
             .split(';')

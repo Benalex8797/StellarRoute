@@ -20,6 +20,11 @@ use crate::cctp::iris::{IrisClient, IrisMessage, IrisMessageStatus, IrisPollOutc
 use crate::cctp::message::{decode_hex_message, validate_message_for_corridor};
 use crate::cctp::prepare_lock::{
     CctpActivePrepare, CctpPrepareKind, CctpPrepareLockError, CctpPrepareLockStore,
+    PrepareAcquireResult,
+};
+use crate::cctp::prepare_payload_cache::{
+    deserialize_burn_bundle, deserialize_mint_bundle, serialize_burn_bundle, serialize_mint_bundle,
+    PreparePayloadCacheError,
 };
 use crate::cctp::readiness::CctpRuntime;
 use crate::cctp::stellar_payload::payload_hash_from_envelope_xdr;
@@ -164,6 +169,122 @@ impl CctpService {
             }
         }
         Ok(())
+    }
+
+    async fn release_transfer_prepare_locks(&self, transfer: &CctpTransfer) {
+        if !transfer.sender.is_empty() {
+            let _ = self
+                .prepare_lock
+                .release(&transfer.sender, transfer.transfer_id)
+                .await;
+        }
+        if let Some(submitter) = &transfer.mint_submitter {
+            let _ = self
+                .prepare_lock
+                .release(submitter, transfer.transfer_id)
+                .await;
+        }
+    }
+
+    fn map_prepare_lock_error(err: CctpPrepareLockError) -> CctpServiceError {
+        match err {
+            CctpPrepareLockError::PayloadHashMismatch
+            | CctpPrepareLockError::ActivePrepareExists => CctpServiceError::ActivePrepareExists,
+            CctpPrepareLockError::PayloadTooLarge => {
+                CctpServiceError::Store(CctpStoreError::PayloadTooLarge)
+            }
+            CctpPrepareLockError::Database(msg) => {
+                CctpServiceError::Store(CctpStoreError::Database(sqlx::Error::Protocol(msg)))
+            }
+        }
+    }
+
+    fn map_payload_cache_error(err: PreparePayloadCacheError) -> CctpServiceError {
+        match err {
+            PreparePayloadCacheError::TooLarge => {
+                CctpServiceError::Store(CctpStoreError::PayloadTooLarge)
+            }
+            PreparePayloadCacheError::Serialization(msg) => CctpServiceError::Verifier(
+                VerifierError::Failed(format!("prepare payload cache: {msg}")),
+            ),
+        }
+    }
+
+    async fn try_acquire_prepare_lock(
+        &self,
+        reservation: CctpActivePrepare,
+    ) -> Result<PrepareAcquireResult, CctpServiceError> {
+        self.prepare_lock
+            .try_acquire(&reservation)
+            .await
+            .map_err(Self::map_prepare_lock_error)
+    }
+
+    async fn active_burn_bundle_for_transfer(
+        &self,
+        transfer_id: Uuid,
+        source: &str,
+    ) -> Result<Option<PreparedBurnBundle>, CctpServiceError> {
+        let active = self
+            .prepare_lock
+            .get_for_transfer(transfer_id)
+            .await
+            .map_err(Self::map_prepare_lock_error)?;
+        let Some(active) = active else {
+            return Ok(None);
+        };
+        if active.source_account != source || active.expires_at <= Utc::now() {
+            return Ok(None);
+        }
+        let Some(payload) = active.prepared_payload else {
+            return Ok(None);
+        };
+        Ok(Some(
+            deserialize_burn_bundle(&payload).map_err(Self::map_payload_cache_error)?,
+        ))
+    }
+
+    async fn active_mint_bundle_for_transfer(
+        &self,
+        transfer_id: Uuid,
+        submitter: &str,
+    ) -> Result<Option<PreparedMintBundle>, CctpServiceError> {
+        let active = self
+            .prepare_lock
+            .get_for_transfer(transfer_id)
+            .await
+            .map_err(Self::map_prepare_lock_error)?;
+        let Some(active) = active else {
+            return Ok(None);
+        };
+        if active.source_account != submitter || active.expires_at <= Utc::now() {
+            return Ok(None);
+        }
+        let Some(payload) = active.prepared_payload else {
+            return Ok(None);
+        };
+        Ok(Some(
+            deserialize_mint_bundle(&payload).map_err(Self::map_payload_cache_error)?,
+        ))
+    }
+
+    fn burn_reservation(
+        source: &str,
+        transfer_id: Uuid,
+        kind: CctpPrepareKind,
+        payload_hash: String,
+        prepared_payload: String,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> CctpActivePrepare {
+        CctpActivePrepare {
+            source_account: source.to_string(),
+            transfer_id,
+            kind,
+            payload_hash,
+            prepared_payload: Some(prepared_payload),
+            expires_at,
+            updated_at: Utc::now(),
+        }
     }
 
     pub async fn provider_killed(&self) -> bool {
@@ -380,6 +501,8 @@ impl CctpService {
             .await
             .map_err(CctpServiceError::Store)?;
 
+        self.release_transfer_prepare_locks(&transfer).await;
+
         metrics::record_cctp_transition("awaiting_attestation");
         Ok(awaiting)
     }
@@ -478,6 +601,7 @@ impl CctpService {
             .await
             .map_err(CctpServiceError::Store)?;
         metrics::record_cctp_transition("attestation_failed");
+        self.release_transfer_prepare_locks(&transfer).await;
         Ok(updated)
     }
 
@@ -673,10 +797,7 @@ impl CctpService {
             .map_err(CctpServiceError::Store)?;
 
         if !transfer.sender.is_empty() {
-            let _ = self
-                .prepare_lock
-                .release(&transfer.sender, transfer_id)
-                .await;
+            self.release_transfer_prepare_locks(&transfer).await;
         }
 
         Ok(updated)
@@ -730,6 +851,14 @@ impl CctpService {
             _ => return Err(CctpServiceError::InvalidState),
         }
 
+        let source = burn_prepare_source(&transfer)?;
+        if let Some(cached) = self
+            .active_burn_bundle_for_transfer(transfer_id, source)
+            .await?
+        {
+            return Ok(cached);
+        }
+
         let bundle = match transfer.direction {
             CctpDirection::StellarToEvm => self
                 .runtime
@@ -745,7 +874,6 @@ impl CctpService {
                 .map_err(CctpServiceError::Builder)?,
         };
 
-        let source = burn_prepare_source(&transfer)?;
         let payload_hash = wallet_payload_hash(&bundle.primary, &self.config)
             .map_err(CctpServiceError::Verifier)?;
         let expires =
@@ -754,21 +882,29 @@ impl CctpService {
             BurnPrepareStep::Approval => CctpPrepareKind::Approval,
             BurnPrepareStep::Burn => CctpPrepareKind::Burn,
         };
-        self.prepare_lock
-            .try_acquire(&CctpActivePrepare {
-                source_account: source.to_string(),
+        let prepared_payload =
+            serialize_burn_bundle(&bundle).map_err(Self::map_payload_cache_error)?;
+        match self
+            .try_acquire_prepare_lock(Self::burn_reservation(
+                source,
                 transfer_id,
                 kind,
-                payload_hash: payload_hash.clone(),
-                expires_at: expires,
-            })
-            .await
-            .map_err(|e| match e {
-                CctpPrepareLockError::ActivePrepareExists => CctpServiceError::ActivePrepareExists,
-                CctpPrepareLockError::Database(msg) => {
-                    CctpServiceError::Store(CctpStoreError::Database(sqlx::Error::Protocol(msg)))
+                payload_hash.clone(),
+                prepared_payload,
+                expires,
+            ))
+            .await?
+        {
+            PrepareAcquireResult::Acquired => {}
+            PrepareAcquireResult::Idempotent(active) => {
+                if let Some(payload) = active.prepared_payload {
+                    return deserialize_burn_bundle(&payload).map_err(Self::map_payload_cache_error);
                 }
-            })?;
+            }
+            PrepareAcquireResult::ConflictOtherTransfer { .. } => {
+                return Err(CctpServiceError::ActivePrepareExists);
+            }
+        }
 
         let step_str = match bundle.step {
             BurnPrepareStep::Approval => "approval",
@@ -824,6 +960,19 @@ impl CctpService {
 
         Self::ensure_quote_not_expired(&transfer)?;
 
+        if transfer.direction == CctpDirection::EvmToStellar {
+            let submitter = transfer
+                .mint_submitter
+                .as_deref()
+                .ok_or(CctpServiceError::InvalidState)?;
+            if let Some(cached) = self
+                .active_mint_bundle_for_transfer(transfer_id, submitter)
+                .await?
+            {
+                return Ok(cached);
+            }
+        }
+
         let bundle = match transfer.direction {
             CctpDirection::StellarToEvm => self
                 .runtime
@@ -846,23 +995,31 @@ impl CctpService {
                 .ok_or(CctpServiceError::InvalidState)?;
             let expires =
                 chrono::DateTime::from_timestamp(bundle.expires_at, 0).unwrap_or_else(Utc::now);
-            self.prepare_lock
-                .try_acquire(&CctpActivePrepare {
+            let prepared_payload =
+                serialize_mint_bundle(&bundle).map_err(Self::map_payload_cache_error)?;
+            match self
+                .try_acquire_prepare_lock(CctpActivePrepare {
                     source_account: submitter.to_string(),
                     transfer_id,
                     kind: CctpPrepareKind::Mint,
                     payload_hash: bundle.payload_hash.clone(),
+                    prepared_payload: Some(prepared_payload),
                     expires_at: expires,
+                    updated_at: Utc::now(),
                 })
-                .await
-                .map_err(|e| match e {
-                    CctpPrepareLockError::ActivePrepareExists => {
-                        CctpServiceError::ActivePrepareExists
+                .await?
+            {
+                PrepareAcquireResult::Acquired => {}
+                PrepareAcquireResult::Idempotent(active) => {
+                    if let Some(payload) = active.prepared_payload {
+                        return deserialize_mint_bundle(&payload)
+                            .map_err(Self::map_payload_cache_error);
                     }
-                    CctpPrepareLockError::Database(msg) => CctpServiceError::Store(
-                        CctpStoreError::Database(sqlx::Error::Protocol(msg)),
-                    ),
-                })?;
+                }
+                PrepareAcquireResult::ConflictOtherTransfer { .. } => {
+                    return Err(CctpServiceError::ActivePrepareExists);
+                }
+            }
         }
 
         let expires =
@@ -930,7 +1087,14 @@ impl CctpService {
             CctpDirection::EvmToStellar => self
                 .runtime
                 .stellar_mint_verifier
-                .verify_mint_submission(tx_hash, message, attestation, nonce, expected_payload_hash)
+                .verify_mint_submission(
+                    tx_hash,
+                    message,
+                    attestation,
+                    nonce,
+                    expected_payload_hash,
+                    transfer.mint_submitter.as_deref(),
+                )
                 .await
                 .map_err(CctpServiceError::Verifier)?,
         };
@@ -938,6 +1102,27 @@ impl CctpService {
         if facts.payload_hash != expected_payload_hash {
             return Err(CctpServiceError::MintPayloadHashMismatch);
         }
+
+        if let MintVerifyOutcome::FailedRetryable { reason } = &facts.outcome {
+            self.release_transfer_prepare_locks(&transfer).await;
+            let retryable = self
+                .store
+                .transition(
+                    transfer_id,
+                    transfer.version,
+                    CctpTransferStatus::MintFailedRetryable,
+                    TransferPatch {
+                        last_provider_error: Some(reason.clone()),
+                        last_provider_code: Some("mint_retryable".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(CctpServiceError::Store)?;
+            metrics::record_cctp_transition("mint_failed_retryable");
+            return Ok(retryable);
+        }
+
         if !facts.submission_ok() {
             return Err(CctpServiceError::Verifier(VerifierError::Failed(
                 "mint submission mismatch".into(),
@@ -987,11 +1172,15 @@ impl CctpService {
         };
 
         match completion {
-            MintVerifyOutcome::Succeeded => self
-                .store
-                .record_mint_completed(submitted.transfer_id, submitted.version)
-                .await
-                .map_err(CctpServiceError::Store),
+            MintVerifyOutcome::Succeeded => {
+                let completed = self
+                    .store
+                    .record_mint_completed(submitted.transfer_id, submitted.version)
+                    .await
+                    .map_err(CctpServiceError::Store)?;
+                self.release_transfer_prepare_locks(&transfer).await;
+                Ok(completed)
+            }
             MintVerifyOutcome::Pending => Ok(submitted),
             MintVerifyOutcome::ReconciliationNonceConsumed => {
                 self.record_mint_reconciliation_hint(submitted).await
@@ -1011,6 +1200,7 @@ impl CctpService {
                     )
                     .await
                     .map_err(CctpServiceError::Store)?;
+                self.release_transfer_prepare_locks(&transfer).await;
                 metrics::record_cctp_transition("mint_failed_retryable");
                 Ok(retryable)
             }
@@ -1087,11 +1277,15 @@ impl CctpService {
         };
 
         match completion {
-            MintVerifyOutcome::Succeeded => self
-                .store
-                .record_mint_completed(transfer.transfer_id, transfer.version)
-                .await
-                .map_err(CctpServiceError::Store),
+            MintVerifyOutcome::Succeeded => {
+                let completed = self
+                    .store
+                    .record_mint_completed(transfer.transfer_id, transfer.version)
+                    .await
+                    .map_err(CctpServiceError::Store)?;
+                self.release_transfer_prepare_locks(&transfer).await;
+                Ok(completed)
+            }
             MintVerifyOutcome::Pending => Ok(transfer),
             MintVerifyOutcome::ReconciliationNonceConsumed => {
                 self.record_mint_reconciliation_hint(transfer).await
@@ -1111,6 +1305,7 @@ impl CctpService {
                     )
                     .await
                     .map_err(CctpServiceError::Store)?;
+                self.release_transfer_prepare_locks(&transfer).await;
                 metrics::record_cctp_transition("mint_failed_retryable");
                 Ok(retryable)
             }
@@ -1147,6 +1342,7 @@ impl CctpService {
             )
             .await
             .map_err(CctpServiceError::Store)?;
+        self.release_transfer_prepare_locks(&transfer).await;
         metrics::record_cctp_transition("cancelled");
         Ok(updated)
     }

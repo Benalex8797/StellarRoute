@@ -247,21 +247,57 @@ pub async fn simulate_and_assemble_invoke(
 
 /// Live readiness: strict simulate→assemble on USDC `decimals` (read-only).
 pub async fn probe_strict_simulation_assembly(rpc: &StellarRpcClient, config: &CctpConfig) -> bool {
-    use crate::cctp::stellar_rpc::SIMULATE_SOURCE;
+    probe_strict_simulation_assembly_with_evidence(rpc, config, None)
+        .await
+        .is_ok()
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StrictSimulationEvidence {
+    pub source_public_key: String,
+    pub latest_ledger: u32,
+    pub sequence: i64,
+    pub contract: String,
+    pub method: String,
+    pub simulation_success: bool,
+    pub auth_entry_count: usize,
+    pub result_count: usize,
+    pub min_resource_fee: u64,
+    pub assembled_envelope_sha256: String,
+    pub assembled_envelope_size_bytes: usize,
+}
+
+pub async fn probe_strict_simulation_assembly_with_evidence(
+    rpc: &StellarRpcClient,
+    config: &CctpConfig,
+    source_override: Option<&str>,
+) -> Result<StrictSimulationEvidence, String> {
+    use crate::cctp::fixtures::stellar_live_xdr::mint_operation_source;
+    use crate::cctp::stellar_sequence::RpcAccountSequenceSource;
+    use crate::swap::tx::AccountSequenceSource;
+    use sha2::{Digest, Sha256};
+    use std::sync::Arc;
 
     if config.stellar_rpc_url.trim().is_empty() {
-        return false;
+        return Err("empty rpc url".into());
     }
-    let Ok(latest) = rpc.latest_ledger().await else {
-        return false;
-    };
-    let Ok(sequence) = rpc.get_account_sequence(SIMULATE_SOURCE).await else {
-        return false;
-    };
+    let source = source_override
+        .map(str::to_string)
+        .unwrap_or_else(mint_operation_source);
+    let latest = rpc
+        .latest_ledger()
+        .await
+        .map_err(|e| format!("latest_ledger: {e}"))?;
+    let sequences = RpcAccountSequenceSource::new(config, Arc::new(rpc.clone()));
+    let sequence = sequences
+        .current_sequence(&source)
+        .await
+        .map_err(|e| format!("sequence: {e}"))?;
     let quote_exp = chrono::Utc::now().timestamp() + 600;
+    let contract = config.contracts.stellar_usdc.clone();
     let params = InvokeTxParams {
-        source: SIMULATE_SOURCE.to_string(),
-        contract: config.contracts.stellar_usdc.clone(),
+        source: source.clone(),
+        contract: contract.clone(),
         function: "decimals".to_string(),
         args: vec![],
         sequence,
@@ -269,7 +305,36 @@ pub async fn probe_strict_simulation_assembly(rpc: &StellarRpcClient, config: &C
         time_bounds: time_bounds_for_expiry(quote_exp),
         ledger_bounds: ledger_bounds_for_expiry(latest, quote_exp),
     };
-    simulate_and_assemble_invoke(rpc, params).await.is_ok()
+    let sim = rpc
+        .simulate_transaction_strict(
+            &TransactionEnvelope::Tx(TransactionV1Envelope {
+                tx: build_unsigned_invoke_tx(&params).map_err(|e| format!("build tx: {e}"))?,
+                signatures: VecM::default(),
+            })
+            .to_xdr_base64(Limits::none())
+            .map_err(|e| format!("template xdr: {e}"))?,
+        )
+        .await
+        .map_err(|e| format!("simulate: {e}"))?;
+    let assembled = simulate_and_assemble_invoke(rpc, params)
+        .await
+        .map_err(|e| format!("assemble: {e}"))?;
+    TransactionEnvelope::from_xdr_base64(&assembled, Limits::none())
+        .map_err(|e| format!("decode assembled envelope: {e}"))?;
+    let envelope_hash = hex::encode(Sha256::digest(assembled.as_bytes()));
+    Ok(StrictSimulationEvidence {
+        source_public_key: source,
+        latest_ledger: latest,
+        sequence,
+        contract,
+        method: "decimals".into(),
+        simulation_success: true,
+        auth_entry_count: sim.auth_entries.len(),
+        result_count: 1,
+        min_resource_fee: sim.min_resource_fee,
+        assembled_envelope_sha256: envelope_hash,
+        assembled_envelope_size_bytes: assembled.len(),
+    })
 }
 
 #[cfg(test)]

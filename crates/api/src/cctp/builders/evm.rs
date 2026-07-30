@@ -118,9 +118,7 @@ impl ProductionEvmCctpBuilder {
         transfer: &CctpTransfer,
         config: &CctpConfig,
     ) -> Result<bool, BuilderError> {
-        if transfer.source_approval_verified_at.is_some() {
-            return Ok(false);
-        }
+        Self::ensure_not_expired(transfer)?;
         let sufficient = self
             .allowance
             .has_sufficient_allowance(

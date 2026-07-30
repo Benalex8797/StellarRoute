@@ -105,6 +105,7 @@ pub trait StellarMintVerifier: Send + Sync {
         attestation: &[u8],
         nonce: &str,
         expected_payload_hash: &str,
+        expected_mint_submitter: Option<&str>,
     ) -> Result<VerifiedMintFacts, VerifierError>;
     async fn verify_mint_completion(
         &self,
@@ -177,6 +178,7 @@ impl StellarMintVerifier for NotReadyStellarMintVerifier {
         _: &[u8],
         _: &str,
         _: &str,
+        _: Option<&str>,
     ) -> Result<VerifiedMintFacts, VerifierError> {
         Err(VerifierError::NotReady)
     }
@@ -324,6 +326,7 @@ impl StellarMintVerifier for FakeMintVerifier {
         _attestation: &[u8],
         nonce: &str,
         expected_payload_hash: &str,
+        _expected_mint_submitter: Option<&str>,
     ) -> Result<VerifiedMintFacts, VerifierError> {
         if !self.ready {
             return Err(VerifierError::NotReady);
