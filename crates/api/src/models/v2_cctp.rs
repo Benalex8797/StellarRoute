@@ -381,6 +381,8 @@ pub struct CctpQuoteResponse {
     pub fee_quote: CctpFeeQuote,
     pub expires_at: i64,
     pub finality: CctpFinality,
+    /// One-time bearer capability for transfer mutations/status (returned only at quote creation).
+    pub access_token: String,
 }
 
 /// `GET /api/v2/bridge/cctp/{transfer_id}` response.

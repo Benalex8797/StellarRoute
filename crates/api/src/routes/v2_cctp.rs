@@ -1,20 +1,30 @@
-//! Circle CCTP v2 bridge routes — contract freeze (fail-closed scaffolding).
-//!
-//! Every handler validates wire input where applicable, then returns a typed
-//! `503 cctp_not_enabled` envelope. No fake quotes, prepares, or status data.
+//! Circle CCTP v2 bridge routes — production HTTP gate (fail-closed by default).
 
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     Json,
 };
 use std::sync::Arc;
+use std::time::Instant;
+use uuid::Uuid;
 
+use crate::cctp::access::{generate_access_token, TRANSFER_ACCESS_HEADER};
+use crate::cctp::gate::{
+    ensure_public_gate, ensure_reattest_allowed, map_service_error, to_prepare_burn_response,
+    to_prepare_mint_response, to_quote_response, to_reattest_response, to_status_response,
+    to_submit_burn_response, to_submit_mint_response, verify_transfer_access,
+};
+use crate::cctp::idempotency::{
+    hash_quote_request, normalize_idempotency_key, CctpIdempotencyError, IDEMPOTENCY_HEADER,
+};
 use crate::error::{ApiError, Result};
+use crate::metrics;
 use crate::middleware::RequestId;
 use crate::models::v2_cctp::{
     is_valid_tx_hash, parse_transfer_id, CctpPrepareBurnResponse, CctpPrepareMintResponse,
     CctpQuoteRequest, CctpQuoteResponse, CctpReattestResponse, CctpSubmitBurnRequest,
-    CctpSubmitBurnResponse, CctpSubmitMintRequest, CctpSubmitMintResponse,
+    CctpSubmitBurnResponse, CctpSubmitMintRequest, CctpSubmitMintResponse, CctpTransferStatus,
     CctpTransferStatusResponse, CctpValidationError,
 };
 use crate::models::ApiResponse;
@@ -40,10 +50,22 @@ fn map_validation(err: CctpValidationError) -> ApiError {
     }
 }
 
-fn parse_transfer_id_param(transfer_id: &str) -> Result<()> {
-    parse_transfer_id(transfer_id)
-        .map(|_| ())
-        .map_err(ApiError::Validation)
+fn cctp_not_enabled() -> ApiError {
+    ApiError::CctpNotEnabled(
+        "Circle CCTP bridge settlement is not enabled on this deployment".to_string(),
+    )
+}
+
+fn require_cctp(state: &AppState) -> Result<Arc<crate::cctp::bootstrap::CctpHttpContext>> {
+    let ctx = state.cctp.clone().ok_or_else(cctp_not_enabled)?;
+    if !ctx.config.enabled {
+        return Err(cctp_not_enabled());
+    }
+    Ok(ctx)
+}
+
+fn parse_transfer_id_param(transfer_id: &str) -> Result<Uuid> {
+    parse_transfer_id(transfer_id).map_err(ApiError::Validation)
 }
 
 fn validate_submit_tx_hash(tx_hash: &str) -> Result<()> {
@@ -56,10 +78,31 @@ fn validate_submit_tx_hash(tx_hash: &str) -> Result<()> {
     }
 }
 
-fn cctp_not_enabled() -> ApiError {
-    ApiError::CctpNotEnabled(
-        "Circle CCTP bridge settlement is not enabled on this deployment".to_string(),
-    )
+fn access_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(TRANSFER_ACCESS_HEADER)
+        .and_then(|v| v.to_str().ok())
+}
+
+fn idempotency_key_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(IDEMPOTENCY_HEADER)
+        .and_then(|v| v.to_str().ok())
+}
+
+async fn load_authorized_transfer(
+    state: &AppState,
+    transfer_id: Uuid,
+    headers: &HeaderMap,
+) -> Result<crate::cctp::store::CctpTransfer> {
+    let ctx = require_cctp(state)?;
+    let transfer = ctx
+        .service
+        .get_transfer(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+    verify_transfer_access(&transfer, access_token_from_headers(headers))?;
+    Ok(transfer)
 }
 
 /// `POST /api/v2/bridge/cctp/quote`
@@ -69,19 +112,95 @@ fn cctp_not_enabled() -> ApiError {
     tag = "cctp",
     request_body = CctpQuoteRequest,
     responses(
-        (status = 200, description = "CCTP fee quote (disabled until backend is enabled)", body = CctpQuoteResponse),
-        (status = 400, description = "Invalid request (e.g. stellar source with fast finality)"),
+        (status = 200, description = "CCTP fee quote", body = CctpQuoteResponse),
+        (status = 400, description = "Invalid request"),
+        (status = 409, description = "Idempotency key conflict"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
 pub async fn cctp_quote(
-    _state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     request_id: RequestId,
+    headers: HeaderMap,
     Json(body): Json<CctpQuoteRequest>,
 ) -> Result<Json<ApiResponse<CctpQuoteResponse>>> {
+    let started = Instant::now();
     body.validate().map_err(map_validation)?;
-    let _ = request_id;
-    Err(cctp_not_enabled())
+
+    let ctx = require_cctp(&state)?;
+    ensure_public_gate(&ctx.service, body.direction).await?;
+
+    let request_bytes = serde_json::to_vec(&body)
+        .map_err(|e| ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string()))))?;
+    let request_hash = hash_quote_request(&request_bytes).map_err(|e| match e {
+        CctpIdempotencyError::RequestTooLarge => {
+            ApiError::Validation("quote request body too large".into())
+        }
+        other => ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(other.to_string()))),
+    })?;
+
+    if let Some(raw_key) = idempotency_key_from_headers(&headers) {
+        let key = normalize_idempotency_key(raw_key)
+            .map_err(|_| ApiError::Validation("idempotency key exceeds maximum length".into()))?;
+        if let Some((stored_hash, record)) =
+            ctx.idempotency.lookup(&key).await.map_err(|e| {
+                ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string())))
+            })?
+        {
+            if stored_hash != request_hash {
+                metrics::record_cctp_endpoint_outcome("quote", "idempotency_conflict");
+                return Err(ApiError::Conflict {
+                    message: "Idempotency key reused with different quote request".into(),
+                    quote_id: record.transfer_id.to_string(),
+                    tx_hash: String::new(),
+                    status: "idempotency_conflict".into(),
+                });
+            }
+            let response: CctpQuoteResponse =
+                serde_json::from_str(&record.response_json).map_err(|e| {
+                    ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string())))
+                })?;
+            metrics::record_cctp_endpoint_outcome("quote", "idempotent_hit");
+            return Ok(Json(ApiResponse::with_version(
+                2,
+                response,
+                request_id.as_str(),
+            )));
+        }
+    }
+
+    let (access_token, access_hash) = generate_access_token();
+    let transfer = ctx
+        .service
+        .quote_core(&body, access_hash)
+        .await
+        .map_err(|e| map_service_error(e, None))?;
+    let response = to_quote_response(&transfer, &access_token);
+
+    if let Some(raw_key) = idempotency_key_from_headers(&headers) {
+        let key = normalize_idempotency_key(raw_key)
+            .map_err(|_| ApiError::Validation("idempotency key exceeds maximum length".into()))?;
+        let response_json = serde_json::to_string(&response)
+            .map_err(|e| ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(e.to_string()))))?;
+        let _ = ctx
+            .idempotency
+            .insert(
+                &key,
+                &request_hash,
+                transfer.transfer_id,
+                &response_json,
+                transfer.quote_expires_at,
+            )
+            .await;
+    }
+
+    metrics::record_cctp_endpoint_outcome("quote", "success");
+    metrics::record_cctp_iris_latency(started.elapsed(), "quote");
+    Ok(Json(ApiResponse::with_version(
+        2,
+        response,
+        request_id.as_str(),
+    )))
 }
 
 /// `POST /api/v2/bridge/cctp/{transfer_id}/prepare-burn`
@@ -93,17 +212,43 @@ pub async fn cctp_quote(
     responses(
         (status = 200, description = "Prepared burn wallet payload", body = CctpPrepareBurnResponse),
         (status = 400, description = "Invalid transfer ID"),
+        (status = 401, description = "Invalid transfer access token"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
 pub async fn cctp_prepare_burn(
-    _state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpPrepareBurnResponse>>> {
-    parse_transfer_id_param(&transfer_id)?;
-    let _ = request_id;
-    Err(cctp_not_enabled())
+    let transfer_id = parse_transfer_id_param(&transfer_id)?;
+    let ctx = require_cctp(&state)?;
+    let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
+    ensure_public_gate(&ctx.service, transfer.direction).await?;
+
+    let _ = ctx
+        .service
+        .prepare_burn(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+    let bundle = ctx
+        .service
+        .prepare_burn_wallet(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+    let updated = ctx
+        .service
+        .get_transfer(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+
+    metrics::record_cctp_endpoint_outcome("prepare_burn", "success");
+    Ok(Json(ApiResponse::with_version(
+        2,
+        to_prepare_burn_response(&updated, &bundle),
+        request_id.as_str(),
+    )))
 }
 
 /// `POST /api/v2/bridge/cctp/{transfer_id}/submit-burn`
@@ -114,21 +259,44 @@ pub async fn cctp_prepare_burn(
     params(("transfer_id" = String, Path, description = "Transfer UUID")),
     request_body = CctpSubmitBurnRequest,
     responses(
-        (status = 200, description = "Burn tx hash recorded", body = CctpSubmitBurnResponse),
+        (status = 200, description = "Burn or approval tx hash recorded", body = CctpSubmitBurnResponse),
         (status = 400, description = "Invalid transfer ID or tx_hash"),
+        (status = 401, description = "Invalid transfer access token"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
 pub async fn cctp_submit_burn(
-    _state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
+    headers: HeaderMap,
     Json(body): Json<CctpSubmitBurnRequest>,
 ) -> Result<Json<ApiResponse<CctpSubmitBurnResponse>>> {
-    parse_transfer_id_param(&transfer_id)?;
+    let transfer_id = parse_transfer_id_param(&transfer_id)?;
     validate_submit_tx_hash(&body.tx_hash)?;
-    let _ = request_id;
-    Err(cctp_not_enabled())
+    let ctx = require_cctp(&state)?;
+    let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
+    ensure_public_gate(&ctx.service, transfer.direction).await?;
+
+    let updated = if transfer.burn_prepare_step.as_deref() == Some("approval")
+        && transfer.source_approval_verified_at.is_none()
+    {
+        ctx.service
+            .record_approval_submission(transfer_id, &body.tx_hash)
+            .await
+    } else {
+        ctx.service
+            .record_burn_submission(transfer_id, &body.tx_hash)
+            .await
+    }
+    .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+
+    metrics::record_cctp_endpoint_outcome("submit_burn", "success");
+    Ok(Json(ApiResponse::with_version(
+        2,
+        to_submit_burn_response(&updated),
+        request_id.as_str(),
+    )))
 }
 
 /// `GET /api/v2/bridge/cctp/{transfer_id}`
@@ -140,18 +308,34 @@ pub async fn cctp_submit_burn(
     responses(
         (status = 200, description = "Transfer saga status", body = CctpTransferStatusResponse),
         (status = 400, description = "Invalid transfer ID"),
+        (status = 401, description = "Invalid transfer access token"),
         (status = 404, description = "Transfer not found"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
 pub async fn cctp_get_transfer(
-    _state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpTransferStatusResponse>>> {
-    parse_transfer_id_param(&transfer_id)?;
-    let _ = request_id;
-    Err(cctp_not_enabled())
+    let transfer_id = parse_transfer_id_param(&transfer_id)?;
+    let ctx = require_cctp(&state)?;
+    let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
+    ensure_public_gate(&ctx.service, transfer.direction).await?;
+
+    let polled = ctx
+        .service
+        .poll_one_transfer(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+
+    metrics::record_cctp_endpoint_outcome("get_transfer", "success");
+    Ok(Json(ApiResponse::with_version(
+        2,
+        to_status_response(&polled),
+        request_id.as_str(),
+    )))
 }
 
 /// `POST /api/v2/bridge/cctp/{transfer_id}/prepare-mint`
@@ -163,17 +347,47 @@ pub async fn cctp_get_transfer(
     responses(
         (status = 200, description = "Prepared mint wallet payload", body = CctpPrepareMintResponse),
         (status = 400, description = "Invalid transfer ID"),
+        (status = 401, description = "Invalid transfer access token"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
 pub async fn cctp_prepare_mint(
-    _state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpPrepareMintResponse>>> {
-    parse_transfer_id_param(&transfer_id)?;
-    let _ = request_id;
-    Err(cctp_not_enabled())
+    let transfer_id = parse_transfer_id_param(&transfer_id)?;
+    let ctx = require_cctp(&state)?;
+    let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
+    ensure_public_gate(&ctx.service, transfer.direction).await?;
+
+    if transfer.status != CctpTransferStatus::AttestationReady
+        && transfer.status != CctpTransferStatus::MintFailedRetryable
+    {
+        return Err(map_service_error(
+            CctpServiceError::InvalidState,
+            Some(transfer_id),
+        ));
+    }
+
+    let bundle = ctx
+        .service
+        .prepare_mint(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+    let updated = ctx
+        .service
+        .get_transfer(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+
+    metrics::record_cctp_endpoint_outcome("prepare_mint", "success");
+    Ok(Json(ApiResponse::with_version(
+        2,
+        to_prepare_mint_response(&updated, &bundle),
+        request_id.as_str(),
+    )))
 }
 
 /// `POST /api/v2/bridge/cctp/{transfer_id}/submit-mint`
@@ -186,19 +400,35 @@ pub async fn cctp_prepare_mint(
     responses(
         (status = 200, description = "Mint tx hash recorded", body = CctpSubmitMintResponse),
         (status = 400, description = "Invalid transfer ID or tx_hash"),
+        (status = 401, description = "Invalid transfer access token"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
 pub async fn cctp_submit_mint(
-    _state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
+    headers: HeaderMap,
     Json(body): Json<CctpSubmitMintRequest>,
 ) -> Result<Json<ApiResponse<CctpSubmitMintResponse>>> {
-    parse_transfer_id_param(&transfer_id)?;
+    let transfer_id = parse_transfer_id_param(&transfer_id)?;
     validate_submit_tx_hash(&body.tx_hash)?;
-    let _ = request_id;
-    Err(cctp_not_enabled())
+    let ctx = require_cctp(&state)?;
+    let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
+    ensure_public_gate(&ctx.service, transfer.direction).await?;
+
+    let updated = ctx
+        .service
+        .record_mint_submission(transfer_id, &body.tx_hash)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+
+    metrics::record_cctp_endpoint_outcome("submit_mint", "success");
+    Ok(Json(ApiResponse::with_version(
+        2,
+        to_submit_mint_response(&updated),
+        request_id.as_str(),
+    )))
 }
 
 /// `POST /api/v2/bridge/cctp/{transfer_id}/reattest`
@@ -210,15 +440,34 @@ pub async fn cctp_submit_mint(
     responses(
         (status = 200, description = "Attestation re-poll requested", body = CctpReattestResponse),
         (status = 400, description = "Invalid transfer ID"),
+        (status = 401, description = "Invalid transfer access token"),
         (status = 503, description = "CCTP bridge not enabled"),
     )
 )]
 pub async fn cctp_reattest(
-    _state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(transfer_id): Path<String>,
     request_id: RequestId,
+    headers: HeaderMap,
 ) -> Result<Json<ApiResponse<CctpReattestResponse>>> {
-    parse_transfer_id_param(&transfer_id)?;
-    let _ = request_id;
-    Err(cctp_not_enabled())
+    let transfer_id = parse_transfer_id_param(&transfer_id)?;
+    let ctx = require_cctp(&state)?;
+    let transfer = load_authorized_transfer(&state, transfer_id, &headers).await?;
+    ensure_public_gate(&ctx.service, transfer.direction).await?;
+    ensure_reattest_allowed(&transfer)?;
+
+    let updated = ctx
+        .service
+        .reattest(transfer_id)
+        .await
+        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+
+    metrics::record_cctp_endpoint_outcome("reattest", "success");
+    Ok(Json(ApiResponse::with_version(
+        2,
+        to_reattest_response(&updated),
+        request_id.as_str(),
+    )))
 }
+
+use crate::cctp::service::CctpServiceError;

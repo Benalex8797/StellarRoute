@@ -332,10 +332,11 @@ impl CctpService {
         Ok(updated)
     }
 
-    /// Internal quote-core — not wired to HTTP handlers yet.
+    /// Internal quote-core — creates durable transfer with access token binding.
     pub async fn quote_core(
         &self,
         request: &CctpQuoteRequest,
+        access_token_hash: String,
     ) -> Result<CctpTransfer, CctpServiceError> {
         if !self.config.enabled {
             return Err(CctpServiceError::NotEnabled);
@@ -438,6 +439,7 @@ impl CctpService {
             approval_expiration_ledger: None,
             burn_payload_hash: None,
             burn_prepare_step: None,
+            access_token_hash: Some(access_token_hash),
         };
 
         self.store

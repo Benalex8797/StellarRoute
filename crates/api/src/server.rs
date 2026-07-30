@@ -143,7 +143,14 @@ fn build_cors_layer() -> CorsLayer {
 }
 
 async fn finalize_app_state(mut state: AppState) -> Arc<AppState> {
-    state.bootstrap_cctp_runtime().await;
+    let pool = state.db.write_pool().clone();
+    let kill = state.kill_switch.clone();
+    if let Some(ctx) = crate::cctp::bootstrap::CctpHttpContext::try_build(pool, kill).await {
+        state.cctp_runtime = ctx.runtime.clone();
+        state.cctp = Some(Arc::new(ctx));
+    } else {
+        state.bootstrap_cctp_runtime().await;
+    }
     Arc::new(state)
 }
 

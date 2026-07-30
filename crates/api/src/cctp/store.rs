@@ -61,6 +61,8 @@ pub struct CctpTransfer {
     pub approval_expiration_ledger: Option<u64>,
     pub burn_payload_hash: Option<String>,
     pub burn_prepare_step: Option<String>,
+    /// SHA-256 hex digest of the one-time transfer access token.
+    pub access_token_hash: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -187,9 +189,9 @@ impl CctpTransferStore for PgCctpTransferStore {
                 source_chain_id, destination_chain_id, source_asset, source_asset_canonical,
                 destination_asset, destination_asset_canonical, sender, recipient, mint_submitter,
                 amount, destination_amount, finality, runtime_fee_quote, max_fee,
-                fee_expires_at, quote_expires_at, status, version
+                fee_expires_at, quote_expires_at, status, version, access_token_hash
             ) VALUES (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
             )
             "#,
         )
@@ -216,6 +218,7 @@ impl CctpTransferStore for PgCctpTransferStore {
         .bind(transfer.quote_expires_at)
         .bind(status_str(transfer.status))
         .bind(transfer.version)
+        .bind(&transfer.access_token_hash)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -795,6 +798,7 @@ struct TransferRow {
     approval_expiration_ledger: Option<i64>,
     burn_payload_hash: Option<String>,
     burn_prepare_step: Option<String>,
+    access_token_hash: Option<String>,
 }
 
 impl TransferRow {
@@ -843,6 +847,7 @@ impl TransferRow {
             approval_expiration_ledger: self.approval_expiration_ledger.map(|v| v as u64),
             burn_payload_hash: self.burn_payload_hash,
             burn_prepare_step: self.burn_prepare_step,
+            access_token_hash: self.access_token_hash,
         })
     }
 }
@@ -982,6 +987,7 @@ mod tests {
             approval_expiration_ledger: None,
             burn_payload_hash: None,
             burn_prepare_step: None,
+            access_token_hash: None,
         }
     }
 
@@ -1123,6 +1129,7 @@ mod tests {
             approval_expiration_ledger: None,
             burn_payload_hash: None,
             burn_prepare_step: None,
+            access_token_hash: None,
         };
         let err = row.try_into_transfer().unwrap_err();
         assert!(matches!(err, CctpStoreError::InvalidDirection(_)));

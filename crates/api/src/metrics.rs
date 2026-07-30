@@ -673,6 +673,20 @@ lazy_static! {
         &["component", "outcome"]
     )
     .expect("Can't create CCTP_STELLAR_VERIFIER_READINESS counter");
+
+    pub static ref CCTP_ENDPOINT_OUTCOMES: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_endpoint_outcomes_total",
+        "CCTP HTTP endpoint gate/handler outcomes",
+        &["endpoint", "outcome"]
+    )
+    .expect("Can't create CCTP_ENDPOINT_OUTCOMES counter");
+
+    pub static ref CCTP_DIRECTION_READINESS: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_direction_readiness_total",
+        "CCTP direction readiness snapshots at bootstrap",
+        &["direction", "outcome"]
+    )
+    .expect("Can't create CCTP_DIRECTION_READINESS counter");
 }
 
 /// Record a swap prepare outcome.
@@ -811,5 +825,17 @@ pub fn record_cctp_attester_snapshot_refresh(destination: &str, outcome: &str) {
 pub fn record_cctp_stellar_verifier_readiness(component: &str, outcome: &str) {
     CCTP_STELLAR_VERIFIER_READINESS
         .with_label_values(&[component, outcome])
+        .inc();
+}
+
+pub fn record_cctp_endpoint_outcome(endpoint: &str, outcome: &str) {
+    CCTP_ENDPOINT_OUTCOMES
+        .with_label_values(&[endpoint, outcome])
+        .inc();
+}
+
+pub fn record_cctp_direction_readiness(direction: &str, outcome: &str) {
+    CCTP_DIRECTION_READINESS
+        .with_label_values(&[direction, outcome])
         .inc();
 }

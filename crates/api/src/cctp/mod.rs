@@ -1,10 +1,12 @@
 //! Circle CCTP v2 backend core (config, persistence, Iris, encoding, service).
 
+pub mod access;
 pub mod approval;
 pub mod attestation;
 pub mod attestation_crypto;
 pub mod attestation_trust;
 pub mod attester_set;
+pub mod bootstrap;
 pub mod bounds;
 pub mod builders;
 pub mod config;
@@ -17,6 +19,8 @@ pub mod evm_mint_verifier;
 pub mod evm_rpc;
 pub mod expectations;
 pub mod fixtures;
+pub mod gate;
+pub mod idempotency;
 pub mod iris;
 pub mod iris_public_keys;
 pub mod message;

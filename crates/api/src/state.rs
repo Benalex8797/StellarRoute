@@ -200,6 +200,8 @@ pub struct AppState {
     pub swap_price_source: Option<Arc<dyn SwapPriceSource>>,
     /// CCTP component runtime (attestation trust bootstrapped via `bootstrap_cctp_runtime`).
     pub cctp_runtime: crate::cctp::readiness::CctpRuntime,
+    /// Production CCTP HTTP context (PG store, service, idempotency) when bootstrap succeeds.
+    pub cctp: Option<Arc<crate::cctp::bootstrap::CctpHttpContext>>,
 }
 
 impl AppState {
@@ -290,6 +292,7 @@ impl AppState {
             account_sequences,
             swap_price_source: None,
             cctp_runtime: crate::cctp::readiness::CctpRuntime::production_defaults(),
+            cctp: None,
         }
     }
 
@@ -311,6 +314,13 @@ impl AppState {
     /// Test injection for CCTP runtime wiring.
     pub fn with_cctp_runtime(mut self, runtime: crate::cctp::readiness::CctpRuntime) -> Self {
         self.cctp_runtime = runtime;
+        self
+    }
+
+    /// Test injection for full CCTP HTTP context.
+    pub fn with_cctp(mut self, ctx: Arc<crate::cctp::bootstrap::CctpHttpContext>) -> Self {
+        self.cctp_runtime = ctx.runtime.clone();
+        self.cctp = Some(ctx);
         self
     }
 
@@ -442,6 +452,7 @@ impl AppState {
             account_sequences,
             swap_price_source: None,
             cctp_runtime: crate::cctp::readiness::CctpRuntime::production_defaults(),
+            cctp: None,
         };
 
         // Start cache prewarm job if configured via env `PREWARM_PAIRS`.
