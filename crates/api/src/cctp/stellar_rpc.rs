@@ -52,7 +52,7 @@ impl StellarRpcClient {
         !self.rpc_url.trim().is_empty()
     }
 
-    fn ensure_url(&self, url: &str) -> Result<(), VerifierError> {
+    pub(crate) fn ensure_url(&self, url: &str) -> Result<(), VerifierError> {
         let parsed = parse_service_url(url).map_err(|_| VerifierError::Failed("rpc url".into()))?;
         if parsed.host != self.allowed_host {
             return Err(VerifierError::Failed("rpc host mismatch".into()));
