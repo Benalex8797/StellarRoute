@@ -165,6 +165,7 @@ async fn transient_mint_verifier_error_preserves_state() {
         async fn verify_mint_completion(
             &self,
             _: &str,
+            _: &[u8],
             _: &str,
             _: &str,
         ) -> Result<MintVerifyOutcome, VerifierError> {

@@ -799,13 +799,13 @@ impl CctpService {
             CctpDirection::StellarToEvm => self
                 .runtime
                 .evm_mint_verifier
-                .verify_mint_completion(tx_hash, nonce, &transfer.recipient)
+                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
                 .await
                 .map_err(CctpServiceError::Verifier)?,
             CctpDirection::EvmToStellar => self
                 .runtime
                 .stellar_mint_verifier
-                .verify_mint_completion(tx_hash, nonce, &transfer.recipient)
+                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
                 .await
                 .map_err(CctpServiceError::Verifier)?,
         };

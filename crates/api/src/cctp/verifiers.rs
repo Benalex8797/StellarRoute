@@ -104,6 +104,7 @@ pub trait StellarMintVerifier: Send + Sync {
     async fn verify_mint_completion(
         &self,
         tx_hash: &str,
+        message: &[u8],
         nonce: &str,
         recipient: &str,
     ) -> Result<MintVerifyOutcome, VerifierError>;
@@ -123,6 +124,7 @@ pub trait EvmMintVerifier: Send + Sync {
     async fn verify_mint_completion(
         &self,
         tx_hash: &str,
+        message: &[u8],
         nonce: &str,
         recipient: &str,
     ) -> Result<MintVerifyOutcome, VerifierError>;
@@ -174,6 +176,7 @@ impl StellarMintVerifier for NotReadyStellarMintVerifier {
     async fn verify_mint_completion(
         &self,
         _: &str,
+        _: &[u8],
         _: &str,
         _: &str,
     ) -> Result<MintVerifyOutcome, VerifierError> {
@@ -200,6 +203,7 @@ impl EvmMintVerifier for NotReadyEvmMintVerifier {
     async fn verify_mint_completion(
         &self,
         _: &str,
+        _: &[u8],
         _: &str,
         _: &str,
     ) -> Result<MintVerifyOutcome, VerifierError> {
@@ -326,6 +330,7 @@ impl StellarMintVerifier for FakeMintVerifier {
     async fn verify_mint_completion(
         &self,
         tx_hash: &str,
+        _: &[u8],
         _nonce: &str,
         _recipient: &str,
     ) -> Result<MintVerifyOutcome, VerifierError> {
@@ -366,6 +371,7 @@ impl EvmMintVerifier for FakeMintVerifier {
     async fn verify_mint_completion(
         &self,
         tx_hash: &str,
+        _: &[u8],
         _nonce: &str,
         _recipient: &str,
     ) -> Result<MintVerifyOutcome, VerifierError> {
