@@ -9,7 +9,9 @@ use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use stellarroute_api::{
     cctp::{
-        access::{generate_ephemeral_access_token, test_access_token_key, TRANSFER_ACCESS_HEADER},
+        access::{
+            generate_ephemeral_access_token, test_access_token_keyring, TRANSFER_ACCESS_HEADER,
+        },
         bootstrap::CctpHttpContext,
         config::CctpConfig,
         idempotency::InMemoryCctpQuoteIdempotencyStore,
@@ -119,7 +121,7 @@ fn enabled_test_context() -> Arc<CctpHttpContext> {
         service,
         runtime,
         idempotency,
-        access_token_key: test_access_token_key(),
+        access_token_keys: test_access_token_keyring(),
     })
 }
 
@@ -279,7 +281,7 @@ async fn quote_response_includes_access_token_when_executable() {
         service,
         runtime,
         idempotency,
-        access_token_key: test_access_token_key(),
+        access_token_keys: test_access_token_keyring(),
     });
     let router = router_with_cctp(Some(ctx)).await;
     let (status, body) = post_json(

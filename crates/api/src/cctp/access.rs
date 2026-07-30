@@ -10,25 +10,28 @@ use crate::cctp::bounds::check_str_len;
 
 pub const TRANSFER_ACCESS_HEADER: &str = "x-cctp-transfer-access";
 pub const ACCESS_TOKEN_HMAC_ENV: &str = "CCTP_ACCESS_TOKEN_HMAC_KEY";
+pub const ACCESS_TOKEN_HMAC_PREVIOUS_ENV: &str = "CCTP_ACCESS_TOKEN_HMAC_PREVIOUS_KEYS";
 pub const ACCESS_TOKEN_BYTES: usize = 32;
 pub const MIN_HMAC_KEY_BYTES: usize = 32;
+pub const MAX_PREVIOUS_HMAC_KEYS: usize = 2;
 pub const MAX_ACCESS_TOKEN_LEN: usize = 128;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Production HMAC key for deterministic idempotent quote tokens (never logged).
+/// Current + bounded previous HMAC keys for idempotent quote token derivation and rotation replay.
 #[derive(Clone)]
-pub struct CctpAccessTokenKey {
-    bytes: Vec<u8>,
+pub struct CctpAccessTokenKeyRing {
+    current: Vec<u8>,
+    previous: Vec<Vec<u8>>,
 }
 
-impl std::fmt::Debug for CctpAccessTokenKey {
+impl std::fmt::Debug for CctpAccessTokenKeyRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("CctpAccessTokenKey([REDACTED])")
+        f.write_str("CctpAccessTokenKeyRing([REDACTED])")
     }
 }
 
-impl CctpAccessTokenKey {
+impl CctpAccessTokenKeyRing {
     pub fn from_env_when_enabled(enabled: bool) -> Result<Option<Self>, String> {
         let raw = match std::env::var(ACCESS_TOKEN_HMAC_ENV) {
             Ok(v) if !v.trim().is_empty() => v,
@@ -39,38 +42,104 @@ impl CctpAccessTokenKey {
             }
             _ => return Ok(None),
         };
-        let bytes = parse_secret_bytes(&raw)?;
-        if bytes.len() < MIN_HMAC_KEY_BYTES {
+        let current = parse_secret_bytes(&raw)?;
+        if current.len() < MIN_HMAC_KEY_BYTES {
             return Err(format!(
                 "{ACCESS_TOKEN_HMAC_ENV} must decode to at least {MIN_HMAC_KEY_BYTES} bytes"
             ));
         }
-        Ok(Some(Self { bytes }))
+        let previous = parse_previous_keys_from_env()?;
+        Ok(Some(Self { current, previous }))
     }
 
-    pub fn from_test_bytes(bytes: Vec<u8>) -> Self {
+    pub fn from_single_key(bytes: Vec<u8>) -> Self {
         assert!(bytes.len() >= MIN_HMAC_KEY_BYTES);
-        Self { bytes }
+        Self {
+            current: bytes,
+            previous: Vec::new(),
+        }
     }
 
-    /// Deterministic token for idempotent quote replays (domain-separated HMAC-SHA256, base64url).
+    pub fn with_previous(mut self, previous: Vec<Vec<u8>>) -> Self {
+        self.previous = previous.into_iter().take(MAX_PREVIOUS_HMAC_KEYS).collect();
+        self
+    }
+
+    /// New idempotent quotes always derive with the current key.
     pub fn derive_idempotent_token(
         &self,
         idempotency_key: &str,
         canonical_request_hash: &str,
         transfer_id: Uuid,
     ) -> String {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.bytes).expect("HMAC key length validated at load");
-        mac.update(b"cctp-transfer-access-v1\0");
-        mac.update(idempotency_key.as_bytes());
-        mac.update(b"\0");
-        mac.update(canonical_request_hash.as_bytes());
-        mac.update(b"\0");
-        mac.update(transfer_id.as_bytes());
-        let digest = mac.finalize().into_bytes();
-        URL_SAFE_NO_PAD.encode(digest)
+        derive_idempotent_token_with_key(
+            &self.current,
+            idempotency_key,
+            canonical_request_hash,
+            transfer_id,
+        )
     }
+
+    /// Replay after rotation: try current then previous keys until one matches the stored hash.
+    pub fn recover_idempotent_token(
+        &self,
+        idempotency_key: &str,
+        canonical_request_hash: &str,
+        transfer_id: Uuid,
+        stored_hash: &str,
+    ) -> Option<String> {
+        for key in std::iter::once(&self.current).chain(self.previous.iter()) {
+            let token = derive_idempotent_token_with_key(
+                key,
+                idempotency_key,
+                canonical_request_hash,
+                transfer_id,
+            );
+            if access_tokens_match(stored_hash, &token) {
+                return Some(token);
+            }
+        }
+        None
+    }
+}
+
+fn parse_previous_keys_from_env() -> Result<Vec<Vec<u8>>, String> {
+    let Ok(raw) = std::env::var(ACCESS_TOKEN_HMAC_PREVIOUS_ENV) else {
+        return Ok(Vec::new());
+    };
+    let mut keys = Vec::new();
+    for part in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if keys.len() >= MAX_PREVIOUS_HMAC_KEYS {
+            return Err(format!(
+                "{ACCESS_TOKEN_HMAC_PREVIOUS_ENV} accepts at most {MAX_PREVIOUS_HMAC_KEYS} keys"
+            ));
+        }
+        let bytes = parse_secret_bytes(part)?;
+        if bytes.len() < MIN_HMAC_KEY_BYTES {
+            return Err(format!(
+                "each {ACCESS_TOKEN_HMAC_PREVIOUS_ENV} entry must decode to at least {MIN_HMAC_KEY_BYTES} bytes"
+            ));
+        }
+        keys.push(bytes);
+    }
+    Ok(keys)
+}
+
+fn derive_idempotent_token_with_key(
+    key: &[u8],
+    idempotency_key: &str,
+    canonical_request_hash: &str,
+    transfer_id: Uuid,
+) -> String {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC key length validated at load");
+    mac.update(b"cctp-transfer-access-v1\0");
+    mac.update(idempotency_key.as_bytes());
+    mac.update(b"\0");
+    mac.update(canonical_request_hash.as_bytes());
+    mac.update(b"\0");
+    mac.update(transfer_id.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    URL_SAFE_NO_PAD.encode(digest)
 }
 
 fn parse_secret_bytes(raw: &str) -> Result<Vec<u8>, String> {
@@ -140,8 +209,8 @@ pub fn generate_access_token() -> (String, String) {
     generate_ephemeral_access_token()
 }
 
-pub fn test_access_token_key() -> CctpAccessTokenKey {
-    CctpAccessTokenKey::from_test_bytes(vec![0x42u8; MIN_HMAC_KEY_BYTES])
+pub fn test_access_token_keyring() -> CctpAccessTokenKeyRing {
+    CctpAccessTokenKeyRing::from_single_key(vec![0x42u8; MIN_HMAC_KEY_BYTES])
 }
 
 pub fn test_access_token_hash() -> String {
@@ -161,12 +230,28 @@ mod tests {
 
     #[test]
     fn idempotent_token_is_deterministic() {
-        let key = test_access_token_key();
+        let ring = test_access_token_keyring();
         let id = Uuid::new_v4();
-        let a = key.derive_idempotent_token("idem-1", "abc123", id);
-        let b = key.derive_idempotent_token("idem-1", "abc123", id);
+        let a = ring.derive_idempotent_token("idem-1", "abc123", id);
+        let b = ring.derive_idempotent_token("idem-1", "abc123", id);
         assert_eq!(a, b);
-        assert_ne!(key.derive_idempotent_token("idem-2", "abc123", id), a);
+        assert_ne!(ring.derive_idempotent_token("idem-2", "abc123", id), a);
+    }
+
+    #[test]
+    fn rotation_replay_recovers_with_previous_key() {
+        let old_key = vec![0x11u8; MIN_HMAC_KEY_BYTES];
+        let new_key = vec![0x22u8; MIN_HMAC_KEY_BYTES];
+        let ring = CctpAccessTokenKeyRing::from_single_key(new_key.clone())
+            .with_previous(vec![old_key.clone()]);
+        let id = Uuid::new_v4();
+        let token_old = derive_idempotent_token_with_key(&old_key, "k", "hash", id);
+        let hash = hash_access_token(&token_old);
+        let recovered = ring
+            .recover_idempotent_token("k", "hash", id, &hash)
+            .unwrap();
+        assert_eq!(recovered, token_old);
+        assert_ne!(ring.derive_idempotent_token("k", "hash", id), token_old);
     }
 
     #[test]

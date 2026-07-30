@@ -136,13 +136,17 @@ async fn gate_for_direction(
     post,
     path = "/api/v2/bridge/cctp/quote",
     tag = "cctp",
+    params(
+        ("Idempotency-Key" = Option<String>, Header, description = "Optional idempotency key (1-128 UTF-8 chars). Same key with byte-identical body replays the original quote and transfer access token."),
+    ),
     request_body = CctpQuoteRequest,
     responses(
         (status = 200, description = "CCTP fee quote", body = CctpQuoteResponse),
         (status = 400, description = "Invalid request"),
-        (status = 409, description = "Idempotency key conflict"),
-        (status = 425, description = "Idempotent quote in progress"),
-        (status = 503, description = "CCTP bridge not enabled"),
+        (status = 409, description = "Idempotency key reused with different quote body"),
+        (status = 425, description = "Idempotent quote still in progress; retry with same key"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 503, description = "CCTP bridge not enabled or dependencies not ready"),
     )
 )]
 pub async fn cctp_quote(
@@ -211,11 +215,20 @@ pub async fn cctp_quote(
                 .get_transfer(claim.transfer_id)
                 .await
                 .map_err(|e| map_service_error(e, Some(claim.transfer_id)))?;
-            let access_token = ctx.access_token_key.derive_idempotent_token(
-                &key,
-                &request_hash,
-                claim.transfer_id,
-            );
+            let stored_hash = transfer.access_token_hash.as_deref().ok_or_else(|| {
+                ApiError::Internal(std::sync::Arc::new(anyhow::anyhow!(
+                    "completed idempotency without access binding"
+                )))
+            })?;
+            let access_token = ctx
+                .access_token_keys
+                .recover_idempotent_token(&key, &request_hash, claim.transfer_id, stored_hash)
+                .ok_or_else(|| {
+                    ApiError::CctpNotEnabled(
+                        "Idempotent replay unavailable after access key rotation; request a new quote"
+                            .into(),
+                    )
+                })?;
             metrics::record_cctp_endpoint_outcome("quote", "idempotent_hit");
             return Ok(Json(ApiResponse::with_version(
                 2,
@@ -225,7 +238,7 @@ pub async fn cctp_quote(
         }
 
         let access_token =
-            ctx.access_token_key
+            ctx.access_token_keys
                 .derive_idempotent_token(&key, &request_hash, claim.transfer_id);
         let access_hash = hash_access_token(&access_token);
         let transfer = ctx
@@ -282,12 +295,16 @@ pub async fn cctp_quote(
     post,
     path = "/api/v2/bridge/cctp/{transfer_id}/prepare-burn",
     tag = "cctp",
-    params(("transfer_id" = String, Path, description = "Transfer UUID")),
+    params(
+        ("transfer_id" = String, Path, description = "Transfer UUID"),
+        ("x-cctp-transfer-access" = String, Header, description = "Transfer capability token from quote (required)"),
+    ),
     responses(
         (status = 200, description = "Prepared burn wallet payload", body = CctpPrepareBurnResponse),
-        (status = 400, description = "Invalid transfer ID"),
-        (status = 404, description = "Transfer not found"),
-        (status = 503, description = "CCTP bridge not enabled"),
+        (status = 400, description = "Invalid transfer ID or transfer state"),
+        (status = 404, description = "Transfer not found or access token invalid (uniform response)"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 503, description = "CCTP bridge not enabled or dependencies not ready"),
     )
 )]
 pub async fn cctp_prepare_burn(
@@ -330,13 +347,17 @@ pub async fn cctp_prepare_burn(
     post,
     path = "/api/v2/bridge/cctp/{transfer_id}/submit-burn",
     tag = "cctp",
-    params(("transfer_id" = String, Path, description = "Transfer UUID")),
+    params(
+        ("transfer_id" = String, Path, description = "Transfer UUID"),
+        ("x-cctp-transfer-access" = String, Header, description = "Transfer capability token from quote (required)"),
+    ),
     request_body = CctpSubmitBurnRequest,
     responses(
         (status = 200, description = "Burn or approval tx hash recorded", body = CctpSubmitBurnResponse),
-        (status = 400, description = "Invalid transfer ID or tx_hash"),
-        (status = 404, description = "Transfer not found"),
-        (status = 503, description = "CCTP bridge not enabled"),
+        (status = 400, description = "Invalid transfer ID, tx_hash, or transfer state"),
+        (status = 404, description = "Transfer not found or access token invalid (uniform response)"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 503, description = "CCTP bridge not enabled or dependencies not ready"),
     )
 )]
 pub async fn cctp_submit_burn(
@@ -378,12 +399,16 @@ pub async fn cctp_submit_burn(
     get,
     path = "/api/v2/bridge/cctp/{transfer_id}",
     tag = "cctp",
-    params(("transfer_id" = String, Path, description = "Transfer UUID")),
+    params(
+        ("transfer_id" = String, Path, description = "Transfer UUID"),
+        ("x-cctp-transfer-access" = String, Header, description = "Transfer capability token from quote (required)"),
+    ),
     responses(
         (status = 200, description = "Transfer saga status", body = CctpTransferStatusResponse),
         (status = 400, description = "Invalid transfer ID"),
-        (status = 404, description = "Transfer not found"),
-        (status = 503, description = "CCTP bridge not enabled"),
+        (status = 404, description = "Transfer not found or access token invalid (uniform response)"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 503, description = "CCTP bridge not enabled or dependencies not ready"),
     )
 )]
 pub async fn cctp_get_transfer(
@@ -420,12 +445,16 @@ pub async fn cctp_get_transfer(
     post,
     path = "/api/v2/bridge/cctp/{transfer_id}/prepare-mint",
     tag = "cctp",
-    params(("transfer_id" = String, Path, description = "Transfer UUID")),
+    params(
+        ("transfer_id" = String, Path, description = "Transfer UUID"),
+        ("x-cctp-transfer-access" = String, Header, description = "Transfer capability token from quote (required)"),
+    ),
     responses(
         (status = 200, description = "Prepared mint wallet payload", body = CctpPrepareMintResponse),
-        (status = 400, description = "Invalid transfer ID"),
-        (status = 404, description = "Transfer not found"),
-        (status = 503, description = "CCTP bridge not enabled"),
+        (status = 400, description = "Invalid transfer ID or transfer state"),
+        (status = 404, description = "Transfer not found or access token invalid (uniform response)"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 503, description = "CCTP bridge not enabled or dependencies not ready"),
     )
 )]
 pub async fn cctp_prepare_mint(
@@ -472,13 +501,17 @@ pub async fn cctp_prepare_mint(
     post,
     path = "/api/v2/bridge/cctp/{transfer_id}/submit-mint",
     tag = "cctp",
-    params(("transfer_id" = String, Path, description = "Transfer UUID")),
+    params(
+        ("transfer_id" = String, Path, description = "Transfer UUID"),
+        ("x-cctp-transfer-access" = String, Header, description = "Transfer capability token from quote (required)"),
+    ),
     request_body = CctpSubmitMintRequest,
     responses(
         (status = 200, description = "Mint tx hash recorded", body = CctpSubmitMintResponse),
-        (status = 400, description = "Invalid transfer ID or tx_hash"),
-        (status = 404, description = "Transfer not found"),
-        (status = 503, description = "CCTP bridge not enabled"),
+        (status = 400, description = "Invalid transfer ID, tx_hash, or transfer state"),
+        (status = 404, description = "Transfer not found or access token invalid (uniform response)"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 503, description = "CCTP bridge not enabled or dependencies not ready"),
     )
 )]
 pub async fn cctp_submit_mint(
@@ -513,12 +546,17 @@ pub async fn cctp_submit_mint(
     post,
     path = "/api/v2/bridge/cctp/{transfer_id}/reattest",
     tag = "cctp",
-    params(("transfer_id" = String, Path, description = "Transfer UUID")),
+    params(
+        ("transfer_id" = String, Path, description = "Transfer UUID"),
+        ("x-cctp-transfer-access" = String, Header, description = "Transfer capability token from quote (required)"),
+    ),
     responses(
         (status = 200, description = "Attestation re-poll requested", body = CctpReattestResponse),
-        (status = 400, description = "Invalid transfer ID"),
-        (status = 404, description = "Transfer not found"),
-        (status = 503, description = "CCTP bridge not enabled"),
+        (status = 400, description = "Invalid transfer ID, cooldown, or transfer state"),
+        (status = 404, description = "Transfer not found or access token invalid (uniform response)"),
+        (status = 409, description = "Re-attest claim conflict (cooldown or concurrent claim)"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 503, description = "CCTP bridge not enabled or dependencies not ready"),
     )
 )]
 pub async fn cctp_reattest(

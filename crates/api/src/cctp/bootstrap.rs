@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 use tracing::warn;
 
-use crate::cctp::access::CctpAccessTokenKey;
+use crate::cctp::access::CctpAccessTokenKeyRing;
 use crate::cctp::config::CctpConfig;
 use crate::cctp::idempotency::PgCctpQuoteIdempotencyStore;
 use crate::cctp::iris::ReqwestIrisClient;
@@ -22,7 +22,7 @@ pub struct CctpHttpContext {
     pub service: Arc<CctpService>,
     pub runtime: CctpRuntime,
     pub idempotency: Arc<dyn crate::cctp::idempotency::CctpQuoteIdempotencyStore>,
-    pub access_token_key: CctpAccessTokenKey,
+    pub access_token_keys: CctpAccessTokenKeyRing,
 }
 
 impl CctpHttpContext {
@@ -36,9 +36,10 @@ impl CctpHttpContext {
             }
         };
 
-        let access_token_key = match CctpAccessTokenKey::from_env_when_enabled(config.enabled) {
-            Ok(Some(key)) => key,
-            Ok(None) => CctpAccessTokenKey::from_test_bytes(vec![0u8; 32]),
+        let access_token_keys = match CctpAccessTokenKeyRing::from_env_when_enabled(config.enabled)
+        {
+            Ok(Some(keys)) => keys,
+            Ok(None) => CctpAccessTokenKeyRing::from_single_key(vec![0u8; 32]),
             Err(e) => {
                 warn!(error = %e, "CCTP access token HMAC key missing or weak");
                 metrics::record_cctp_endpoint_outcome("bootstrap", "access_key_invalid");
@@ -82,7 +83,7 @@ impl CctpHttpContext {
             service,
             runtime,
             idempotency,
-            access_token_key,
+            access_token_keys,
         })
     }
 }

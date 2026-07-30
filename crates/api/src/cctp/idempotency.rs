@@ -18,6 +18,14 @@ pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 128;
 pub const MAX_QUOTE_REQUEST_BYTES: usize = 8_192;
 pub const IDEMPOTENCY_LEASE_SECS: i64 = 30;
 
+fn idempotency_lease_secs() -> i64 {
+    std::env::var("CCTP_IDEMPOTENCY_LEASE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(IDEMPOTENCY_LEASE_SECS)
+}
+
 #[derive(Debug, Error)]
 pub enum CctpIdempotencyError {
     #[error("database: {0}")]
@@ -144,7 +152,7 @@ impl CctpQuoteIdempotencyStore for PgCctpQuoteIdempotencyStore {
     ) -> Result<IdempotencyClaim, CctpIdempotencyError> {
         let mut tx = self.pool.begin().await?;
         let transfer_id = Uuid::new_v4();
-        let lease_until = Utc::now() + Duration::seconds(IDEMPOTENCY_LEASE_SECS);
+        let lease_until = Utc::now() + Duration::seconds(idempotency_lease_secs());
 
         let inserted = sqlx::query(
             r#"
