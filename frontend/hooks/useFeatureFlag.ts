@@ -79,15 +79,40 @@ async function fetchRemoteFlags(): Promise<FlagMap> {
 }
 
 /**
- * Resolve a flag. Ordinary flags: remote > env > false.
- * `real_xdr` is security-pinned: env/default only (default on). Remote
- * `FLAGS_URL` cannot disable the secure API prepare/sign/submit path.
+ * SSR-safe initial snapshot: pinned/env (and warmed remote cache only).
+ * Never reads `window.__STELLAR_ROUTE_FLAGS__` so server HTML matches the first
+ * client render.
+ */
+export function resolveFlagForInitialRender(flag: FlagName): boolean {
+  if (SECURITY_PINNED_FLAGS.has(flag)) {
+    const env = readEnvFlag(flag);
+    if (env !== undefined) return env;
+    return true;
+  }
+  if (remoteFlags !== null && remoteFlags[flag] !== undefined) {
+    return remoteFlags[flag]!;
+  }
+  const env = readEnvFlag(flag);
+  if (env !== undefined) return env;
+  return false;
+}
+
+function initialFlagLoading(flag: FlagName): boolean {
+  if (SECURITY_PINNED_FLAGS.has(flag)) return false;
+  if (readEnvFlag(flag) !== undefined) return false;
+  if (remoteFlags !== null && remoteFlags[flag] !== undefined) return false;
+  return Boolean(process.env.NEXT_PUBLIC_FLAGS_URL);
+}
+
+/**
+ * Full post-hydration resolution for ordinary flags: remote > window > env > false.
+ * `real_xdr` is security-pinned: env/default only (default on). Remote and window
+ * cannot disable the secure API prepare/sign/submit path.
  */
 export function resolveFlag(flag: FlagName, remote: FlagMap = {}): boolean {
   if (SECURITY_PINNED_FLAGS.has(flag)) {
     const env = readEnvFlag(flag);
     if (env !== undefined) return env;
-    // Product default: API prepare → wallet sign → API submit.
     return true;
   }
   if (remote[flag] !== undefined) return remote[flag]!;
@@ -98,31 +123,31 @@ export function resolveFlag(flag: FlagName, remote: FlagMap = {}): boolean {
   return false;
 }
 
-function hasLocalFlagResolution(flag: FlagName): boolean {
-  return readEnvFlag(flag) !== undefined || readWindowFlag(flag) !== undefined;
-}
-
-function initialFlagLoading(flag: FlagName): boolean {
-  if (SECURITY_PINNED_FLAGS.has(flag)) return false;
-  if (hasLocalFlagResolution(flag)) return false;
-  return Boolean(process.env.NEXT_PUBLIC_FLAGS_URL);
-}
-
 export function useFeatureFlag(flag: FlagName): {
   enabled: boolean;
   loading: boolean;
 } {
-  // Security-pinned flags resolve from env/default synchronously so loading
-  // never briefly reports enabled=false (which would fail-closed and flash).
-  const pinned = SECURITY_PINNED_FLAGS.has(flag);
-  const [enabled, setEnabled] = useState<boolean>(() => resolveFlag(flag));
+  const [enabled, setEnabled] = useState<boolean>(() =>
+    resolveFlagForInitialRender(flag),
+  );
   const [loading, setLoading] = useState<boolean>(() => initialFlagLoading(flag));
 
   useEffect(() => {
     let cancelled = false;
+    const flagsUrl = process.env.NEXT_PUBLIC_FLAGS_URL;
 
     if (SECURITY_PINNED_FLAGS.has(flag)) {
       setEnabled(resolveFlag(flag));
+      setLoading(false);
+      return;
+    }
+
+    // Dev/e2e window overrides apply after mount; remote fetch may supersede.
+    if (readWindowFlag(flag) !== undefined) {
+      setEnabled(resolveFlag(flag));
+    }
+
+    if (!flagsUrl) {
       setLoading(false);
       return;
     }
@@ -146,22 +171,32 @@ export function useFeatureFlags(flags: FlagName[]): Record<FlagName, boolean> {
   const [resolved, setResolved] = useState<Record<FlagName, boolean>>(
     () =>
       Object.fromEntries(
-        flags.map((f) => [
-          f,
-          SECURITY_PINNED_FLAGS.has(f) ? resolveFlag(f) : false,
-        ]),
+        flags.map((f) => [f, resolveFlagForInitialRender(f)]),
       ) as Record<FlagName, boolean>,
   );
 
   useEffect(() => {
     let cancelled = false;
+    const flagsUrl = process.env.NEXT_PUBLIC_FLAGS_URL;
+
+    const hasWindowOverride = flags.some((f) => readWindowFlag(f) !== undefined);
+    if (hasWindowOverride) {
+      setResolved(
+        Object.fromEntries(flags.map((f) => [f, resolveFlag(f)])) as Record<
+          FlagName,
+          boolean
+        >,
+      );
+    }
+
+    if (!flagsUrl) return;
 
     fetchRemoteFlags().then((remote) => {
       if (!cancelled) {
         setResolved(
           Object.fromEntries(
-            flags.map((f) => [f, resolveFlag(f, remote)])
-          ) as Record<FlagName, boolean>
+            flags.map((f) => [f, resolveFlag(f, remote)]),
+          ) as Record<FlagName, boolean>,
         );
       }
     });

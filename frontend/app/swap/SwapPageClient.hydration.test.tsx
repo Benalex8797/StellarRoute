@@ -77,4 +77,26 @@ describe('SwapPageClient hydration with swap_ui_v2', () => {
     expect(consoleErrors).toEqual([]);
     expect(container.textContent).toContain('Cross-chain deck');
   });
+
+  it('hydrates legacy surface when swap_ui_v2 env is off', () => {
+    delete process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2;
+
+    const container = document.createElement('div');
+    container.innerHTML = renderToString(renderSwapPageTree());
+
+    const recoverableErrors: string[] = [];
+    act(() => {
+      hydrateRoot(container, renderSwapPageTree(), {
+        onRecoverableError: (error) => {
+          recoverableErrors.push(
+            error instanceof Error ? error.message : String(error),
+          );
+        },
+      });
+    });
+
+    expect(recoverableErrors).toEqual([]);
+    expect(container.textContent).toContain('Swap card');
+    expect(container.textContent).not.toContain('Cross-chain deck');
+  });
 });

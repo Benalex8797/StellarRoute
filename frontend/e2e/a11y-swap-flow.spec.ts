@@ -629,4 +629,17 @@ test.describe("Cross-chain deck a11y", () => {
     await page.getByTestId("corridor-tab-evm-to-stellar").click();
     await expect(page.getByTestId("unsupported-corridor-alert")).toBeVisible();
   });
+
+  test("chain selector supports Tab focus and Space keyboard selection", async ({
+    page,
+  }) => {
+    await page.goto("/swap");
+    await page.waitForSelector("[data-testid='cross-chain-swap-deck']");
+
+    const solanaOption = page.getByTestId("chain-option-destination-solana");
+    await solanaOption.focus();
+    await expect(solanaOption).toBeFocused();
+    await page.keyboard.press(" ");
+    await expect(solanaOption).toBeChecked();
+  });
 });

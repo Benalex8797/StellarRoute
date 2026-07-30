@@ -4,13 +4,29 @@ StellarRoute uses a lightweight, two-layer feature flag system to gate experimen
 
 ## How it works
 
-Ordinary flags are resolved in this priority order:
+Ordinary flags are resolved in this priority order **after hydration** (remote fetch and window overrides applied):
 
 | Priority | Source | How |
 |---|---|---|
 | 1 (highest) | Remote config | JSON file fetched from `NEXT_PUBLIC_FLAGS_URL` |
-| 2 | Environment variable | `NEXT_PUBLIC_FLAG_<NAME>=true` |
-| 3 (default) | Hardcoded | Always `false` (default-off) |
+| 2 | Window override | `window.__STELLAR_ROUTE_FLAGS__ = { flag_name: true }` (dev/e2e only; applied after mount) |
+| 3 | Environment variable | `NEXT_PUBLIC_FLAG_<NAME>=true` |
+| 4 (default) | Hardcoded | Always `false` (default-off) |
+
+### SSR / hydration (initial render)
+
+The server and the first client paint use an **SSR-safe snapshot** that never reads `window.__STELLAR_ROUTE_FLAGS__`:
+
+| Priority | Source |
+|---|---|
+| 1 | Security-pinned env/default (`real_xdr`) |
+| 2 | Warmed remote cache (module cache only when already fetched) |
+| 3 | Environment variable |
+| 4 (default) | `false` |
+
+Window overrides apply in a `useEffect` after mount. Remote fetch then applies full post-hydration precedence (`remote > window > env`). This avoids hydration mismatches while still supporting dev/e2e `window.__STELLAR_ROUTE_FLAGS__` toggles.
+
+When only `NEXT_PUBLIC_FLAGS_URL` is set (no env), hooks start in `loading: true` with `enabled: false` until the remote JSON resolves.
 
 Ordinary flags are **off by default**. You must explicitly enable them.
 

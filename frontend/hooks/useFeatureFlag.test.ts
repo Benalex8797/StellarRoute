@@ -1,10 +1,11 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
-  useFeatureFlag,
-  useFeatureFlags,
   invalidateFlagCache,
   resolveFlag,
+  resolveFlagForInitialRender,
+  useFeatureFlag,
+  useFeatureFlags,
 } from "./useFeatureFlag";
 
 function mockFetch(flags: Record<string, boolean>) {
@@ -116,6 +117,31 @@ describe("useFeatureFlag", () => {
     mockFetch({ routes_beta: true });
 
     const { result } = renderHook(() => useFeatureFlag("routes_beta"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.enabled).toBe(true);
+  });
+
+  it("window override beats env after mount when remote is absent", async () => {
+    process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2 = "true";
+    expect(resolveFlagForInitialRender("swap_ui_v2")).toBe(true);
+
+    (window as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
+      swap_ui_v2: false,
+    };
+
+    const { result } = renderHook(() => useFeatureFlag("swap_ui_v2"));
+    await waitFor(() => expect(result.current.enabled).toBe(false));
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("remote beats window override after fetch", async () => {
+    process.env.NEXT_PUBLIC_FLAGS_URL = "https://flags.example.com/flags.json";
+    (window as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
+      swap_ui_v2: false,
+    };
+    mockFetch({ swap_ui_v2: true });
+
+    const { result } = renderHook(() => useFeatureFlag("swap_ui_v2"));
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.enabled).toBe(true);
   });
