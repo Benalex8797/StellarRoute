@@ -593,3 +593,37 @@ test.describe("Settings panel a11y", () => {
     ).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group 6 — Cross-chain deck a11y (swap_ui_v2)
+// ---------------------------------------------------------------------------
+
+test.describe("Cross-chain deck a11y", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as unknown as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
+        swap_ui_v2: true,
+      };
+    });
+  });
+
+  test("cross-chain deck has no high-severity violations", async ({ page }) => {
+    await page.goto("/swap");
+    await page.waitForSelector("[data-testid='cross-chain-swap-deck']", {
+      timeout: 15_000,
+    });
+
+    const violations = await scanForHighSeverity(
+      page,
+      "[data-testid='cross-chain-swap-deck']"
+    );
+    assertNoHighSeverityViolations(violations);
+  });
+
+  test("unsupported corridor is role=alert", async ({ page }) => {
+    await page.goto("/swap");
+    await page.waitForSelector("[data-testid='cross-chain-swap-deck']");
+    await page.getByTestId("corridor-tab-evm-to-stellar").click();
+    await expect(page.getByTestId("unsupported-corridor-alert")).toBeVisible();
+  });
+});

@@ -46,6 +46,14 @@ function readEnvFlag(flag: FlagName): boolean | undefined {
   return val === 'true' || val === '1';
 }
 
+function readWindowFlag(flag: FlagName): boolean | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const flags = (window as { __STELLAR_ROUTE_FLAGS__?: FlagMap })
+    .__STELLAR_ROUTE_FLAGS__;
+  if (flags?.[flag] !== undefined) return flags[flag]!;
+  return undefined;
+}
+
 async function fetchRemoteFlags(): Promise<FlagMap> {
   if (remoteFlags !== null) return remoteFlags;
   if (remoteFetchPromise) return remoteFetchPromise;
@@ -83,6 +91,8 @@ export function resolveFlag(flag: FlagName, remote: FlagMap = {}): boolean {
     return true;
   }
   if (remote[flag] !== undefined) return remote[flag]!;
+  const windowFlag = readWindowFlag(flag);
+  if (windowFlag !== undefined) return windowFlag;
   const env = readEnvFlag(flag);
   if (env !== undefined) return env;
   return false;

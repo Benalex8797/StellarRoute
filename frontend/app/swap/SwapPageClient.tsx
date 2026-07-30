@@ -4,6 +4,11 @@ import { OnboardingChecklist } from "@/components/swap/OnboardingChecklist";
 import { SplitView } from "@/components/swap/SplitView";
 import { useSplitView } from "@/hooks/useSplitView";
 import { RoutesBetaGate } from "@/src/components/RoutesBetaGate";
+import { useFeatureFlag } from "@/hooks/useFeatureFlag";
+import {
+  CrossChainSwapDeck,
+  CrossChainSwapDeckSkeleton,
+} from "@/components/swap/cross-chain/CrossChainSwapDeck";
 import dynamic from "next/dynamic";
 
 const SwapCard = dynamic(
@@ -66,6 +71,28 @@ function SwapRoutesBeta() {
   );
 }
 
+/**
+ * Swap UI v2 — cross-chain route deck (flag-gated).
+ * Disabled falls back to the legacy routes/swap card experience unchanged.
+ */
+function SwapUiV2Surface() {
+  const { enabled, loading } = useFeatureFlag("swap_ui_v2");
+
+  if (loading) {
+    return <CrossChainSwapDeckSkeleton />;
+  }
+
+  if (!enabled) {
+    return (
+      <RoutesBetaGate fallback={<SwapLegacyRoutes />}>
+        <SwapRoutesBeta />
+      </RoutesBetaGate>
+    );
+  }
+
+  return <CrossChainSwapDeck />;
+}
+
 export function SwapPageClient() {
   return (
     <div className="mx-auto w-full max-w-[960px] space-y-4 overflow-x-hidden px-0 sm:space-y-5">
@@ -82,9 +109,7 @@ export function SwapPageClient() {
         </p>
       </div>
       <OnboardingChecklist />
-      <RoutesBetaGate fallback={<SwapLegacyRoutes />}>
-        <SwapRoutesBeta />
-      </RoutesBetaGate>
+      <SwapUiV2Surface />
     </div>
   );
 }
