@@ -70,6 +70,7 @@ fn mint_prepared_transfer() -> CctpTransfer {
         status: CctpTransferStatus::MintPrepared,
         source_tx_hash: Some("0xabc".into()),
         source_approval_tx_hash: None,
+        source_approval_verified_at: None,
         destination_tx_hash: None,
         iris_message_hash: None,
         message_nonce: Some("42".into()),
@@ -268,4 +269,40 @@ async fn payload_hash_mismatch_rejected() {
         err,
         CctpServiceError::Verifier(VerifierError::Failed(_))
     ));
+}
+
+#[tokio::test]
+async fn verified_success_transitions_completed() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let transfer = mint_prepared_transfer();
+    let id = transfer.transfer_id;
+    store.insert(&transfer).await.unwrap();
+    let service = service_with_mint_verifier(
+        store.clone(),
+        Arc::new(FakeMintVerifier {
+            facts: base_facts(),
+            completion: MintVerifyOutcome::Succeeded,
+            ready: true,
+        }),
+    );
+    let completed = service.record_mint_submission(id, "0xmint").await.unwrap();
+    assert_eq!(completed.status, CctpTransferStatus::Completed);
+}
+
+#[tokio::test]
+async fn nonce_used_transitions_completed() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let transfer = mint_prepared_transfer();
+    let id = transfer.transfer_id;
+    store.insert(&transfer).await.unwrap();
+    let service = service_with_mint_verifier(
+        store.clone(),
+        Arc::new(FakeMintVerifier {
+            facts: base_facts(),
+            completion: MintVerifyOutcome::NonceUsed,
+            ready: true,
+        }),
+    );
+    let completed = service.record_mint_submission(id, "0xmint").await.unwrap();
+    assert_eq!(completed.status, CctpTransferStatus::Completed);
 }
