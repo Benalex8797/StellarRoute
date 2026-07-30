@@ -24,7 +24,7 @@ function DeckStory({ presentation }: { presentation?: CrossChainDeckStoryPresent
 }
 
 export const StellarNative: Story = () => <DeckStory />;
-StellarNative.storyName = 'Stellar native — delegates SwapCard';
+StellarNative.storyName = 'Stellar native delegates SwapCard';
 
 export const EvmToStellarComingSoon: Story = () => (
   <DeckStory
@@ -34,7 +34,7 @@ export const EvmToStellarComingSoon: Story = () => (
     }}
   />
 );
-EvmToStellarComingSoon.storyName = 'EVM → Stellar — coming soon';
+EvmToStellarComingSoon.storyName = 'EVM Sepolia to Stellar coming soon';
 
 export const WalletsPartial: Story = () => (
   <DeckStory
@@ -46,7 +46,7 @@ export const WalletsPartial: Story = () => (
     }}
   />
 );
-WalletsPartial.storyName = 'Wallets — partial connect';
+WalletsPartial.storyName = 'Wallets partial connect';
 
 export const NetworkMismatch: Story = () => (
   <DeckStory
@@ -66,7 +66,7 @@ export const RoutePreview: Story = () => (
     }}
   />
 );
-RoutePreview.storyName = 'Route preview — CCTP rail';
+RoutePreview.storyName = 'Route preview CCTP rail';
 
 export const ExecutingTimeline: Story = () => (
   <DeckStory presentation={{ timelineSteps: EXECUTING_TIMELINE_STORY_FIXTURE }} />
