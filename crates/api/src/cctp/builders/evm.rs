@@ -53,11 +53,82 @@ sol! {
     }
 }
 
-pub struct ProductionEvmCctpBuilder;
+/// ERC-20 allowance probe for EVM burn prepare gating.
+#[async_trait::async_trait]
+pub trait EvmAllowanceChecker: Send + Sync {
+    async fn has_sufficient_allowance(
+        &self,
+        owner: &str,
+        token: &str,
+        spender: &str,
+        amount: &str,
+    ) -> Result<bool, BuilderError>;
+}
+
+pub struct FixedEvmAllowanceChecker {
+    pub sufficient: bool,
+}
+
+#[async_trait::async_trait]
+impl EvmAllowanceChecker for FixedEvmAllowanceChecker {
+    async fn has_sufficient_allowance(
+        &self,
+        _owner: &str,
+        _token: &str,
+        _spender: &str,
+        _amount: &str,
+    ) -> Result<bool, BuilderError> {
+        Ok(self.sufficient)
+    }
+}
+
+pub struct ProductionEvmCctpBuilder {
+    pub rpc_url: String,
+    pub allowance: std::sync::Arc<dyn EvmAllowanceChecker>,
+}
 
 impl ProductionEvmCctpBuilder {
-    pub fn new() -> Self {
-        Self
+    pub fn new(config: &CctpConfig, allowance: std::sync::Arc<dyn EvmAllowanceChecker>) -> Self {
+        Self {
+            rpc_url: config.sepolia_rpc_url.clone(),
+            allowance,
+        }
+    }
+
+    pub fn from_config(config: &CctpConfig) -> Self {
+        Self::new(
+            config,
+            std::sync::Arc::new(FixedEvmAllowanceChecker { sufficient: false }),
+        )
+    }
+
+    fn sepolia_ready(config: &CctpConfig) -> bool {
+        !config.sepolia_rpc_url.trim().is_empty()
+            && config.sepolia_domain == crate::cctp::config::SEPOLIA_DOMAIN
+    }
+
+    fn evm_burn_ready(&self) -> bool {
+        !self.rpc_url.trim().is_empty()
+    }
+
+    async fn needs_approval(
+        &self,
+        transfer: &CctpTransfer,
+        config: &CctpConfig,
+    ) -> Result<bool, BuilderError> {
+        if transfer.source_approval_tx_hash.is_some() {
+            return Ok(false);
+        }
+        let sufficient = self
+            .allowance
+            .has_sufficient_allowance(
+                &transfer.sender,
+                &config.contracts.sepolia_usdc,
+                &config.contracts.sepolia_token_messenger,
+                &transfer.amount,
+            )
+            .await?;
+        Ok(!sufficient)
     }
 
     fn parse_address(addr: &str) -> Result<Address, BuilderError> {
@@ -158,14 +229,14 @@ impl ProductionEvmCctpBuilder {
 
 impl Default for ProductionEvmCctpBuilder {
     fn default() -> Self {
-        Self::new()
+        Self::from_config(&CctpConfig::default_testnet())
     }
 }
 
 #[async_trait]
 impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
     fn is_ready(&self) -> bool {
-        true
+        self.evm_burn_ready()
     }
 
     async fn prepare_burn(
@@ -173,6 +244,9 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
         transfer: &CctpTransfer,
         config: &CctpConfig,
     ) -> Result<PreparedBurnBundle, BuilderError> {
+        if !Self::sepolia_ready(config) || !self.evm_burn_ready() {
+            return Err(BuilderError::NotReady);
+        }
         if transfer.direction != CctpDirection::EvmToStellar {
             return Err(BuilderError::Validation(
                 "EVM burn builder only supports evm_to_stellar".into(),
@@ -197,6 +271,21 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
         let hook = build_forwarder_hook_data_g_recipient(&transfer.recipient)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
 
+        let expires_at = transfer.quote_expires_at.timestamp();
+
+        if self.needs_approval(transfer, config).await? {
+            let approval =
+                Self::encode_approve(&config.contracts.sepolia_token_messenger, &transfer.amount)?;
+            return Ok(PreparedBurnBundle {
+                step: crate::cctp::builders::BurnPrepareStep::Approval,
+                approval_required: true,
+                primary: Self::evm_tx_payload(&config.contracts.sepolia_usdc, approval),
+                required_approvals: vec![],
+                required_prior_payloads: vec![],
+                expires_at,
+            });
+        }
+
         let burn_data = Self::encode_deposit_for_burn_with_hook(
             amount,
             config.stellar_domain,
@@ -208,17 +297,12 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
             hook,
         )?;
 
-        let approval =
-            Self::encode_approve(&config.contracts.sepolia_token_messenger, &transfer.amount)?;
-        let expires_at = transfer.quote_expires_at.timestamp();
-
         Ok(PreparedBurnBundle {
-            required_approvals: vec![Self::evm_tx_payload(
-                &config.contracts.sepolia_usdc,
-                approval,
-            )],
-            required_prior_payloads: vec![],
+            step: crate::cctp::builders::BurnPrepareStep::Burn,
+            approval_required: false,
             primary: Self::evm_tx_payload(&config.contracts.sepolia_token_messenger, burn_data),
+            required_approvals: vec![],
+            required_prior_payloads: vec![],
             expires_at,
         })
     }
@@ -227,7 +311,7 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
 #[async_trait]
 impl EvmCctpMintBuilder for ProductionEvmCctpBuilder {
     fn is_ready(&self) -> bool {
-        true
+        self.evm_burn_ready()
     }
 
     async fn prepare_mint(

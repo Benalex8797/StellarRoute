@@ -28,9 +28,20 @@ pub enum BuilderError {
     AccountLookup(String),
 }
 
+/// Ordered burn prepare step — approval and burn are never co-returned with duplicate sequences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnPrepareStep {
+    Approval,
+    Burn,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedBurnBundle {
+    pub step: BurnPrepareStep,
+    /// True when `step == Approval` and wallet must submit approval before requesting burn payload.
+    pub approval_required: bool,
     pub primary: PreparedWalletPayload,
+    /// Deprecated: use `step` + `primary` instead of bundling multiple signed envelopes.
     pub required_approvals: Vec<PreparedWalletPayload>,
     pub required_prior_payloads: Vec<PreparedWalletPayload>,
     pub expires_at: i64,
