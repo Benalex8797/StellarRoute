@@ -9,6 +9,9 @@ import { useApiV2Readiness } from '@/hooks/useApiV2Readiness';
 import { useCctpSaga } from '@/hooks/useCctpSaga';
 import { useCrossChainWalletRoles } from '@/hooks/useCrossChainWalletRoles';
 import { UNMATCHED_CORRIDOR_ID } from '@/lib/cross-chain/corridors';
+import { resolveCctpDirection } from '@/lib/cctp/corridor-bridge';
+import { loadCctpSession } from '@/lib/cctp/session-vault';
+import type { ChainDisplayId } from '@/lib/cross-chain/types';
 import { corridorStatusCopy } from '@/lib/cross-chain/format';
 import { cn } from '@/lib/utils';
 import { CctpExecutionPanel } from './CctpExecutionPanel';
@@ -78,6 +81,18 @@ export function CrossChainSwapDeck({
     ],
   );
 
+  const vaultResumeReady = useMemo(() => {
+    const loaded = loadCctpSession();
+    if (!loaded.ok) return false;
+    const { sourceChainId, destChainId } = loaded.record.recovery;
+    return Boolean(
+      resolveCctpDirection(
+        sourceChainId as ChainDisplayId,
+        destChainId as ChainDisplayId,
+      ),
+    );
+  }, [quoteInputsKey, state.sourceChainId, state.destChainId]);
+
   const saga = useCctpSaga({
     sourceChainId: state.sourceChainId,
     destChainId: state.destChainId,
@@ -87,9 +102,8 @@ export function CrossChainSwapDeck({
     mintSubmitter: walletRoles.sagaWallets.mintSubmitter,
     wallets: walletRoles.sagaWallets,
     bridgeReady:
-      state.executable &&
-      Boolean(walletRoles.direction) &&
-      readiness.cctpGloballyReady,
+      readiness.cctpGloballyReady &&
+      ((state.executable && Boolean(walletRoles.direction)) || vaultResumeReady),
     quoteInputsKey,
   });
 
@@ -98,18 +112,22 @@ export function CrossChainSwapDeck({
     const recovery = saga.sessionPublic?.recovery;
     if (!recovery?.sourceChainId || !recovery.destChainId) return;
     const key = `${recovery.sourceChainId}|${recovery.destChainId}|${recovery.amount}|${recovery.recipient}`;
-    if (restoredRecoveryKeyRef.current === key) return;
-    if (
-      saga.stage === 'resume_pending' ||
-      saga.stage === 'quoted' ||
-      saga.stage === 'pending_reconcile'
-    ) {
-      restoredRecoveryKeyRef.current = key;
-      state.restoreFromRecovery(recovery);
-    }
+    const formMatches =
+      state.sourceChainId === recovery.sourceChainId &&
+      state.destChainId === recovery.destChainId &&
+      state.sourceAmount === recovery.amount &&
+      state.useRecipientOverride &&
+      state.recipientOverride === recovery.recipient;
+    if (formMatches || restoredRecoveryKeyRef.current === key) return;
+    restoredRecoveryKeyRef.current = key;
+    state.restoreFromRecovery(recovery);
   }, [
     saga.sessionPublic?.recovery,
-    saga.stage,
+    state.destChainId,
+    state.recipientOverride,
+    state.sourceAmount,
+    state.sourceChainId,
+    state.useRecipientOverride,
     state.restoreFromRecovery,
   ]);
 
@@ -263,6 +281,7 @@ export function CrossChainSwapDeck({
                         readiness.loaded && !readiness.cctpGloballyReady
                       }
                       resumeMismatch={saga.resumeMismatch}
+                      walletRoleMismatch={saga.walletRoleMismatch}
                       sessionPublic={saga.sessionPublic}
                       reattestCooldownUntil={saga.reattestCooldownUntil}
                     />

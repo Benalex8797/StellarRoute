@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { useCctpSaga } from './useCctpSaga';
 import { fingerprintPreparedPayload } from '@/lib/cctp/payload-fingerprint';
 import { buildCctpSessionRecord } from '@/lib/cctp/session-vault';
+import { buildWalletRoleBindings } from '@/lib/cctp/wallet-role-binding';
 
 const prepareBurn = vi.fn();
 const submitBurn = vi.fn();
@@ -64,22 +65,41 @@ const stellarBurnPayload = {
   xdr_envelope: 'AAAAburn',
 };
 
+const EVM_SOURCE = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
+const STELLAR_G = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+const defaultBindings = buildWalletRoleBindings({
+  direction: 'evm_to_stellar',
+  sourceChainId: 'eip155:11155111',
+  destChainId: 'stellar:testnet',
+  sender: EVM_SOURCE,
+  recipient: STELLAR_G,
+  mintSubmitter: STELLAR_G,
+})!;
+
 const baseInput = {
   sourceChainId: 'ethereum-sepolia' as const,
   destChainId: 'stellar' as const,
   amount: '10',
-  recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+  recipient: STELLAR_G,
   wallets: {
-    recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    recipient: STELLAR_G,
     sourceEvmAdapterId: 'evm:test',
+    sourceAddress: EVM_SOURCE,
+    mintSubmitter: STELLAR_G,
+    mintSubmitterStellarAdapterId: 'freighter',
   },
   bridgeReady: true,
   quoteInputsKey: 'k1',
+  sender: EVM_SOURCE,
+  mintSubmitter: STELLAR_G,
 };
 
 function seedSession(overrides?: {
   burnPrepareStep?: 'approval_ready' | 'burn_ready' | 'reprepare_required';
   fingerprint?: string;
+  walletBindings?: ReturnType<typeof buildWalletRoleBindings>;
+  version?: 1 | 2;
 }) {
   const fp = overrides?.fingerprint ?? 'vault-fp';
   const record = buildCctpSessionRecord({
@@ -92,11 +112,18 @@ function seedSession(overrides?: {
       sourceChainId: 'ethereum-sepolia',
       destChainId: 'stellar',
       amount: '10',
-      recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      recipient: STELLAR_G,
       burnPrepareStep: overrides?.burnPrepareStep ?? 'approval_ready',
       lastPreparedFingerprint: fp,
+      walletBindings: overrides?.walletBindings ?? defaultBindings,
     },
   });
+  if (overrides?.version === 1) {
+    record.version = 1;
+    if (overrides.walletBindings === undefined) {
+      delete record.recovery.walletBindings;
+    }
+  }
   sessionStorage.setItem('stellarroute:cctp:v1', JSON.stringify(record));
   return record;
 }
@@ -130,9 +157,14 @@ describe('useCctpSaga server-driven burn staging', () => {
       wallets: {
         recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
         sourceEvmAdapterId: 'evm:test',
+        sourceAddress: EVM_SOURCE,
+        mintSubmitter: STELLAR_G,
+        mintSubmitterStellarAdapterId: 'freighter',
       },
       bridgeReady: true,
       quoteInputsKey: 'k1',
+      sender: EVM_SOURCE,
+      mintSubmitter: STELLAR_G,
     };
     prepareBurn
       .mockResolvedValueOnce({
@@ -185,10 +217,12 @@ describe('useCctpSaga server-driven burn staging', () => {
       wallets: {
         recipient: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
         sourceStellarAdapterId: 'freighter',
+        sourceAddress: STELLAR_G,
         evmDestinationAdapterId: 'evm:dest',
       },
       bridgeReady: true,
       quoteInputsKey: 'k2',
+      sender: STELLAR_G,
     };
     prepareBurn
       .mockResolvedValueOnce({
@@ -241,9 +275,17 @@ describe('useCctpSaga server-driven burn staging', () => {
         destChainId: 'stellar',
         amount: '10',
         recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
-        wallets: { recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF', sourceEvmAdapterId: 'evm:test' },
+        wallets: {
+          recipient: STELLAR_G,
+          sourceEvmAdapterId: 'evm:test',
+          sourceAddress: EVM_SOURCE,
+          mintSubmitter: STELLAR_G,
+          mintSubmitterStellarAdapterId: 'freighter',
+        },
         bridgeReady: true,
         quoteInputsKey: 'k3',
+        sender: EVM_SOURCE,
+        mintSubmitter: STELLAR_G,
       }),
     );
     await act(async () => {
@@ -264,8 +306,12 @@ describe('useCctpSaga reconcile stability', () => {
   beforeEach(() => {
     sessionStorage.clear();
     prepareBurn.mockReset();
+    submitBurn.mockReset();
     getTransfer.mockReset();
+    executePreparedPayload.mockReset();
     startPoll.mockClear();
+    executePreparedPayload.mockResolvedValue({ txHash: '0xhash', submissionReady: true });
+    submitBurn.mockResolvedValue({ status: 'burn_submitted' });
     getTransfer.mockResolvedValue({
       transfer_id: 't1',
       corridor_id: 'c',
@@ -336,6 +382,32 @@ describe('useCctpSaga reconcile stability', () => {
     expect(prepareBurn).toHaveBeenCalledTimes(1);
   });
 
+  it('retries auto-reconcile after vault form inputs are restored', async () => {
+    seedSession({ burnPrepareStep: 'approval_ready', fingerprint: 'fp-vault' });
+
+    const mismatchInput = {
+      ...baseInput,
+      sourceChainId: 'stellar' as const,
+      destChainId: 'stellar' as const,
+      quoteInputsKey: 'mismatch',
+    };
+
+    const { rerender } = renderHook(
+      ({ input }: { input: typeof baseInput }) => useCctpSaga(input),
+      { initialProps: { input: mismatchInput } },
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getTransfer).not.toHaveBeenCalled();
+
+    rerender({ input: baseInput });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getTransfer).toHaveBeenCalledTimes(1);
+  });
+
   it('manual resume always refreshes transfer status', async () => {
     seedSession();
     const { result } = renderHook(() => useCctpSaga(baseInput));
@@ -348,5 +420,75 @@ describe('useCctpSaga reconcile stability', () => {
       await result.current.resumeTransfer();
     });
     expect(getTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  it('wrong reconnect blocks signing with zero wallet and submit calls', async () => {
+    const fp = fingerprintPreparedPayload(evmApprovalPayload);
+    seedSession({ burnPrepareStep: 'approval_ready', fingerprint: fp });
+    prepareBurn.mockResolvedValue({
+      approval_required: true,
+      payload: evmApprovalPayload,
+      expires_at: 9999999999,
+    });
+
+    const wrongWalletInput = {
+      ...baseInput,
+      wallets: {
+        ...baseInput.wallets,
+        sourceAddress: '0x1111111111111111111111111111111111111111',
+      },
+    };
+    const { result } = renderHook(() => useCctpSaga(wrongWalletInput));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.walletRoleMismatch?.code).toBe('source_burn_mismatch');
+
+    await act(async () => {
+      await result.current.prepareSourceBurn();
+    });
+    await act(async () => {
+      await result.current.signApprovalStep();
+    });
+    expect(prepareBurn).not.toHaveBeenCalled();
+    expect(executePreparedPayload).not.toHaveBeenCalled();
+    expect(submitBurn).not.toHaveBeenCalled();
+  });
+
+  it('correct reconnect resumes re-prepare then one wallet signature', async () => {
+    const fp = fingerprintPreparedPayload(evmApprovalPayload);
+    seedSession({ burnPrepareStep: 'approval_ready', fingerprint: fp });
+    prepareBurn.mockResolvedValue({
+      approval_required: true,
+      payload: evmApprovalPayload,
+      expires_at: 9999999999,
+    });
+
+    const { result } = renderHook(() => useCctpSaga(baseInput));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.burnPrepareStep).toBe('reprepare_required');
+    await act(async () => {
+      await result.current.prepareSourceBurn();
+    });
+    await act(async () => {
+      await result.current.signApprovalStep();
+    });
+    expect(executePreparedPayload).toHaveBeenCalledTimes(1);
+    expect(submitBurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('old vault schema without bindings never signs', async () => {
+    seedSession({ version: 1, walletBindings: undefined });
+    const { result } = renderHook(() => useCctpSaga(baseInput));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.walletRoleMismatch?.code).toBe('bindings_missing');
+    await act(async () => {
+      await result.current.signApprovalStep();
+    });
+    expect(executePreparedPayload).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,9 @@
 const VAULT_KEY = 'stellarroute:cctp:v1';
-const VAULT_VERSION = 1;
+const VAULT_VERSION = 2;
 const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
 const PENDING_EVM_TX_TTL_MS = 30 * 60 * 1000;
+
+import type { CctpWalletRoleBindings } from './wallet-role-binding';
 
 export type BurnPrepareStep =
   | 'unknown'
@@ -26,10 +28,12 @@ export interface CctpSessionRecoveryMeta {
   burnPrepareStep?: BurnPrepareStep;
   lastPreparedFingerprint?: string;
   pendingEvmTx?: CctpPendingEvmTx;
+  /** Public signer bindings captured at quote time (v2+). */
+  walletBindings?: CctpWalletRoleBindings;
 }
 
 export interface CctpSessionRecord {
-  version: typeof VAULT_VERSION;
+  version: 1 | 2;
   transferId: string;
   accessToken: string;
   idempotencyKey: string;
@@ -55,7 +59,7 @@ function isBrowserSession(): boolean {
 function validateRecord(raw: unknown): CctpSessionRecord | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Partial<CctpSessionRecord>;
-  if (r.version !== VAULT_VERSION) return null;
+  if (r.version !== 1 && r.version !== 2) return null;
   if (!r.transferId || typeof r.transferId !== 'string') return null;
   if (!r.accessToken || typeof r.accessToken !== 'string') return null;
   if (!r.idempotencyKey || typeof r.idempotencyKey !== 'string') return null;
@@ -67,7 +71,11 @@ function validateRecord(raw: unknown): CctpSessionRecord | null {
   if (!rec.corridorId || !rec.direction || !rec.amount || !rec.recipient) {
     return null;
   }
-  return r as CctpSessionRecord;
+  const record = r as CctpSessionRecord;
+  if (record.version === 2 && !rec.walletBindings) {
+    return null;
+  }
+  return record;
 }
 
 export function saveCctpSession(record: CctpSessionRecord): void {
@@ -215,6 +223,14 @@ export function buildAutoReconcileRevision(record: CctpSessionRecord): string {
   return [record.transferId, record.idempotencyKey, r.pendingEvmTx?.txHash ?? ''].join(
     ':',
   );
+}
+
+export function sessionHasWalletBindings(record: CctpSessionRecord): boolean {
+  return Boolean(record.recovery.walletBindings);
+}
+
+export function sessionRequiresBindingRecovery(record: CctpSessionRecord): boolean {
+  return record.version < 2 || !record.recovery.walletBindings;
 }
 
 export function sessionRecoveryMatchesInputs(

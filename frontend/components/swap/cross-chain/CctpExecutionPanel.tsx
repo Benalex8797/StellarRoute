@@ -6,6 +6,7 @@ import type { CctpTraderError } from '@/lib/cctp/errors';
 import type { CctpQuoteResponse, CctpTransferStatusResponse } from '@/lib/cctp/types';
 import type { CctpSagaStage } from '@/hooks/useCctpSaga';
 import type { CctpSessionRecoveryMeta } from '@/lib/cctp/session-vault';
+import type { WalletRoleMismatch } from '@/lib/cctp/wallet-role-binding';
 import { formatCctpTraderStatus } from '@/lib/cctp/status-copy';
 import { cn } from '@/lib/utils';
 
@@ -21,6 +22,7 @@ interface CctpExecutionPanelProps {
   resetLabel?: string;
   bridgeUnavailable?: boolean;
   resumeMismatch?: boolean;
+  walletRoleMismatch?: WalletRoleMismatch | null;
   sessionPublic?: {
     transferId: string;
     recovery: CctpSessionRecoveryMeta;
@@ -41,6 +43,7 @@ export function CctpExecutionPanel({
   resetLabel = 'Start new quote',
   bridgeUnavailable,
   resumeMismatch,
+  walletRoleMismatch,
   sessionPublic,
   reattestCooldownUntil,
   className,
@@ -92,6 +95,34 @@ export function CctpExecutionPanel({
             {sessionPublic.recovery.destChainId}). Current form inputs differ —
             reconcile with the server before continuing.
           </p>
+        </div>
+      )}
+
+      {walletRoleMismatch && (
+        <div
+          className="rounded-xl border border-signal/40 bg-signal/10 px-3 py-2 text-sm space-y-2"
+          data-testid="cctp-wallet-recovery-card"
+          role="alert"
+        >
+          <p className="font-medium">Connect the original wallet</p>
+          <p className="text-muted-foreground">{walletRoleMismatch.message}</p>
+          {(walletRoleMismatch.expectedMasked ||
+            walletRoleMismatch.currentMasked) && (
+            <dl className="grid gap-1 text-xs font-mono">
+              {walletRoleMismatch.expectedMasked && (
+                <div>
+                  <dt className="text-muted-foreground">Expected</dt>
+                  <dd>{walletRoleMismatch.expectedMasked}</dd>
+                </div>
+              )}
+              {walletRoleMismatch.currentMasked && (
+                <div>
+                  <dt className="text-muted-foreground">Connected</dt>
+                  <dd>{walletRoleMismatch.currentMasked}</dd>
+                </div>
+              )}
+            </dl>
+          )}
         </div>
       )}
 

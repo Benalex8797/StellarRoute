@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChainDisplayId } from '@/lib/cross-chain/types';
 import { StellarRouteApiError } from '@/lib/api/client';
 import { buildCctpQuoteRequest } from '@/lib/cctp/corridor-bridge';
+import { classifyStellarRecipient } from '@/lib/cctp/wallet-role-binding';
 import { getCctpApiClient } from '@/lib/cctp/client';
 import { mapCctpError, type CctpTraderError } from '@/lib/cctp/errors';
 import { fingerprintPreparedPayload } from '@/lib/cctp/payload-fingerprint';
@@ -18,10 +19,18 @@ import {
   purgeCctpSessionIfTerminal,
   saveCctpSession,
   sessionRecoveryMatchesInputs,
+  sessionRequiresBindingRecovery,
   setPendingEvmTx,
   type BurnPrepareStep,
   type CctpSessionRecord,
 } from '@/lib/cctp/session-vault';
+import {
+  assessWalletRoleBindings,
+  buildWalletRoleBindings,
+  signingIntentForBurnStep,
+  signingIntentForMintPayload,
+  type WalletRoleMismatch,
+} from '@/lib/cctp/wallet-role-binding';
 import {
   executePreparedPayload,
   reconcileEvmTransactionHash,
@@ -193,6 +202,75 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     [session, stage],
   );
 
+  const resolveWalletSigningIntent = useCallback((): Parameters<
+    typeof assessWalletRoleBindings
+  >[0]['intent'] | null => {
+    if (!session) return null;
+    if (
+      transferStatus?.status === 'attestation_ready' ||
+      transferStatus?.status === 'mint_prepared' ||
+      transferStatus?.status === 'mint_failed_retryable' ||
+      stage === 'sign_mint'
+    ) {
+      return session.recovery.direction === 'evm_to_stellar'
+        ? 'stellar_mint'
+        : 'evm_mint';
+    }
+    if (effectiveBurnPrepareStep(burnPrepareStep, preparedPayload, preparedFingerprint ?? session.recovery.lastPreparedFingerprint ?? null) === 'approval_ready') {
+      return 'source_approval';
+    }
+    if (effectiveBurnPrepareStep(burnPrepareStep, preparedPayload, preparedFingerprint ?? session.recovery.lastPreparedFingerprint ?? null) === 'burn_ready') {
+      return 'source_burn';
+    }
+    if (inputsLocked) return 'resume';
+    return null;
+  }, [
+    burnPrepareStep,
+    inputsLocked,
+    preparedFingerprint,
+    preparedPayload,
+    session,
+    stage,
+    transferStatus?.status,
+  ]);
+
+  const requireWalletRoles = useCallback(
+    (
+      intent: Parameters<typeof assessWalletRoleBindings>[0]['intent'],
+      payload?: Parameters<typeof assessWalletRoleBindings>[0]['payload'],
+    ): boolean => {
+      if (!session) return false;
+      const assessment = assessWalletRoleBindings({
+        bindings: session.recovery.walletBindings,
+        wallets: inputRef.current.wallets,
+        intent,
+        payload,
+      });
+      return assessment.ok;
+    },
+    [session],
+  );
+
+  const walletRoleMismatch = useMemo((): WalletRoleMismatch | null => {
+    if (!session) return null;
+    if (sessionRequiresBindingRecovery(session)) {
+      return {
+        code: 'bindings_missing',
+        role: 'session',
+        message:
+          'This saved transfer predates wallet verification. Start a new quote to continue.',
+      };
+    }
+    const intent = resolveWalletSigningIntent();
+    if (!intent) return null;
+    const assessment = assessWalletRoleBindings({
+      bindings: session.recovery.walletBindings,
+      wallets: input.wallets,
+      intent,
+    });
+    return assessment.ok ? null : assessment.issue;
+  }, [input.wallets, resolveWalletSigningIntent, session]);
+
   useEffect(() => {
     if (
       lastInputsKey.current !== null &&
@@ -307,7 +385,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     const key = idempotencyKey ?? crypto.randomUUID();
     setIdempotencyKey(key);
 
-    const body = buildCctpQuoteRequest({
+    let body = buildCctpQuoteRequest({
       sourceChainId: input.sourceChainId,
       destChainId: input.destChainId,
       amount: input.amount,
@@ -320,6 +398,36 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         kind: 'nonretryable',
         title: 'Unsupported corridor',
         message: 'This chain pair is not a CCTP corridor.',
+      });
+      setStage('failed');
+      setBusy(false);
+      return;
+    }
+
+    const mintSubmitterForQuote =
+      input.mintSubmitter ??
+      (body.direction === 'evm_to_stellar' &&
+      classifyStellarRecipient(body.recipient) === 'stellar_g'
+        ? body.recipient
+        : undefined);
+    if (body.direction === 'evm_to_stellar' && mintSubmitterForQuote) {
+      body = { ...body, mint_submitter: mintSubmitterForQuote };
+    }
+
+    const walletBindings = buildWalletRoleBindings({
+      direction: body.direction,
+      sourceChainId: body.source_chain_id,
+      destChainId: body.destination_chain_id,
+      sender: body.sender,
+      recipient: body.recipient,
+      mintSubmitter: body.mint_submitter,
+    });
+    if (!walletBindings) {
+      setError({
+        kind: 'nonretryable',
+        title: 'Connect required wallets',
+        message:
+          'Connect the source signer and any required mint submitter wallets before requesting a quote.',
       });
       setStage('failed');
       setBusy(false);
@@ -343,6 +451,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
           recipient: input.recipient,
           quoteExpiresAt: response.expires_at,
           burnPrepareStep: 'unknown',
+          walletBindings,
         },
       });
       saveCctpSession(record);
@@ -359,6 +468,12 @@ export function useCctpSaga(input: UseCctpSagaInput) {
 
   const prepareSourceBurn = useCallback(async () => {
     if (!session) return;
+    if (
+      session.recovery.walletBindings &&
+      !requireWalletRoles('resume')
+    ) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -371,7 +486,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     } finally {
       setBusy(false);
     }
-  }, [accessOptions, client, persistBurnPrepare, session]);
+  }, [accessOptions, client, persistBurnPrepare, requireWalletRoles, session]);
 
   const autoReconcileRevision = useMemo(() => {
     if (!session) return null;
@@ -424,7 +539,6 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     if (autoReconciledRevisionRef.current === revision) return;
 
     if (!sessionRecoveryMatchesInputs(loaded.record, inputRef.current)) {
-      autoReconciledRevisionRef.current = revision;
       syncSession(loaded.record);
       setResumeMismatch(true);
       setStage('resume_pending');
@@ -562,7 +676,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     void autoReconcileOnce();
     // autoReconcileOnce is internally deduped; omit from deps to avoid identity churn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoReconcileRevision, input.bridgeReady]);
+  }, [autoReconcileRevision, input.bridgeReady, input.quoteInputsKey]);
 
   const commitPendingEvmTx = useCallback(
     (input: Parameters<typeof setPendingEvmTx>[0]) => {
@@ -596,6 +710,9 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         title: 'No active transfer',
         message: 'Request a quote first.',
       });
+      return;
+    }
+    if (!requireWalletRoles(signingIntentForBurnStep('approval_ready'))) {
       return;
     }
     const prepared = preparedPayload;
@@ -660,6 +777,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     session,
     syncSession,
     commitPendingEvmTx,
+    requireWalletRoles,
   ]);
 
   const signBurnStep = useCallback(async () => {
@@ -669,6 +787,9 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         title: 'No active transfer',
         message: 'Request a quote first.',
       });
+      return;
+    }
+    if (!requireWalletRoles(signingIntentForBurnStep('burn_ready'))) {
       return;
     }
     const prepared = preparedPayload;
@@ -726,6 +847,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     session,
     startPoll,
     syncSession,
+    requireWalletRoles,
   ]);
 
   const signPreparedMintStep = useCallback(async () => {
@@ -734,6 +856,9 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     setError(null);
     try {
       const prepared = await client.prepareMint(session.transferId, accessOptions());
+      if (!requireWalletRoles(signingIntentForMintPayload(prepared.payload), prepared.payload)) {
+        return;
+      }
       setStage('sign_mint');
       walletRequestCount.current += 1;
       const stellarMintId =
@@ -762,7 +887,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     } finally {
       setBusy(false);
     }
-  }, [accessOptions, client, commitPendingEvmTx, input.wallets, session, startPoll, syncSession]);
+  }, [accessOptions, client, commitPendingEvmTx, input.wallets, requireWalletRoles, session, startPoll, syncSession]);
 
   const reconcilePendingEvmTx = useCallback(async () => {
     const loaded = loadCctpSession();
@@ -899,34 +1024,34 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       if (effectiveBurnStep === 'reprepare_required') {
         return {
           label: 'Re-prepare transaction',
-          disabled: busy,
+          disabled: busy || Boolean(walletRoleMismatch),
           action: 'prepare' as const,
         };
       }
       if (effectiveBurnStep === 'unknown') {
         return {
           label: 'Prepare source transaction',
-          disabled: busy,
+          disabled: busy || Boolean(walletRoleMismatch),
           action: 'prepare' as const,
         };
       }
       if (effectiveBurnStep === 'approval_ready') {
         return {
           label: 'Approve USDC spend',
-          disabled: busy,
+          disabled: busy || Boolean(walletRoleMismatch),
           action: 'approve' as const,
         };
       }
       if (effectiveBurnStep === 'burn_ready') {
         return {
           label: 'Sign burn on source chain',
-          disabled: busy,
+          disabled: busy || Boolean(walletRoleMismatch),
           action: 'burn' as const,
         };
       }
       return {
         label: 'Re-prepare transaction',
-        disabled: busy,
+        disabled: busy || Boolean(walletRoleMismatch),
         action: 'prepare' as const,
       };
     }
@@ -937,7 +1062,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     ) {
       return {
         label: 'Sign mint on destination',
-        disabled: busy,
+        disabled: busy || Boolean(walletRoleMismatch),
         action: 'mint' as const,
       };
     }
@@ -959,6 +1084,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     reattestCooldownUntil,
     stage,
     transferStatus?.status,
+    walletRoleMismatch,
   ]);
 
   const runPrimaryAction = useCallback(async () => {
@@ -1011,6 +1137,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     inputsLocked,
     burnPrepareStep: effectiveBurnStep,
     resumeMismatch,
+    walletRoleMismatch,
     pendingEvmTx,
     sessionPublic: session
       ? { transferId: session.transferId, recovery: session.recovery }
