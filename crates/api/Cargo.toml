@@ -22,6 +22,10 @@ path = "src/bin/m2_readiness.rs"
 name = "cctp-live-readiness-probe"
 path = "src/bin/cctp-live-readiness-probe.rs"
 
+[[bin]]
+name = "cctp-evm-signer"
+path = "src/bin/cctp-evm-signer.rs"
+
 [dependencies]
 # Workspace dependencies
 tokio.workspace = true

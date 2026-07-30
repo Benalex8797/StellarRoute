@@ -60,3 +60,18 @@ Protocol caps: `MAX_IRIS_PUBLIC_KEYS=256`, `MAX_ENABLED_ATTESTERS=256`, `MAX_SIG
 ```bash
 ./scripts/cctp-live-attester-read.sh
 ```
+
+## Signed-live testnet harness key handling
+
+`scripts/cctp-signed-live-stellar-to-sepolia-proof.sh` accepts the Sepolia
+signing key only through `CCTP_EVM_MINT_KEY_FILE`. The path must resolve to a
+regular, non-symlink file with mode `0600`; plaintext key environment variables
+are intentionally unsupported.
+
+The harness builds and invokes `cctp-evm-signer` with key, transaction, and RPC
+file paths only. The helper reads the key internally, verifies the signer and
+mint recipient match, pins Sepolia and its `MessageTransmitterV2`, validates
+zero value, `receiveMessage(bytes,bytes)` calldata, and the gas cap, then signs
+and broadcasts the raw EIP-1559 transaction. Its only stdout is the public
+transaction hash. Temporary request and RPC files are removed by the harness
+exit trap.

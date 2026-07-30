@@ -12,11 +12,13 @@ API_PORT="${CCTP_PROOF_API_PORT:-31889}"
 FRONTEND_ORIGIN="${CCTP_PROOF_FRONTEND_ORIGIN:-http://127.0.0.1:31999}"
 EVIDENCE_PATH="$ROOT/docs/readiness/evidence/cctp-signed-live-stellar-to-sepolia.json"
 PROOF_SCRIPT_PATH="$ROOT/scripts/cctp-signed-live-stellar-to-sepolia-proof.sh"
+EVM_SIGNER_BIN="$ROOT/target/debug/cctp-evm-signer"
 STELLAR_RPC="${CCTP_STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}"
 SEPOLIA_RPC="${CCTP_SEPOLIA_RPC_URL:-${SEPOLIA_RPC_URL:-https://sepolia.drpc.org}}"
 STELLAR_USDC_CONTRACT="CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
 STELLAR_TOKEN_MESSENGER="CDNG7HXAPBWICI2E3AUBP3YZWZELJLYSB6F5CC7WLDTLTHVM74SLRTHP"
 SEPOLIA_USDC="0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"
+SEPOLIA_MESSAGE_TRANSMITTER="0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
 STELLAR_NETWORK_PASSPHRASE="${STELLAR_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"
 PROOF_AMOUNT="${CCTP_PROOF_AMOUNT:-1.0000000}"
 MIN_XLM="${CCTP_MIN_XLM:-10}"
@@ -177,37 +179,34 @@ stellar_xlm_balance() {
     | jq -r '.balances[] | select(.asset_type=="native") | .balance' 2>/dev/null || echo "0"
 }
 
-ensure_evm_recipient() {
-  if [[ -n "${CCTP_EVM_RECIPIENT:-}" ]]; then
-    echo "$CCTP_EVM_RECIPIENT" >"$EVM_ADDR_FILE"
-    chmod 600 "$EVM_ADDR_FILE"
-  elif [[ -f "$EVM_ADDR_FILE" ]]; then
-    :
-  else
-    require_cmd cast
-    local addr
-    addr="$(cast wallet new 2>/dev/null | awk '/Address:/ {print $2}')"
-    echo "$addr" >"$EVM_ADDR_FILE"
-    chmod 600 "$EVM_ADDR_FILE"
-  fi
-  cat "$EVM_ADDR_FILE"
-}
-
 ensure_evm_mint_key() {
-  if [[ -n "${SEPOLIA_PRIVATE_KEY:-}" ]]; then
-    printf '%s' "$SEPOLIA_PRIVATE_KEY" >"$EVM_KEY_FILE"
-    chmod 600 "$EVM_KEY_FILE"
-  elif [[ -f "$EVM_KEY_FILE" ]]; then
-    :
+  if [[ ! -f "$EVM_KEY_FILE" || -L "$EVM_KEY_FILE" ]]; then
+    echo "Missing secure EVM key file: ${EVM_KEY_FILE}" >&2
+    echo "Create it out-of-band as a regular 0600 file; environment keys are rejected." >&2
+    return 1
+  fi
+  local derived configured stored
+  derived="$("$EVM_SIGNER_BIN" address --key-file "$EVM_KEY_FILE")"
+  configured="${CCTP_EVM_RECIPIENT:-}"
+  if [[ -n "$configured" && "${configured,,}" != "${derived,,}" ]]; then
+    echo "CCTP_EVM_RECIPIENT does not match the secure key file" >&2
+    return 1
+  fi
+  if [[ -e "$EVM_ADDR_FILE" ]]; then
+    if [[ ! -f "$EVM_ADDR_FILE" || -L "$EVM_ADDR_FILE" ]]; then
+      echo "EVM recipient path must be a regular file, not a symlink" >&2
+      return 1
+    fi
+    stored="$(<"$EVM_ADDR_FILE")"
+    if [[ "${stored,,}" != "${derived,,}" ]]; then
+      echo "EVM recipient file does not match the secure key file" >&2
+      return 1
+    fi
   else
-    require_cmd cast
-    local pk
-    pk="$(cast wallet new 2>/dev/null | awk '/Private key:/ {print $3}')"
-    printf '%s' "$pk" >"$EVM_KEY_FILE"
-    chmod 600 "$EVM_KEY_FILE"
-    cast wallet address --private-key "$(cat "$EVM_KEY_FILE")" >"$EVM_ADDR_FILE"
+    (umask 077; printf '%s\n' "$derived" >"$EVM_ADDR_FILE")
     chmod 600 "$EVM_ADDR_FILE"
   fi
+  printf '%s\n' "$derived"
 }
 
 evm_eth_balance_wei() {
@@ -243,16 +242,34 @@ stellar_sign_and_send() {
 }
 
 evm_sign_and_send() {
-  local to="$1" data="$2" value="$3"
+  local to="$1" data="$2" value="$3" recipient="$4"
   local hash
-  hash="$(cast send --rpc-url "$SEPOLIA_RPC" --private-key "$(cat "$EVM_KEY_FILE")" \
-    "$to" "$data" --value "$value" --json 2>"$TMP_DIR/evm-send.err" \
-    | jq -r '.transactionHash // empty')"
-  if [[ -z "$hash" || "$hash" == "null" ]]; then
-    echo "EVM broadcast failed; see $TMP_DIR/evm-send.err" >&2
+  (umask 077; printf '%s\n' "$SEPOLIA_RPC" >"$TMP_DIR/evm-rpc-url")
+  jq -n \
+    --arg recipient "$recipient" \
+    --arg contract "$SEPOLIA_MESSAGE_TRANSMITTER" \
+    --arg to "$to" \
+    --arg data "$data" \
+    --arg value "$value" \
+    '{
+      chain_id: 11155111,
+      recipient: $recipient,
+      contract: $contract,
+      to: $to,
+      data: $data,
+      value: $value,
+      max_gas_limit: 1000000
+    }' >"$TMP_DIR/evm-sign-request.json"
+  chmod 600 "$TMP_DIR/evm-sign-request.json"
+  hash="$("$EVM_SIGNER_BIN" send \
+    --key-file "$EVM_KEY_FILE" \
+    --request-file "$TMP_DIR/evm-sign-request.json" \
+    --rpc-file "$TMP_DIR/evm-rpc-url")"
+  if [[ ! "$hash" =~ ^0x[0-9a-f]{64}$ ]]; then
+    echo "EVM signing helper did not return a public transaction hash" >&2
     return 1
   fi
-  echo "$hash"
+  printf '%s\n' "$hash"
 }
 
 api_post() {
@@ -298,8 +315,7 @@ poll_transfer_status() {
 funding_checkpoint() {
   local stellar_g evm_recipient usdc_raw xlm bal eth_wei
   stellar_g="$(stellar_source_g)"
-  evm_recipient="$(ensure_evm_recipient)"
-  ensure_evm_mint_key
+  evm_recipient="$(ensure_evm_mint_key)"
 
   if ! curl -fsS "https://horizon-testnet.stellar.org/accounts/${stellar_g}" >/dev/null 2>&1; then
     echo "Funding Stellar account via Friendbot..."
@@ -363,6 +379,10 @@ require_cmd jq
 require_cmd stellar
 require_cmd cast
 require_cmd python3
+require_cmd cargo
+
+cd "$ROOT"
+cargo build -q -p stellarroute-api --bin cctp-evm-signer
 
 chain_hex="$(curl -fsS -X POST "$SEPOLIA_RPC" \
   -H 'content-type: application/json' \
@@ -481,7 +501,15 @@ prepare_mint_http="$(api_post "/api/v2/bridge/cctp/${transfer_id}/prepare-mint" 
 mint_to="$(jq -r '.data.payload.to' "$TMP_DIR/prepare-mint.json")"
 mint_data="$(jq -r '.data.payload.data' "$TMP_DIR/prepare-mint.json")"
 mint_value="$(jq -r '.data.payload.value' "$TMP_DIR/prepare-mint.json")"
-mint_hash="$(evm_sign_and_send "$mint_to" "$mint_data" "$mint_value")"
+mint_chain_id="$(jq -r '.data.payload.chain_id' "$TMP_DIR/prepare-mint.json")"
+if [[ "$mint_chain_id" != "eip155:11155111" \
+  || "${mint_to,,}" != "${SEPOLIA_MESSAGE_TRANSMITTER,,}" \
+  || "$mint_value" != "0" \
+  || "${mint_data:0:10}" != "0x57ecfd28" ]]; then
+  echo "Prepared mint payload failed chain/contract/value/calldata validation" >&2
+  exit 1
+fi
+mint_hash="$(evm_sign_and_send "$mint_to" "$mint_data" "$mint_value" "$EVM_RECIPIENT")"
 submit_mint_http="$(api_post "/api/v2/bridge/cctp/${transfer_id}/submit-mint" "{\"tx_hash\":\"${mint_hash}\"}" "$TMP_DIR/submit-mint.json")"
 [[ "$submit_mint_http" == "200" ]] || exit 1
 
