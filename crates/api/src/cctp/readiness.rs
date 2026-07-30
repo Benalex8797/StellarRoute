@@ -40,6 +40,7 @@ impl CctpReadiness {
     }
 }
 
+#[derive(Clone)]
 pub struct CctpRuntime {
     pub stellar_burn_builder: Arc<dyn StellarCctpBurnBuilder>,
     pub evm_burn_builder: Arc<dyn EvmCctpBurnBuilder>,

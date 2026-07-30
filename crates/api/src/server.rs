@@ -142,6 +142,11 @@ fn build_cors_layer() -> CorsLayer {
     }
 }
 
+async fn finalize_app_state(mut state: AppState) -> Arc<AppState> {
+    state.bootstrap_cctp_runtime().await;
+    Arc::new(state)
+}
+
 /// API Server
 pub struct Server {
     config: ServerConfig,
@@ -188,7 +193,7 @@ impl Server {
                         state.admin_auth_token = config.admin_auth_token.clone();
                         // Initialize WS subsystem on the AppState so handlers/broadcaster can start
                         state.ws = Some(crate::routes::ws::WsState::from_env());
-                        (Arc::new(state), rate_limit)
+                        (finalize_app_state(state).await, rate_limit)
                     }
                 }
                 Err(e) => {
@@ -198,7 +203,7 @@ impl Server {
                         state.admin_auth_token = config.admin_auth_token.clone();
                         state.ws = Some(crate::routes::ws::WsState::from_env());
                         (
-                            Arc::new(state),
+                            finalize_app_state(state).await,
                             RateLimitLayer::in_memory(EndpointConfig::default()),
                         )
                     }
@@ -211,7 +216,7 @@ impl Server {
                 state.admin_auth_token = config.admin_auth_token.clone();
                 state.ws = Some(crate::routes::ws::WsState::from_env());
                 (
-                    Arc::new(state),
+                    finalize_app_state(state).await,
                     RateLimitLayer::in_memory(EndpointConfig::default()),
                 )
             }
