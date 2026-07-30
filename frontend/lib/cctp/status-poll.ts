@@ -65,11 +65,9 @@ export function startCctpStatusPoll(input: {
         input.callbacks.onTerminal?.(status);
         return;
       }
-      if (!POLLABLE.has(status.status) && status.status !== 'created') {
+      if (POLLABLE.has(status.status)) {
         schedule();
-        return;
       }
-      schedule();
     } catch (err) {
       if (controller.signal.aborted) return;
       input.callbacks.onError?.(err);

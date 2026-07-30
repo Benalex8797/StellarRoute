@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { NetworkMismatchBanner } from '@/components/shared/NetworkMismatchBanner';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
@@ -93,23 +93,25 @@ export function CrossChainSwapDeck({
     quoteInputsKey,
   });
 
-  useEffect(() => {
-    if (state.executable && walletRoles.direction) {
-      void saga.reconcileOnLoad();
-    }
-  }, [state.executable, walletRoles.direction, saga.reconcileOnLoad]);
-
+  const restoredRecoveryKeyRef = useRef<string | null>(null);
   useEffect(() => {
     const recovery = saga.sessionPublic?.recovery;
     if (!recovery?.sourceChainId || !recovery.destChainId) return;
+    const key = `${recovery.sourceChainId}|${recovery.destChainId}|${recovery.amount}|${recovery.recipient}`;
+    if (restoredRecoveryKeyRef.current === key) return;
     if (
       saga.stage === 'resume_pending' ||
       saga.stage === 'quoted' ||
       saga.stage === 'pending_reconcile'
     ) {
+      restoredRecoveryKeyRef.current = key;
       state.restoreFromRecovery(recovery);
     }
-  }, [saga.sessionPublic?.recovery, saga.stage, state.restoreFromRecovery]);
+  }, [
+    saga.sessionPublic?.recovery,
+    saga.stage,
+    state.restoreFromRecovery,
+  ]);
 
   const panelId =
     state.corridorId === UNMATCHED_CORRIDOR_ID

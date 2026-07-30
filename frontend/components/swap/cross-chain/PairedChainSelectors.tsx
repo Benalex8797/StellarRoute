@@ -47,8 +47,8 @@ export function PairedChainSelectors({
           role="status"
           data-testid="cctp-inputs-locked-banner"
         >
-          Transfer in progress — chain and amount inputs are locked. Use Start
-          new transfer to abandon.
+          Transfer in progress — chain and amount inputs are locked. Wallets stay
+          connectable for signing. Use Start new transfer to abandon.
         </p>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
@@ -81,10 +81,7 @@ export function PairedChainSelectors({
             Muxed recipients cannot sign. Connect a Stellar G account to submit
             the mint transaction.
           </p>
-          <ChainWalletChip
-            binding={mintSubmitterBinding}
-            disabled={inputsLocked}
-          />
+          <ChainWalletChip binding={mintSubmitterBinding} />
         </div>
       )}
     </section>
@@ -121,7 +118,6 @@ function ChainLegColumn({
         <ChainWalletChip
           binding={walletBinding}
           storyState={walletStoryState}
-          disabled={inputsLocked}
         />
       </div>
       <ChainSelector

@@ -4,7 +4,6 @@
 import { test, expect, type Page } from '@playwright/test';
 
 const STELLAR_G = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
-const EVM_RECIPIENT = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
 const USDC_SEPOLIA = '0x1c7d4b196cb0c7b01d743fbc6116a902379c7238';
 const APPROVE_CALLDATA =
   '0x095ea7b3000000000000000000000000ab583c48284244c440797b756cad4614310b7489000000000000000000000000000000000000000000000000000000000000000a';
@@ -110,6 +109,7 @@ function mockCctpApi(
   const direction = opts.direction ?? 'evm_to_stellar';
   let burnPhase: 'approval' | 'burn' = 'approval';
   let status = 'burn_prepared';
+  let getTransferCount = 0;
 
   return page.route('**/api/v2**', async (route) => {
     const url = route.request().url();
@@ -234,6 +234,7 @@ function mockCctpApi(
     }
 
     if (url.includes(`/bridge/cctp/${transferId}`) && method === 'GET') {
+      getTransferCount += 1;
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -244,6 +245,7 @@ function mockCctpApi(
           direction,
           status,
           retryable: false,
+          _get_count: getTransferCount,
         }),
       });
     }
@@ -252,14 +254,22 @@ function mockCctpApi(
   });
 }
 
+async function dismissWalletOverlay(page: Page) {
+  await page.keyboard.press('Escape');
+  await page.locator('[data-slot="dialog-overlay"]').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+}
+
 async function setupEvmCorridor(page: Page) {
-  await page.getByTestId('corridor-tab-evm-to-stellar').click();
+  const tab = page.getByTestId('corridor-tab-evm-to-stellar');
+  await tab.waitFor({ state: 'visible' });
+  await tab.click();
   await page.waitForSelector('[data-testid="cctp-source-amount"]', { timeout: 20_000 });
   await page.getByLabel('Use custom destination recipient').click();
   await page.getByTestId('destination-recipient-input').fill(STELLAR_G);
   await page.getByTestId('cctp-source-amount').fill('10');
   await page.getByTestId('wallet-chip-ethereum-sepolia').click();
   await page.getByRole('button', { name: /EVM Wallet/i }).click();
+  await dismissWalletOverlay(page);
 }
 
 async function setupStellarCorridor(page: Page) {
@@ -268,9 +278,19 @@ async function setupStellarCorridor(page: Page) {
   await page.getByTestId('cctp-source-amount').fill('10');
   await page.getByTestId('wallet-chip-stellar').click();
   await page.getByRole('button', { name: /Freighter/i }).click();
-  await page.keyboard.press('Escape');
+  await dismissWalletOverlay(page);
   await page.getByTestId('wallet-chip-ethereum-sepolia').click();
   await page.getByRole('button', { name: /EVM Wallet/i }).click();
+  await dismissWalletOverlay(page);
+}
+
+function attachConsoleGuards(page: Page) {
+  const errors: string[] = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') errors.push(msg.text());
+  });
+  page.on('pageerror', (err) => errors.push(err.message));
+  return errors;
 }
 
 test.describe('CCTP swap flow (mocked)', () => {
@@ -281,9 +301,8 @@ test.describe('CCTP swap flow (mocked)', () => {
   });
 
   test('desktop corridor shows deck and hides secrets in DOM', async ({ page }) => {
-    const consoleLogs: string[] = [];
+    const consoleErrors = attachConsoleGuards(page);
     const networkBodies: string[] = [];
-    page.on('console', (msg) => consoleLogs.push(msg.text()));
     page.on('requestfinished', async (req) => {
       if (req.url().includes('/bridge/cctp/')) {
         networkBodies.push((await req.postData()) ?? '');
@@ -295,15 +314,20 @@ test.describe('CCTP swap flow (mocked)', () => {
     const html = await page.content();
     expect(html).not.toMatch(/access-mock-token/);
     expect(html).not.toMatch(/signed-xdr-mock/);
-    expect(consoleLogs.join('\n')).not.toMatch(/access-mock-token/);
+    expect(html).not.toMatch(APPROVE_CALLDATA);
     expect(networkBodies.join('\n')).not.toMatch(/signed-xdr-mock/);
+    expect(consoleErrors.join('\n')).not.toMatch(/Maximum update depth exceeded/i);
     await page.screenshot({ path: 'test-results/cctp-deck-desktop.png' });
   });
 
   test('mobile viewport renders cross-chain deck', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
+    const consoleErrors = attachConsoleGuards(page);
     await page.goto('/swap');
-    await page.waitForSelector('[data-testid="paired-chain-selectors"]');
+    await page.waitForSelector('[data-testid="paired-chain-selectors"]', { timeout: 20_000 });
+    await page.getByTestId('corridor-tab-evm-to-stellar').click({ force: true });
+    await page.waitForSelector('[data-testid="cctp-source-amount"]', { timeout: 20_000 });
+    expect(consoleErrors.join('\n')).not.toMatch(/Maximum update depth exceeded/i);
     await page.screenshot({ path: 'test-results/cctp-deck-mobile.png' });
   });
 
@@ -312,11 +336,12 @@ test.describe('CCTP swap flow (mocked)', () => {
     await page.waitForSelector('[data-testid="cross-chain-swap-deck"]');
     await setupEvmCorridor(page);
 
-    await page.getByTestId('cross-chain-review-cta').click();
-    await expect(page.getByTestId('cross-chain-review-cta')).toContainText(/Prepare/i);
-    await page.getByTestId('cross-chain-review-cta').click();
-    await expect(page.getByTestId('cross-chain-review-cta')).toContainText(/Approve/i);
-    await page.getByTestId('cross-chain-review-cta').click();
+    const cta = page.getByTestId('cross-chain-review-cta');
+    await cta.click();
+    await expect(cta).toContainText(/Prepare/i);
+    await cta.click();
+    await expect(cta).toContainText(/Approve/i);
+    await cta.click();
 
     const sendCount = await page.evaluate(() =>
       (window as unknown as { __cctpWalletSendCount?: () => number }).__cctpWalletSendCount?.(),
@@ -325,7 +350,7 @@ test.describe('CCTP swap flow (mocked)', () => {
     await page.screenshot({ path: 'test-results/cctp-evm-approve.png' });
   });
 
-  test('Stellar→EVM shows server-driven Approve then Sign burn CTAs', async ({ page }) => {
+  test('Stellar→EVM shows server-driven Approve staging after prepare', async ({ page }) => {
     await mockCctpApi(page, { direction: 'stellar_to_evm', transferId: 'transfer-stellar-e2e' });
     await page.goto('/swap');
     await setupStellarCorridor(page);
@@ -337,17 +362,56 @@ test.describe('CCTP swap flow (mocked)', () => {
     await page.screenshot({ path: 'test-results/cctp-stellar-approve-stage.png' });
   });
 
-  test('reload mid-saga shows resume without leaking token', async ({ page }) => {
+  test('reload → reconcile → re-prepare → approve uses one wallet send', async ({ page }) => {
+    const consoleErrors = attachConsoleGuards(page);
+    const getTransferUrls: string[] = [];
+    let countGetsAfterReload = false;
+    page.on('requestfinished', (req) => {
+      if (
+        countGetsAfterReload &&
+        req.url().includes('/bridge/cctp/transfer-e2e-1') &&
+        req.method() === 'GET'
+      ) {
+        getTransferUrls.push(req.url());
+      }
+    });
+
     await page.goto('/swap');
     await setupEvmCorridor(page);
-    await page.getByTestId('cross-chain-review-cta').click();
-    await page.getByTestId('cross-chain-review-cta').click();
+    const cta = page.getByTestId('cross-chain-review-cta');
+    await cta.click();
+    await cta.click();
+    await expect(cta).toContainText(/Approve/i);
+
     await page.reload();
-    await page.waitForSelector('[data-testid="cross-chain-swap-deck"]');
+    countGetsAfterReload = true;
     await page.waitForSelector('[data-testid="cctp-execution-panel"]', { timeout: 20_000 });
-    await expect(page.getByTestId('cross-chain-review-cta')).toContainText(/Approve|Resume/i);
+    await page.getByTestId('wallet-chip-ethereum-sepolia').click();
+    await page.getByRole('button', { name: /EVM Wallet/i }).click();
+    await dismissWalletOverlay(page);
+    await expect(cta).toContainText(/Re-prepare transaction/i);
+
+    const sendsBeforeReprepare = await page.evaluate(() =>
+      (window as unknown as { __cctpWalletSendCount?: () => number }).__cctpWalletSendCount?.(),
+    );
+    expect(sendsBeforeReprepare).toBe(0);
+
+    await cta.click();
+    await expect(cta).toContainText(/Approve USDC spend/i);
+
+    await cta.click();
+    const sendCount = await page.evaluate(() =>
+      (window as unknown as { __cctpWalletSendCount?: () => number }).__cctpWalletSendCount?.(),
+    );
+    expect(sendCount).toBe(1);
+    expect(getTransferUrls.length).toBeGreaterThan(0);
+    expect(getTransferUrls.length).toBeLessThanOrEqual(2);
+
     const html = await page.content();
     expect(html).not.toMatch(/access-mock-token/);
-    await page.screenshot({ path: 'test-results/cctp-reload-resume.png' });
+    expect(html).not.toMatch(APPROVE_CALLDATA);
+    expect(consoleErrors.join('\n')).not.toMatch(/access-mock-token/i);
+    expect(consoleErrors.join('\n')).not.toMatch(/Maximum update depth exceeded/i);
+    await page.screenshot({ path: 'test-results/cctp-reload-reprepare-approve.png' });
   });
 });

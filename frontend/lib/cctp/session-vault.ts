@@ -3,7 +3,11 @@ const VAULT_VERSION = 1;
 const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
 const PENDING_EVM_TX_TTL_MS = 30 * 60 * 1000;
 
-export type BurnPrepareStep = 'unknown' | 'approval_ready' | 'burn_ready';
+export type BurnPrepareStep =
+  | 'unknown'
+  | 'approval_ready'
+  | 'burn_ready'
+  | 'reprepare_required';
 
 export interface CctpPendingEvmTx {
   txHash: string;
@@ -193,6 +197,25 @@ export function redactSecretsForLogs(value: unknown): string {
  */
 export const CCTP_SESSION_VAULT_SECURITY_NOTE =
   'CCTP access tokens live in sessionStorage and are cleared on terminal status.';
+
+export function buildSessionRecoveryRevision(record: CctpSessionRecord): string {
+  const r = record.recovery;
+  return [
+    record.transferId,
+    record.idempotencyKey,
+    r.burnPrepareStep ?? 'unknown',
+    r.lastPreparedFingerprint ?? '',
+    r.pendingEvmTx?.txHash ?? '',
+  ].join(':');
+}
+
+/** Stable key for one-shot automatic GET reconciliation (excludes prepare-step churn). */
+export function buildAutoReconcileRevision(record: CctpSessionRecord): string {
+  const r = record.recovery;
+  return [record.transferId, record.idempotencyKey, r.pendingEvmTx?.txHash ?? ''].join(
+    ':',
+  );
+}
 
 export function sessionRecoveryMatchesInputs(
   record: CctpSessionRecord,
