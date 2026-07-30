@@ -17,6 +17,7 @@ import { SettingsPanel } from '../settings/SettingsPanel';
 import { HighImpactConfirmModal } from './HighImpactConfirmModal';
 import { TransactionConfirmationModal } from './TransactionConfirmationModal';
 import { QuoteStreamStatusIndicator } from './QuoteStreamStatusIndicator';
+import { QuoteRefreshLiveRegion } from './QuoteRefreshLiveRegion';
 import { SessionRecoveryModal } from './SessionRecoveryModal';
 import { useSwapState } from '@/hooks/useSwapState';
 import { useOptimisticSwap } from '@/hooks/useOptimisticSwap';
@@ -37,6 +38,8 @@ import { useFeatureFlag } from '@/hooks/useFeatureFlag';
 import type { QuoteRequestItem } from '@/lib/api/client';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { useQuoteStreamStatus } from '@/hooks/useQuoteStreamStatus';
+import { useQuoteRefreshAnnouncements } from '@/hooks/useQuoteRefreshAnnouncements';
+import { useQuoteRefreshTransition } from '@/hooks/useQuoteRefreshTransition';
 import { useCompactMode } from '@/hooks/useCompactMode';
 import { useShareableQuote } from '@/hooks/useShareableQuote';
 import { ShareQuoteButton } from './ShareQuoteButton';
@@ -724,6 +727,24 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
   const displayToAmount = storyPresentation?.toAmount ?? toAmount;
   const displayFormattedRate =
     storyPresentation?.formattedRate ?? formattedRate;
+
+  // Animated quote refresh feedback: pulse the receive amount when it
+  // changes, and announce the outcome for screen reader users.
+  const receiveAmount = selectedRoute?.expectedAmount ?? displayToAmount;
+  const { isRefreshing: isReceiveAmountRefreshing, transitionStyle: receiveAmountTransitionStyle } =
+    useQuoteRefreshTransition(receiveAmount);
+  const { politeMessage: quoteRefreshPoliteMessage, assertiveMessage: quoteRefreshAssertiveMessage } =
+    useQuoteRefreshAnnouncements({
+      canAnnounce: parseFloat(fromAmount) > 0,
+      loading: quote.loading,
+      error: quote.error,
+      isRecovering: quote.isRecovering,
+      hasPendingRetry: quote.hasPendingRetry,
+      lastQuotedAtMs: quote.lastQuotedAtMs,
+      requestKey: `${fromToken}:${toToken}:${fromAmount}`,
+      rateSummary: displayFormattedRate,
+      t,
+    });
   const displayIsModalOpen = storyPresentation?.confirmModalOpen ?? isModalOpen;
   const displayOptimisticStatus =
     storyPresentation?.optimisticStatus ?? optimistic.status;
@@ -1223,15 +1244,19 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
           {/* Receive Section */}
           <div className={cn('space-y-2', isCompact && 'space-y-1')}>
             <div
+              data-testid="receive-section"
+              aria-live="off"
               className={cn(
-                'bg-muted/30 rounded-2xl border border-border/20',
-                isCompact ? 'p-3 rounded-xl' : 'p-4'
+                'rounded-2xl border border-border/20',
+                isCompact ? 'p-3 rounded-xl' : 'p-4',
+                isReceiveAmountRefreshing ? 'bg-primary/5' : 'bg-muted/30'
               )}
+              style={receiveAmountTransitionStyle}
             >
               <div className="flex justify-between items-start mb-1">
                 <AmountInput
                   label={t('swap.pair.youReceive')}
-                  value={selectedRoute?.expectedAmount ?? displayToAmount}
+                  value={receiveAmount}
                   readOnly
                   placeholder="0.00"
                   className="flex-1"
@@ -1245,6 +1270,11 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
               </div>
             </div>
           </div>
+
+          <QuoteRefreshLiveRegion
+            politeMessage={quoteRefreshPoliteMessage}
+            assertiveMessage={quoteRefreshAssertiveMessage}
+          />
 
           {/* Info Panels (Conditional) */}
           {(parseFloat(fromAmount) > 0 ||
