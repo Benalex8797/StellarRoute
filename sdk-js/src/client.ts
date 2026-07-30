@@ -24,6 +24,18 @@ import type {
   SwapPrepareRequest,
   SwapSubmitRequest,
   SwapSubmitResponse,
+  ApiV2Info,
+  SupportedCorridor,
+  CctpQuoteRequest,
+  CctpQuoteResponse,
+  CctpTransferStatusResponse,
+  CctpPrepareBurnResponse,
+  CctpSubmitBurnRequest,
+  CctpSubmitBurnResponse,
+  CctpPrepareMintResponse,
+  CctpSubmitMintRequest,
+  CctpSubmitMintResponse,
+  CctpReattestResponse,
 } from './types.js';
 import { DEFAULT_STALENESS_CONFIG, isQuoteStale, isQuoteExpired } from './types.js';
 
@@ -768,6 +780,132 @@ export class StellarRouteClient {
     const qs = params.toString();
     const path = `/api/v1/price-history/${encodeURIComponent(base)}/${encodeURIComponent(quote)}${qs ? `?${qs}` : ''}`;
     return this.request<PriceHistoryResponse>(path, options?.signal);
+  }
+
+  /**
+   * `GET /api/v2` — capability descriptor including CCTP corridor metadata.
+   */
+  async getApiV2Info(signal?: AbortSignal): Promise<ApiV2Info> {
+    const body = await this.request<unknown>('/api/v2', signal);
+    return unwrapApiData<ApiV2Info>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/quote` — CCTP fee quote (fail-closed until enabled).
+   */
+  async cctpQuote(
+    request: CctpQuoteRequest,
+    signal?: AbortSignal,
+  ): Promise<CctpQuoteResponse> {
+    const body = await this.request<unknown>(
+      '/api/v2/bridge/cctp/quote',
+      signal,
+      this.retries,
+      'POST',
+      request,
+    );
+    return unwrapApiData<CctpQuoteResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/prepare-burn`
+   */
+  async cctpPrepareBurn(
+    transferId: string,
+    signal?: AbortSignal,
+  ): Promise<CctpPrepareBurnResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/prepare-burn`,
+      signal,
+      this.retries,
+      'POST',
+      {},
+    );
+    return unwrapApiData<CctpPrepareBurnResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/submit-burn` — tx hash acknowledgement only.
+   */
+  async cctpSubmitBurn(
+    transferId: string,
+    request: CctpSubmitBurnRequest,
+    signal?: AbortSignal,
+  ): Promise<CctpSubmitBurnResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/submit-burn`,
+      signal,
+      this.retries,
+      'POST',
+      request,
+    );
+    return unwrapApiData<CctpSubmitBurnResponse>(body);
+  }
+
+  /**
+   * `GET /api/v2/bridge/cctp/{transfer_id}` — transfer saga status.
+   */
+  async cctpGetTransfer(
+    transferId: string,
+    signal?: AbortSignal,
+  ): Promise<CctpTransferStatusResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}`,
+      signal,
+    );
+    return unwrapApiData<CctpTransferStatusResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/prepare-mint`
+   */
+  async cctpPrepareMint(
+    transferId: string,
+    signal?: AbortSignal,
+  ): Promise<CctpPrepareMintResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/prepare-mint`,
+      signal,
+      this.retries,
+      'POST',
+      {},
+    );
+    return unwrapApiData<CctpPrepareMintResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/submit-mint` — tx hash acknowledgement only.
+   */
+  async cctpSubmitMint(
+    transferId: string,
+    request: CctpSubmitMintRequest,
+    signal?: AbortSignal,
+  ): Promise<CctpSubmitMintResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/submit-mint`,
+      signal,
+      this.retries,
+      'POST',
+      request,
+    );
+    return unwrapApiData<CctpSubmitMintResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/reattest`
+   */
+  async cctpReattest(
+    transferId: string,
+    signal?: AbortSignal,
+  ): Promise<CctpReattestResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/reattest`,
+      signal,
+      this.retries,
+      'POST',
+      {},
+    );
+    return unwrapApiData<CctpReattestResponse>(body);
   }
 
   // ── Internal helpers ────────────────────────────────────────────────────────
