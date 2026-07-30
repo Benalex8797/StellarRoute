@@ -82,8 +82,8 @@ impl CctpRuntime {
         }
     }
 
-    /// Wire production EVM RPC builders/verifiers when `sepolia_rpc_url` is configured.
-    /// Stellar + attestation remain NotReady; `is_public_executable` stays false.
+    /// Wire production EVM RPC builders/verifiers and attestation stack when configured.
+    /// Stellar burn/approval/mint remain NotReady; `is_public_executable` stays false.
     pub fn from_config(config: &CctpConfig) -> Self {
         let mut runtime = Self::production_defaults();
         if !config.sepolia_rpc_url.trim().is_empty() {
@@ -100,6 +100,9 @@ impl CctpRuntime {
             if let Ok(v) = crate::cctp::evm_mint_verifier::EvmRpcMintVerifier::new(config) {
                 runtime.evm_mint_verifier = Arc::new(v);
             }
+        }
+        if let Some(verifier) = try_build_attestation_verifier(config) {
+            runtime.attestation_verifier = verifier;
         }
         runtime
     }
@@ -176,6 +179,54 @@ impl CctpRuntime {
             && self.stellar_approval_verifier.is_ready()
             && self.attestation_verifier.is_ready()
     }
+}
+
+fn try_build_attestation_verifier(
+    config: &CctpConfig,
+) -> Option<Arc<dyn crate::cctp::attestation::AttestationVerifier>> {
+    use crate::cctp::attestation::CircleAttestationVerifier;
+    use crate::cctp::attester_set::AttesterSetCache;
+    use crate::cctp::evm_attester_reader::evm_reader_arc;
+    use crate::cctp::iris_public_keys::{IrisPublicKeyCache, ReqwestIrisPublicKeySource};
+    use crate::cctp::stellar_attester_reader::stellar_reader_arc;
+
+    if config.sepolia_rpc_url.trim().is_empty() || config.stellar_rpc_url.trim().is_empty() {
+        return None;
+    }
+    let iris_source = ReqwestIrisPublicKeySource::from_config(config).ok()?;
+    let evm_reader = evm_reader_arc(config).ok()?;
+    let stellar_reader = stellar_reader_arc(config).ok()?;
+
+    let iris_keys = Arc::new(IrisPublicKeyCache::from_config(config));
+    let snapshots = Arc::new(AttesterSetCache::from_config(config));
+    let verifier = Arc::new(CircleAttestationVerifier::new(
+        iris_keys.clone(),
+        snapshots.clone(),
+        Arc::new(iris_source),
+    ));
+
+    // Bootstrap synchronously via tokio runtime if available, else defer to first verify.
+    let readers: Vec<Arc<dyn crate::cctp::attester_set::AttesterSetReader>> =
+        vec![evm_reader, stellar_reader];
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let iris_keys_c = iris_keys.clone();
+        let snapshots_c = snapshots.clone();
+        let verifier_c = verifier.clone();
+        let readers_c = readers.clone();
+        handle.block_on(async {
+            if verifier_c.bootstrap().await.is_err() {
+                return;
+            }
+            let _ = snapshots_c.refresh_all(&readers_c, &iris_keys_c).await;
+        });
+        if !verifier.is_ready() {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
+    Some(verifier)
 }
 
 #[cfg(test)]

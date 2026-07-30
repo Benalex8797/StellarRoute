@@ -645,6 +645,27 @@ lazy_static! {
         &["provider"]
     )
     .expect("Can't create CCTP_PROVIDER_KILLED_NEW counter");
+
+    pub static ref CCTP_ATTESTATION_VERIFY: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_attestation_verify_total",
+        "CCTP attestation verification outcomes",
+        &["reason"]
+    )
+    .expect("Can't create CCTP_ATTESTATION_VERIFY counter");
+
+    pub static ref CCTP_IRIS_KEYS_REFRESH: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_iris_keys_refresh_total",
+        "Iris public keys cache refresh outcomes",
+        &["outcome", "detail"]
+    )
+    .expect("Can't create CCTP_IRIS_KEYS_REFRESH counter");
+
+    pub static ref CCTP_ATTESTER_SNAPSHOT_REFRESH: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_attester_snapshot_refresh_total",
+        "Destination attester snapshot refresh outcomes",
+        &["destination", "outcome"]
+    )
+    .expect("Can't create CCTP_ATTESTER_SNAPSHOT_REFRESH counter");
 }
 
 /// Record a swap prepare outcome.
@@ -761,5 +782,21 @@ pub fn record_cctp_verifier_mismatch() {
 pub fn record_cctp_provider_killed_new_transfer() {
     CCTP_PROVIDER_KILLED_NEW
         .with_label_values(&["circle-cctp"])
+        .inc();
+}
+
+pub fn record_cctp_attestation_verify(reason: &str) {
+    CCTP_ATTESTATION_VERIFY.with_label_values(&[reason]).inc();
+}
+
+pub fn record_cctp_iris_keys_refresh(outcome: &str, detail: &str) {
+    CCTP_IRIS_KEYS_REFRESH
+        .with_label_values(&[outcome, detail])
+        .inc();
+}
+
+pub fn record_cctp_attester_snapshot_refresh(destination: &str, outcome: &str) {
+    CCTP_ATTESTER_SNAPSHOT_REFRESH
+        .with_label_values(&[destination, outcome])
         .inc();
 }

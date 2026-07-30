@@ -45,6 +45,14 @@ pub struct CctpConfig {
     pub poll_timeout_secs: u64,
     pub iris_timeout_secs: u64,
     pub iris_max_retries: u32,
+    /// Iris `/v2/publicKeys` cache TTL (default 15m).
+    pub iris_keys_ttl_secs: u64,
+    /// Max staleness before fail-closed (default 24h).
+    pub iris_keys_stale_max_secs: u64,
+    /// On-chain attester snapshot TTL (default 15m).
+    pub attester_snapshot_ttl_secs: u64,
+    /// On-chain snapshot max staleness (default 24h).
+    pub attester_snapshot_stale_max_secs: u64,
     pub contracts: CctpContractAddresses,
 }
 
@@ -135,6 +143,10 @@ impl CctpConfig {
             poll_timeout_secs: 600,
             iris_timeout_secs: 10,
             iris_max_retries: 2,
+            iris_keys_ttl_secs: 900,
+            iris_keys_stale_max_secs: 86_400,
+            attester_snapshot_ttl_secs: 900,
+            attester_snapshot_stale_max_secs: 86_400,
             contracts: CctpContractAddresses {
                 stellar_token_messenger: STELLAR_TOKEN_MESSENGER.into(),
                 stellar_message_transmitter: STELLAR_MESSAGE_TRANSMITTER.into(),
@@ -184,6 +196,28 @@ impl CctpConfig {
                 CctpConfigError::InvalidEnv("CCTP_POLL_TIMEOUT_SECS must be u64".into())
             })?;
         }
+        if let Ok(v) = std::env::var("CCTP_IRIS_KEYS_TTL_SECS") {
+            cfg.iris_keys_ttl_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv("CCTP_IRIS_KEYS_TTL_SECS must be u64".into())
+            })?;
+        }
+        if let Ok(v) = std::env::var("CCTP_IRIS_KEYS_STALE_MAX_SECS") {
+            cfg.iris_keys_stale_max_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv("CCTP_IRIS_KEYS_STALE_MAX_SECS must be u64".into())
+            })?;
+        }
+        if let Ok(v) = std::env::var("CCTP_ATTESTER_SNAPSHOT_TTL_SECS") {
+            cfg.attester_snapshot_ttl_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv("CCTP_ATTESTER_SNAPSHOT_TTL_SECS must be u64".into())
+            })?;
+        }
+        if let Ok(v) = std::env::var("CCTP_ATTESTER_SNAPSHOT_STALE_MAX_SECS") {
+            cfg.attester_snapshot_stale_max_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv(
+                    "CCTP_ATTESTER_SNAPSHOT_STALE_MAX_SECS must be u64".into(),
+                )
+            })?;
+        }
 
         cfg.validate()?;
         Ok(cfg)
@@ -227,6 +261,10 @@ impl CctpConfig {
             || self.poll_interval_secs == 0
             || self.poll_timeout_secs == 0
             || self.iris_timeout_secs == 0
+            || self.iris_keys_ttl_secs == 0
+            || self.iris_keys_stale_max_secs == 0
+            || self.attester_snapshot_ttl_secs == 0
+            || self.attester_snapshot_stale_max_secs == 0
         {
             return Err(CctpConfigError::ZeroOrUnsafeLimit("timing or cap".into()));
         }
