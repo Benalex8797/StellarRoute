@@ -50,19 +50,44 @@ pub fn stellar_account_to_bytes32(g_address: &str) -> Result<[u8; 32], EncodingE
     Ok(pk.0)
 }
 
+/// Build CctpForwarder hook data for a G- or M-address recipient (Circle Stellar reference).
+///
+/// Layout: 24 zero bytes | u32 BE version=0 | u32 BE length | UTF-8 strkey (G or M)
+pub fn build_forwarder_hook_data_recipient(recipient: &str) -> Result<Vec<u8>, EncodingError> {
+    use crate::cctp::stellar_muxed::parse_recipient_strkey;
+    let key = parse_recipient_strkey(recipient)
+        .map_err(|_| EncodingError::InvalidStellarAccount(recipient.to_string()))?;
+    match key {
+        crate::cctp::stellar_muxed::StellarRecipientKey::Contract(_) => {
+            Err(EncodingError::InvalidHookData)
+        }
+        crate::cctp::stellar_muxed::StellarRecipientKey::Account(_)
+        | crate::cctp::stellar_muxed::StellarRecipientKey::Muxed { .. } => {
+            let strkey = key.to_strkey();
+            let recipient_bytes = strkey.as_bytes();
+            let mut hook = vec![0u8; 32 + recipient_bytes.len()];
+            hook[24..28].copy_from_slice(&0u32.to_be_bytes());
+            hook[28..32].copy_from_slice(&(recipient_bytes.len() as u32).to_be_bytes());
+            hook[32..].copy_from_slice(recipient_bytes);
+            Ok(hook)
+        }
+    }
+}
+
 /// Build CctpForwarder hook data for a G-address recipient (Circle Stellar reference).
 ///
 /// Layout: 24 zero bytes | u32 BE version=0 | u32 BE length | UTF-8 strkey
 pub fn build_forwarder_hook_data_g_recipient(g_address: &str) -> Result<Vec<u8>, EncodingError> {
-    if stellar_strkey::ed25519::PublicKey::from_string(g_address.trim()).is_err() {
-        return Err(EncodingError::InvalidStellarAccount(g_address.to_string()));
+    build_forwarder_hook_data_recipient(g_address)
+}
+
+/// Stellar outbound amount with zero 7th-decimal remainder (fail-closed on dust).
+pub fn stellar_outbound_cctp_amount_strict(amount_7dp: &str) -> Result<u128, EncodingError> {
+    let (cctp, rem) = stellar_outbound_cctp_amount(amount_7dp)?;
+    if rem.is_some() {
+        return Err(EncodingError::StellarRemainder(rem.unwrap_or_default()));
     }
-    let recipient_bytes = g_address.trim().as_bytes();
-    let mut hook = vec![0u8; 32 + recipient_bytes.len()];
-    hook[24..28].copy_from_slice(&0u32.to_be_bytes());
-    hook[28..32].copy_from_slice(&(recipient_bytes.len() as u32).to_be_bytes());
-    hook[32..].copy_from_slice(recipient_bytes);
-    Ok(hook)
+    Ok(cctp)
 }
 
 /// Convert decimal USDC string to 6-decimal CCTP subunits (uint256 wire amount).
@@ -165,6 +190,28 @@ mod tests {
         assert_eq!(
             hex::encode(&bytes[12..32]),
             "742d35cc6634c0532925a3b844bc9e7595f0beb0"
+        );
+    }
+
+    #[test]
+    fn golden_forwarder_hook_data_m_recipient() {
+        let m = "MA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAAAAAAAAAPCICBKU";
+        let hook = build_forwarder_hook_data_recipient(m).unwrap();
+        assert_eq!(hook[0..24], [0u8; 24]);
+        let len = u32::from_be_bytes(hook[28..32].try_into().unwrap());
+        assert_eq!(len as usize, m.len());
+        assert_eq!(&hook[32..], m.as_bytes());
+    }
+
+    #[test]
+    fn strict_outbound_rejects_dust() {
+        assert!(matches!(
+            stellar_outbound_cctp_amount_strict("1.0000009"),
+            Err(EncodingError::StellarRemainder(_))
+        ));
+        assert_eq!(
+            stellar_outbound_cctp_amount_strict("1.0000000").unwrap(),
+            1_000_000
         );
     }
 

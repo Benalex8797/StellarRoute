@@ -50,6 +50,8 @@ pub struct CctpConfig {
     pub sepolia_rpc_url: String,
     pub amount_cap: String,
     pub quote_ttl_secs: u64,
+    /// Max mint payload TTL (seconds); actual expiry is min(quote expiry, this).
+    pub mint_payload_ttl_secs: u64,
     pub poll_interval_secs: u64,
     pub poll_timeout_secs: u64,
     pub iris_timeout_secs: u64,
@@ -148,6 +150,7 @@ impl CctpConfig {
             sepolia_rpc_url: "https://rpc.sepolia.org".into(),
             amount_cap: "100000".into(),
             quote_ttl_secs: 300,
+            mint_payload_ttl_secs: 600,
             poll_interval_secs: 5,
             poll_timeout_secs: 600,
             iris_timeout_secs: 10,
@@ -193,6 +196,11 @@ impl CctpConfig {
         if let Ok(v) = std::env::var("CCTP_QUOTE_TTL_SECS") {
             cfg.quote_ttl_secs = v.parse().map_err(|_| {
                 CctpConfigError::InvalidEnv("CCTP_QUOTE_TTL_SECS must be u64".into())
+            })?;
+        }
+        if let Ok(v) = std::env::var("CCTP_MINT_PAYLOAD_TTL_SECS") {
+            cfg.mint_payload_ttl_secs = v.parse().map_err(|_| {
+                CctpConfigError::InvalidEnv("CCTP_MINT_PAYLOAD_TTL_SECS must be u64".into())
             })?;
         }
         if let Ok(v) = std::env::var("CCTP_POLL_INTERVAL_SECS") {

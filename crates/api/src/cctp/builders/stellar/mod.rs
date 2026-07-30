@@ -15,13 +15,13 @@ use crate::cctp::builders::{
 use crate::cctp::config::{CctpConfig, STELLAR_TESTNET_PASSPHRASE};
 use crate::cctp::encoding::{
     cctp_subunits_to_stellar_subunits, decimal_to_cctp_subunits, evm_address_to_bytes32,
-    stellar_outbound_cctp_amount,
+    stellar_outbound_cctp_amount_strict,
 };
 use crate::cctp::message::parse_cctp_v2_message;
 use crate::cctp::stellar_allowance::StellarRpcAllowanceChecker;
 use crate::cctp::stellar_builder_simulation::{
-    approval_expiration_ledger, ledger_bounds_for_expiry, simulate_and_assemble_invoke,
-    time_bounds_for_expiry,
+    approval_expiration_ledger, ledger_bounds_for_expiry, probe_strict_simulation_assembly,
+    simulate_and_assemble_invoke, time_bounds_for_expiry, APPROVAL_LEDGER_SAFETY_MARGIN,
 };
 use crate::cctp::stellar_payload::{passphrase_for_config, payload_hash_from_envelope_xdr};
 use crate::cctp::stellar_readiness_probes::probe_stellar_contracts;
@@ -155,6 +155,7 @@ impl ProductionStellarCctpBuilder {
             rpc.latest_ledger().await.is_ok()
         } else {
             probe_stellar_contracts(config).await.all_ok()
+                && probe_strict_simulation_assembly(&rpc, config).await
         };
         let allowance: Arc<dyn StellarAllowanceChecker> =
             match StellarRpcAllowanceChecker::new(config).await {
@@ -278,8 +279,11 @@ impl ProductionStellarCctpBuilder {
         config: &CctpConfig,
         stellar_amount: i128,
     ) -> Result<bool, BuilderError> {
-        if transfer.source_approval_verified_at.is_some() {
-            return Ok(false);
+        if let Some(exp) = transfer.approval_expiration_ledger {
+            let latest = self.latest_ledger().await?;
+            if (latest as u64) >= exp.saturating_sub(APPROVAL_LEDGER_SAFETY_MARGIN as u64) {
+                return Ok(true);
+            }
         }
         let sufficient = self
             .allowance
@@ -366,7 +370,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
         }
         Self::validate_g_sender(&transfer.sender)?;
 
-        let (cctp_amount, _) = stellar_outbound_cctp_amount(&transfer.amount)
+        let cctp_amount = stellar_outbound_cctp_amount_strict(&transfer.amount)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
         let stellar_amount = cctp_subunits_to_stellar_subunits(cctp_amount)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?
@@ -410,6 +414,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
                 required_approvals: vec![],
                 required_prior_payloads: vec![],
                 expires_at,
+                approval_expiration_ledger: Some(approval_exp),
             });
         }
 
@@ -440,6 +445,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
             required_approvals: vec![],
             required_prior_payloads: vec![],
             expires_at,
+            approval_expiration_ledger: None,
         })
     }
 }
@@ -463,6 +469,7 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
                 "Stellar mint builder only supports evm_to_stellar destination".into(),
             ));
         }
+        Self::ensure_not_expired(transfer)?;
         let message = transfer
             .raw_message
             .as_ref()
@@ -476,11 +483,16 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
             return Err(BuilderError::Validation("recipient required".into()));
         }
         Self::validate_mint_recipient(&transfer.recipient)?;
+        let submitter = transfer
+            .mint_submitter
+            .as_deref()
+            .ok_or_else(|| BuilderError::Validation("mint_submitter required".into()))?;
+        Self::validate_g_sender(submitter)?;
         Self::validate_mint_message(transfer, config, message)?;
 
         let xdr = self
             .build_simulated_invoke(
-                &transfer.recipient,
+                submitter,
                 &config.contracts.stellar_cctp_forwarder,
                 "mint_and_forward",
                 mint_and_forward_args(message, attestation)?,
@@ -492,7 +504,9 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
         let payload = Self::stellar_payload(xdr.clone(), &passphrase_for_config(config));
         let payload_hash = payload_hash_from_envelope_xdr(&xdr, config)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
-        let expires_at = (Utc::now() + chrono::Duration::minutes(10)).timestamp();
+        let quote_exp = transfer.quote_expires_at.timestamp();
+        let max_ttl = config.mint_payload_ttl_secs as i64;
+        let expires_at = quote_exp.min(Utc::now().timestamp() + max_ttl);
 
         Ok(PreparedMintBundle {
             primary: payload,
@@ -557,6 +571,7 @@ mod tests {
             destination_asset_canonical: "b".into(),
             sender: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".into(),
             recipient: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+            mint_submitter: None,
             amount: "1.0000000".into(),
             destination_amount: "1.0000000".into(),
             finality: crate::models::v2_cctp::CctpFinality::Standard,
@@ -582,6 +597,10 @@ mod tests {
             terminal_at: None,
             mint_payload_hash: None,
             mint_payload_expires_at: None,
+            approval_payload_hash: None,
+            approval_expiration_ledger: None,
+            burn_payload_hash: None,
+            burn_prepare_step: None,
         }
     }
 
@@ -638,13 +657,18 @@ mod tests {
             .await
             .unwrap();
         assert!(needs);
-        let mut verified = sample_stellar_burn_transfer(Some("stellar-approval-hash".into()));
-        verified.source_approval_verified_at = Some(Utc::now());
-        let needs_after = builder
-            .needs_approval(&verified, &CctpConfig::default_testnet(), 1)
+        let sufficient_builder = ProductionStellarCctpBuilder {
+            sequences: Arc::new(FixedAccountSequences::new(100)),
+            rpc: Arc::new(StellarRpcClient::new(&cfg).unwrap()),
+            allowance: Arc::new(FixedAllowanceChecker { sufficient: true }),
+            probe_ok: true,
+            base_fee: DEFAULT_BASE_FEE,
+        };
+        let needs_when_sufficient = sufficient_builder
+            .needs_approval(&transfer, &CctpConfig::default_testnet(), 1)
             .await
             .unwrap();
-        assert!(!needs_after);
+        assert!(!needs_when_sufficient);
     }
 
     #[tokio::test]

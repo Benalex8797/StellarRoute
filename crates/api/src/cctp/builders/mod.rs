@@ -45,6 +45,8 @@ pub struct PreparedBurnBundle {
     pub required_approvals: Vec<PreparedWalletPayload>,
     pub required_prior_payloads: Vec<PreparedWalletPayload>,
     pub expires_at: i64,
+    /// Set when `step == Approval` — persisted for freshness checks.
+    pub approval_expiration_ledger: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

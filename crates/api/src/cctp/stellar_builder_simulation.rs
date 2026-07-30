@@ -12,10 +12,14 @@ use stellar_xdr::curr::{
 };
 
 use crate::cctp::builders::stellar::encoder::{
-    build_unsigned_invoke_tx, InvokeTxParams, MAX_AUTH_ENTRIES, MAX_SIM_RESULTS,
+    build_unsigned_invoke_tx, InvokeTxParams, MAX_AUTH_ENTRIES,
 };
 use crate::cctp::builders::BuilderError;
+use crate::cctp::config::CctpConfig;
 use crate::cctp::stellar_rpc::{check_rpc_response_len, StellarRpcClient};
+
+/// Margin ledgers before persisted approval expiration when re-approval is required.
+pub const APPROVAL_LEDGER_SAFETY_MARGIN: u32 = 32;
 
 /// Margin added to latest ledger for approval expiration and tx ledger bounds.
 pub const LEDGER_EXPIRY_MARGIN: u32 = 1_000;
@@ -111,6 +115,7 @@ impl StellarRpcClient {
         #[derive(Deserialize)]
         struct SimResultItem {
             auth: Option<Vec<String>>,
+            error: Option<String>,
         }
 
         let payload: RpcResponse = serde_json::from_str(&text)
@@ -150,8 +155,16 @@ impl StellarRpcClient {
         if results.is_empty() {
             return Err(BuilderError::SimulationFailed("empty results".into()));
         }
-        if results.len() > MAX_SIM_RESULTS {
-            return Err(BuilderError::SimulationFailed("too many results".into()));
+        if results.len() != 1 {
+            return Err(BuilderError::SimulationFailed(format!(
+                "expected 1 result, got {}",
+                results.len()
+            )));
+        }
+        if let Some(err) = results[0].error.as_deref() {
+            if !err.is_empty() {
+                return Err(BuilderError::SimulationFailed(err.to_string()));
+            }
         }
         let mut auth_entries = Vec::new();
         if let Some(auth_xdrs) = results[0].auth.as_ref() {
@@ -230,6 +243,33 @@ pub async fn simulate_and_assemble_invoke(
     .map_err(|e| BuilderError::Encoding(e.to_string()))?;
     let sim = rpc.simulate_transaction_strict(&template_xdr).await?;
     assemble_simulated_envelope(tx, &sim, params.base_fee)
+}
+
+/// Live readiness: strict simulate→assemble on USDC `decimals` (read-only).
+pub async fn probe_strict_simulation_assembly(rpc: &StellarRpcClient, config: &CctpConfig) -> bool {
+    use crate::cctp::stellar_rpc::SIMULATE_SOURCE;
+
+    if config.stellar_rpc_url.trim().is_empty() {
+        return false;
+    }
+    let Ok(latest) = rpc.latest_ledger().await else {
+        return false;
+    };
+    let Ok(sequence) = rpc.get_account_sequence(SIMULATE_SOURCE).await else {
+        return false;
+    };
+    let quote_exp = chrono::Utc::now().timestamp() + 600;
+    let params = InvokeTxParams {
+        source: SIMULATE_SOURCE.to_string(),
+        contract: config.contracts.stellar_usdc.clone(),
+        function: "decimals".to_string(),
+        args: vec![],
+        sequence,
+        base_fee: crate::swap::tx::DEFAULT_BASE_FEE,
+        time_bounds: time_bounds_for_expiry(quote_exp),
+        ledger_bounds: ledger_bounds_for_expiry(latest, quote_exp),
+    };
+    simulate_and_assemble_invoke(rpc, params).await.is_ok()
 }
 
 #[cfg(test)]

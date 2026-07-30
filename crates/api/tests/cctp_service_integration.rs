@@ -56,6 +56,7 @@ fn sample_quote_request() -> CctpQuoteRequest {
         amount: "100.000000".into(),
         recipient: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
         sender: None,
+        mint_submitter: None,
         finality: CctpFinality::Standard,
     }
 }
@@ -76,6 +77,9 @@ async fn quote_core_creates_transfer_when_enabled() {
     let service = CctpService {
         config: cfg,
         store,
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris,
         kill_switch: kill,
         runtime: stellarroute_api::cctp::readiness::CctpRuntime::production_defaults(),
@@ -112,6 +116,9 @@ async fn provider_kill_switch_blocks_new_quote() {
     let service = CctpService {
         config: cfg,
         store,
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris,
         kill_switch: kill,
         runtime: stellarroute_api::cctp::readiness::CctpRuntime::production_defaults(),

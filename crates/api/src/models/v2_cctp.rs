@@ -170,11 +170,14 @@ pub struct CctpQuoteRequest {
     pub destination_asset: CctpChainAsset,
     /// Decimal string amount (never float).
     pub amount: String,
-    /// Destination recipient: EVM `0x` address for `stellar_to_evm`, or Stellar G-address only for `evm_to_stellar` (no M/C muxed/contract strkeys).
+    /// Destination recipient: EVM `0x` address for `stellar_to_evm`, or Stellar G/M strkey for `evm_to_stellar`.
     pub recipient: String,
     /// Optional source sender: Stellar G-address when burning from Stellar, EVM address when burning from EVM.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
+    /// Stellar G-address fee-payer/submitter for `evm_to_stellar` mint preparation (distinct from `recipient`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mint_submitter: Option<String>,
     pub finality: CctpFinality,
 }
 
@@ -186,6 +189,8 @@ pub enum CctpValidationError {
     InvalidRecipient,
     InvalidAmount,
     InvalidSender,
+    InvalidMintSubmitter,
+    StellarRemainder,
 }
 
 impl CctpQuoteRequest {
@@ -258,12 +263,17 @@ impl CctpQuoteRequest {
                 }
             }
             CctpDirection::EvmToStellar => {
-                if !is_valid_stellar_account(&self.recipient) {
+                if !is_valid_stellar_recipient(&self.recipient) {
                     return Err(CctpValidationError::InvalidRecipient);
                 }
                 if let Some(sender) = &self.sender {
                     if !is_valid_evm_address(sender) {
                         return Err(CctpValidationError::InvalidSender);
+                    }
+                }
+                if let Some(submitter) = &self.mint_submitter {
+                    if !is_valid_stellar_account(submitter) {
+                        return Err(CctpValidationError::InvalidMintSubmitter);
                     }
                 }
                 if self.finality == CctpFinality::Fast {
@@ -318,6 +328,19 @@ pub fn is_valid_evm_address(address: &str) -> bool {
         return false;
     }
     trimmed[2..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Stellar account recipient (G- or M-address; contract C-strkeys rejected).
+pub fn is_valid_stellar_recipient(address: &str) -> bool {
+    crate::cctp::stellar_muxed::parse_recipient_strkey(address)
+        .ok()
+        .is_some_and(|k| {
+            matches!(
+                k,
+                crate::cctp::stellar_muxed::StellarRecipientKey::Account(_)
+                    | crate::cctp::stellar_muxed::StellarRecipientKey::Muxed { .. }
+            )
+        })
 }
 
 /// Stellar account recipient (G-address only; muxed M-addresses are not accepted).
@@ -486,6 +509,7 @@ mod tests {
             amount: "10.0".into(),
             recipient,
             sender: None,
+            mint_submitter: None,
             finality,
         }
     }

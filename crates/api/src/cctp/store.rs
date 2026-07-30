@@ -30,6 +30,8 @@ pub struct CctpTransfer {
     pub destination_asset_canonical: String,
     pub sender: String,
     pub recipient: String,
+    /// Stellar G-address fee-payer for `evm_to_stellar` mint (distinct from `recipient`).
+    pub mint_submitter: Option<String>,
     pub amount: String,
     pub destination_amount: String,
     pub finality: CctpFinality,
@@ -55,6 +57,10 @@ pub struct CctpTransfer {
     pub terminal_at: Option<DateTime<Utc>>,
     pub mint_payload_hash: Option<String>,
     pub mint_payload_expires_at: Option<DateTime<Utc>>,
+    pub approval_payload_hash: Option<String>,
+    pub approval_expiration_ledger: Option<u64>,
+    pub burn_payload_hash: Option<String>,
+    pub burn_prepare_step: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -115,6 +121,7 @@ pub trait CctpTransferStore: Send + Sync {
         expected_version: i32,
         payload_hash: &str,
         expires_at: DateTime<Utc>,
+        mint_submitter: Option<String>,
     ) -> Result<CctpTransfer, CctpStoreError>;
 
     /// Record destination mint tx hash after target verification.
@@ -153,6 +160,11 @@ pub struct TransferPatch {
     pub mint_payload_hash: Option<String>,
     pub mint_payload_expires_at: Option<DateTime<Utc>>,
     pub clear_mint_payload: bool,
+    pub mint_submitter: Option<String>,
+    pub approval_payload_hash: Option<String>,
+    pub approval_expiration_ledger: Option<u64>,
+    pub burn_payload_hash: Option<String>,
+    pub burn_prepare_step: Option<String>,
 }
 
 pub struct PgCctpTransferStore {
@@ -173,11 +185,11 @@ impl CctpTransferStore for PgCctpTransferStore {
             INSERT INTO cctp_transfers (
                 transfer_id, support_reference_id, corridor_id, provider, direction,
                 source_chain_id, destination_chain_id, source_asset, source_asset_canonical,
-                destination_asset, destination_asset_canonical, sender, recipient,
+                destination_asset, destination_asset_canonical, sender, recipient, mint_submitter,
                 amount, destination_amount, finality, runtime_fee_quote, max_fee,
                 fee_expires_at, quote_expires_at, status, version
             ) VALUES (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
             )
             "#,
         )
@@ -194,6 +206,7 @@ impl CctpTransferStore for PgCctpTransferStore {
         .bind(&transfer.destination_asset_canonical)
         .bind(&transfer.sender)
         .bind(&transfer.recipient)
+        .bind(&transfer.mint_submitter)
         .bind(&transfer.amount)
         .bind(&transfer.destination_amount)
         .bind(finality_str(transfer.finality))
@@ -267,15 +280,20 @@ impl CctpTransferStore for PgCctpTransferStore {
                 last_provider_code = COALESCE($14, last_provider_code),
                 mint_payload_hash = COALESCE($15, mint_payload_hash),
                 mint_payload_expires_at = COALESCE($16, mint_payload_expires_at),
-                retry_count = $17,
+                mint_submitter = COALESCE($17, mint_submitter),
+                approval_payload_hash = COALESCE($18, approval_payload_hash),
+                approval_expiration_ledger = COALESCE($19, approval_expiration_ledger),
+                burn_payload_hash = COALESCE($20, burn_payload_hash),
+                burn_prepare_step = COALESCE($21, burn_prepare_step),
+                retry_count = $22,
                 version = version + 1,
                 updated_at = NOW(),
                 terminal_at = CASE
-                    WHEN $18 THEN NOW()
-                    WHEN $19 THEN NULL
+                    WHEN $23 THEN NOW()
+                    WHEN $24 THEN NULL
                     ELSE terminal_at
                 END
-            WHERE transfer_id = $1 AND version = $20
+            WHERE transfer_id = $1 AND version = $25
             "#,
         )
         .bind(transfer_id)
@@ -294,6 +312,11 @@ impl CctpTransferStore for PgCctpTransferStore {
         .bind(&patch.last_provider_code)
         .bind(&patch.mint_payload_hash)
         .bind(patch.mint_payload_expires_at)
+        .bind(&patch.mint_submitter)
+        .bind(&patch.approval_payload_hash)
+        .bind(patch.approval_expiration_ledger.map(|v| v as i64))
+        .bind(&patch.burn_payload_hash)
+        .bind(&patch.burn_prepare_step)
         .bind(retry_count as i32)
         .bind(terminal)
         .bind(clear_terminal)
@@ -415,6 +438,7 @@ impl CctpTransferStore for PgCctpTransferStore {
         expected_version: i32,
         payload_hash: &str,
         expires_at: DateTime<Utc>,
+        mint_submitter: Option<String>,
     ) -> Result<CctpTransfer, CctpStoreError> {
         check_str_len("payload_hash", payload_hash, 128)
             .map_err(|_| CctpStoreError::PayloadTooLarge)?;
@@ -425,6 +449,7 @@ impl CctpTransferStore for PgCctpTransferStore {
             TransferPatch {
                 mint_payload_hash: Some(payload_hash.to_string()),
                 mint_payload_expires_at: Some(expires_at),
+                mint_submitter,
                 ..Default::default()
             },
         )
@@ -583,6 +608,21 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
             transfer.mint_payload_hash = None;
             transfer.mint_payload_expires_at = None;
         }
+        if let Some(v) = patch.mint_submitter {
+            transfer.mint_submitter = Some(v);
+        }
+        if let Some(v) = patch.approval_payload_hash {
+            transfer.approval_payload_hash = Some(v);
+        }
+        if let Some(v) = patch.approval_expiration_ledger {
+            transfer.approval_expiration_ledger = Some(v);
+        }
+        if let Some(v) = patch.burn_payload_hash {
+            transfer.burn_payload_hash = Some(v);
+        }
+        if let Some(v) = patch.burn_prepare_step {
+            transfer.burn_prepare_step = Some(v);
+        }
         Ok(transfer.clone())
     }
 
@@ -625,6 +665,7 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
         expected_version: i32,
         payload_hash: &str,
         expires_at: DateTime<Utc>,
+        mint_submitter: Option<String>,
     ) -> Result<CctpTransfer, CctpStoreError> {
         self.transition(
             transfer_id,
@@ -633,6 +674,7 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
             TransferPatch {
                 mint_payload_hash: Some(payload_hash.to_string()),
                 mint_payload_expires_at: Some(expires_at),
+                mint_submitter,
                 ..Default::default()
             },
         )
@@ -723,6 +765,7 @@ struct TransferRow {
     destination_asset_canonical: String,
     sender: String,
     recipient: String,
+    mint_submitter: Option<String>,
     amount: String,
     destination_amount: String,
     finality: String,
@@ -748,6 +791,10 @@ struct TransferRow {
     terminal_at: Option<DateTime<Utc>>,
     mint_payload_hash: Option<String>,
     mint_payload_expires_at: Option<DateTime<Utc>>,
+    approval_payload_hash: Option<String>,
+    approval_expiration_ledger: Option<i64>,
+    burn_payload_hash: Option<String>,
+    burn_prepare_step: Option<String>,
 }
 
 impl TransferRow {
@@ -766,6 +813,7 @@ impl TransferRow {
             destination_asset_canonical: self.destination_asset_canonical,
             sender: self.sender,
             recipient: self.recipient,
+            mint_submitter: self.mint_submitter,
             amount: self.amount,
             destination_amount: self.destination_amount,
             finality: parse_finality(&self.finality),
@@ -791,6 +839,10 @@ impl TransferRow {
             terminal_at: self.terminal_at,
             mint_payload_hash: self.mint_payload_hash,
             mint_payload_expires_at: self.mint_payload_expires_at,
+            approval_payload_hash: self.approval_payload_hash,
+            approval_expiration_ledger: self.approval_expiration_ledger.map(|v| v as u64),
+            burn_payload_hash: self.burn_payload_hash,
+            burn_prepare_step: self.burn_prepare_step,
         })
     }
 }
@@ -900,6 +952,7 @@ mod tests {
             destination_asset_canonical: "b".into(),
             sender: "".into(),
             recipient: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+            mint_submitter: None,
             amount: "10".into(),
             destination_amount: "10".into(),
             finality: CctpFinality::Standard,
@@ -925,6 +978,10 @@ mod tests {
             terminal_at: None,
             mint_payload_hash: None,
             mint_payload_expires_at: None,
+            approval_payload_hash: None,
+            approval_expiration_ledger: None,
+            burn_payload_hash: None,
+            burn_prepare_step: None,
         }
     }
 
@@ -1036,6 +1093,7 @@ mod tests {
             destination_asset_canonical: "b".into(),
             sender: "".into(),
             recipient: "r".into(),
+            mint_submitter: None,
             amount: "1".into(),
             destination_amount: "1".into(),
             finality: "standard".into(),
@@ -1061,6 +1119,10 @@ mod tests {
             terminal_at: None,
             mint_payload_hash: None,
             mint_payload_expires_at: None,
+            approval_payload_hash: None,
+            approval_expiration_ledger: None,
+            burn_payload_hash: None,
+            burn_prepare_step: None,
         };
         let err = row.try_into_transfer().unwrap_err();
         assert!(matches!(err, CctpStoreError::InvalidDirection(_)));

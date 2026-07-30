@@ -31,6 +31,12 @@ fn map_validation(err: CctpValidationError) -> ApiError {
         CctpValidationError::InvalidSender => ApiError::Validation(
             "sender must be a valid G-address for Stellar or 0x address for EVM source".to_string(),
         ),
+        CctpValidationError::InvalidMintSubmitter => ApiError::Validation(
+            "mint_submitter must be a valid Stellar G-address for evm_to_stellar".to_string(),
+        ),
+        CctpValidationError::StellarRemainder => ApiError::Validation(
+            "Stellar outbound amount must have zero 7th-decimal remainder".to_string(),
+        ),
     }
 }
 

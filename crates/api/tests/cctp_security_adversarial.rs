@@ -89,6 +89,11 @@ fn sample_quote(direction: CctpDirection) -> CctpQuoteRequest {
         amount: "100.000000".into(),
         recipient,
         sender,
+        mint_submitter: if direction == CctpDirection::EvmToStellar {
+            Some(G_RECIPIENT.into())
+        } else {
+            None
+        },
         finality: CctpFinality::Standard,
     }
 }
@@ -105,6 +110,9 @@ fn base_service(
     CctpService {
         config: cfg,
         store,
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris,
         kill_switch: Arc::new(KillSwitchManager::new(None)),
         runtime: stellarroute_api::cctp::readiness::CctpRuntime::for_tests(
@@ -469,6 +477,9 @@ async fn poll_timeout_marks_attestation_failed() {
     let service = CctpService {
         config: cfg.clone(),
         store: store.clone(),
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
                 standard_fee: Some("1".into()),
@@ -544,6 +555,9 @@ async fn reattest_recovery_clears_terminal_at() {
     let service = CctpService {
         config: CctpConfig::default_testnet(),
         store: store.clone(),
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
                 standard_fee: Some("1".into()),
@@ -574,6 +588,9 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
     let service = CctpService {
         config: cfg,
         store: store.clone(),
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
                 standard_fee: Some("1".into()),
@@ -613,6 +630,9 @@ async fn provider_kill_blocks_quote_and_prepare_allows_in_flight_poll() {
     let killed_service = CctpService {
         config: service.config.clone(),
         store: store.clone(),
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: service.iris.clone(),
         kill_switch: kill,
         runtime: stellarroute_api::cctp::readiness::CctpRuntime::for_tests(
@@ -736,6 +756,9 @@ async fn reattest_without_nonce_repolls_by_tx_hash() {
     let service = CctpService {
         config: CctpConfig::default_testnet(),
         store: store.clone(),
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris {
             fees: IrisFeeQuote {
                 standard_fee: Some("1".into()),
@@ -887,6 +910,7 @@ fn sample_transfer_stub(direction: CctpDirection) -> CctpTransfer {
         } else {
             G_RECIPIENT.into()
         },
+        mint_submitter: None,
         amount: "100.000000".into(),
         destination_amount: "100.000000".into(),
         finality: CctpFinality::Standard,
@@ -912,5 +936,9 @@ fn sample_transfer_stub(direction: CctpDirection) -> CctpTransfer {
         terminal_at: None,
         mint_payload_hash: None,
         mint_payload_expires_at: None,
+        approval_payload_hash: None,
+        approval_expiration_ledger: None,
+        burn_payload_hash: None,
+        burn_prepare_step: None,
     }
 }

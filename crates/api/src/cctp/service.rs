@@ -7,15 +7,22 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::cctp::bounds::{check_byte_len, MAX_ATTESTATION_BYTES, MAX_RAW_MESSAGE_BYTES};
-use crate::cctp::builders::{BuilderError, PreparedBurnBundle, PreparedMintBundle};
+use crate::cctp::builders::{
+    BuilderError, BurnPrepareStep, PreparedBurnBundle, PreparedMintBundle,
+};
 use crate::cctp::config::{CctpConfig, SEPOLIA_DOMAIN, STELLAR_TESTNET_DOMAIN};
 use crate::cctp::encoding::{
-    cctp_subunits_to_stellar_subunits, decimal_to_cctp_subunits, stellar_outbound_cctp_amount,
+    cctp_subunits_to_stellar_subunits, decimal_to_cctp_subunits,
+    stellar_outbound_cctp_amount_strict,
 };
 use crate::cctp::expectations::{build_corridor_expectations, build_expected_burn_facts};
 use crate::cctp::iris::{IrisClient, IrisMessage, IrisMessageStatus, IrisPollOutcome};
 use crate::cctp::message::{decode_hex_message, validate_message_for_corridor};
+use crate::cctp::prepare_lock::{
+    CctpActivePrepare, CctpPrepareKind, CctpPrepareLockError, CctpPrepareLockStore,
+};
 use crate::cctp::readiness::CctpRuntime;
+use crate::cctp::stellar_payload::payload_hash_from_envelope_xdr;
 use crate::cctp::store::{CctpStoreError, CctpTransfer, CctpTransferStore, TransferPatch};
 use crate::cctp::transitions::can_cancel;
 use crate::cctp::verifiers::{facts_match, MintVerifyOutcome, VerifierError};
@@ -23,6 +30,7 @@ use crate::kill_switch::KillSwitchManager;
 use crate::metrics;
 use crate::models::v2_cctp::{
     CctpDirection, CctpFinality, CctpQuoteRequest, CctpTransferStatus, CctpValidationError,
+    PreparedWalletPayload,
 };
 
 #[derive(Debug, Error)]
@@ -73,11 +81,16 @@ pub enum CctpServiceError {
     MintPayloadHashMismatch,
     #[error("mint retryable")]
     MintRetryable,
+    #[error("active prepare exists for source")]
+    ActivePrepareExists,
+    #[error("stellar amount remainder")]
+    StellarRemainder,
 }
 
 pub struct CctpService {
     pub config: CctpConfig,
     pub store: Arc<dyn CctpTransferStore>,
+    pub prepare_lock: Arc<dyn CctpPrepareLockStore>,
     pub iris: Arc<dyn IrisClient>,
     pub kill_switch: Arc<KillSwitchManager>,
     pub runtime: CctpRuntime,
@@ -217,15 +230,17 @@ impl CctpService {
         }
 
         let cctp_amount = match request.direction {
-            CctpDirection::StellarToEvm => {
-                let (amt, _) = stellar_outbound_cctp_amount(&request.amount).map_err(|_| {
-                    CctpServiceError::Validation(CctpValidationError::InvalidAmount)
-                })?;
-                amt
-            }
+            CctpDirection::StellarToEvm => stellar_outbound_cctp_amount_strict(&request.amount)
+                .map_err(|_| CctpServiceError::StellarRemainder)?,
             CctpDirection::EvmToStellar => decimal_to_cctp_subunits(&request.amount)
                 .map_err(|_| CctpServiceError::Validation(CctpValidationError::InvalidAmount))?,
         };
+
+        if request.direction == CctpDirection::EvmToStellar && request.mint_submitter.is_none() {
+            return Err(CctpServiceError::Validation(
+                CctpValidationError::InvalidMintSubmitter,
+            ));
+        }
 
         let cap = decimal_to_cctp_subunits(&self.config.amount_cap).unwrap_or(u128::MAX);
         if cctp_amount > cap {
@@ -272,6 +287,7 @@ impl CctpService {
             destination_asset_canonical: request.destination_asset.canonical.clone(),
             sender: request.sender.clone().unwrap_or_default(),
             recipient: request.recipient.clone(),
+            mint_submitter: request.mint_submitter.clone(),
             amount: request.amount.clone(),
             destination_amount,
             finality: request.finality,
@@ -297,6 +313,10 @@ impl CctpService {
             terminal_at: None,
             mint_payload_hash: None,
             mint_payload_expires_at: None,
+            approval_payload_hash: None,
+            approval_expiration_ledger: None,
+            burn_payload_hash: None,
+            burn_prepare_step: None,
         };
 
         self.store
@@ -646,17 +666,70 @@ impl CctpService {
             }
         }
 
-        self.store
+        let updated = self
+            .store
             .record_approval_submission(transfer_id, transfer.version, tx_hash, verified_at)
             .await
-            .map_err(CctpServiceError::Store)
+            .map_err(CctpServiceError::Store)?;
+
+        if !transfer.sender.is_empty() {
+            let _ = self
+                .prepare_lock
+                .release(&transfer.sender, transfer_id)
+                .await;
+        }
+
+        Ok(updated)
     }
 
     pub async fn prepare_burn_wallet(
         &self,
         transfer_id: Uuid,
     ) -> Result<PreparedBurnBundle, CctpServiceError> {
-        let transfer = self.prepare_burn(transfer_id).await?;
+        if !self.config.enabled || !self.config.is_configured() {
+            return Err(CctpServiceError::NotEnabled);
+        }
+        if self.provider_killed().await {
+            metrics::record_cctp_provider_killed_new_transfer();
+            return Err(CctpServiceError::ProviderKilled);
+        }
+
+        let mut transfer = self
+            .store
+            .get(transfer_id)
+            .await
+            .map_err(CctpServiceError::Store)?
+            .ok_or(CctpServiceError::NotFound)?;
+
+        match transfer.status {
+            CctpTransferStatus::Created => {
+                Self::ensure_quote_not_expired(&transfer)?;
+                Self::ensure_fee_not_expired(&transfer)?;
+                self.ensure_burn_verifier_ready(transfer.direction)?;
+                if transfer.direction == CctpDirection::StellarToEvm {
+                    stellar_outbound_cctp_amount_strict(&transfer.amount)
+                        .map_err(|_| CctpServiceError::StellarRemainder)?;
+                }
+                transfer = self
+                    .store
+                    .transition(
+                        transfer_id,
+                        transfer.version,
+                        CctpTransferStatus::BurnPrepared,
+                        TransferPatch::default(),
+                    )
+                    .await
+                    .map_err(CctpServiceError::Store)?;
+                metrics::record_cctp_transition("burn_prepared");
+            }
+            CctpTransferStatus::BurnPrepared => {
+                Self::ensure_quote_not_expired(&transfer)?;
+                Self::ensure_fee_not_expired(&transfer)?;
+                self.ensure_burn_verifier_ready(transfer.direction)?;
+            }
+            _ => return Err(CctpServiceError::InvalidState),
+        }
+
         let bundle = match transfer.direction {
             CctpDirection::StellarToEvm => self
                 .runtime
@@ -671,6 +744,59 @@ impl CctpService {
                 .await
                 .map_err(CctpServiceError::Builder)?,
         };
+
+        let source = burn_prepare_source(&transfer)?;
+        let payload_hash = wallet_payload_hash(&bundle.primary, &self.config)
+            .map_err(CctpServiceError::Verifier)?;
+        let expires =
+            chrono::DateTime::from_timestamp(bundle.expires_at, 0).unwrap_or_else(Utc::now);
+        let kind = match bundle.step {
+            BurnPrepareStep::Approval => CctpPrepareKind::Approval,
+            BurnPrepareStep::Burn => CctpPrepareKind::Burn,
+        };
+        self.prepare_lock
+            .try_acquire(&CctpActivePrepare {
+                source_account: source.to_string(),
+                transfer_id,
+                kind,
+                payload_hash: payload_hash.clone(),
+                expires_at: expires,
+            })
+            .await
+            .map_err(|e| match e {
+                CctpPrepareLockError::ActivePrepareExists => CctpServiceError::ActivePrepareExists,
+                CctpPrepareLockError::Database(msg) => {
+                    CctpServiceError::Store(CctpStoreError::Database(sqlx::Error::Protocol(msg)))
+                }
+            })?;
+
+        let step_str = match bundle.step {
+            BurnPrepareStep::Approval => "approval",
+            BurnPrepareStep::Burn => "burn",
+        };
+        let mut patch = TransferPatch {
+            burn_prepare_step: Some(step_str.to_string()),
+            burn_payload_hash: Some(payload_hash),
+            ..Default::default()
+        };
+        if bundle.step == BurnPrepareStep::Approval {
+            patch.approval_payload_hash = Some(patch.burn_payload_hash.clone().unwrap());
+            if let Some(exp) = bundle.approval_expiration_ledger {
+                patch.approval_expiration_ledger = Some(exp as u64);
+            }
+        }
+
+        let _ = self
+            .store
+            .transition(
+                transfer_id,
+                transfer.version,
+                CctpTransferStatus::BurnPrepared,
+                patch,
+            )
+            .await
+            .map_err(CctpServiceError::Store)?;
+
         Ok(bundle)
     }
 
@@ -696,6 +822,8 @@ impl CctpService {
             return Err(CctpServiceError::InvalidState);
         }
 
+        Self::ensure_quote_not_expired(&transfer)?;
+
         let bundle = match transfer.direction {
             CctpDirection::StellarToEvm => self
                 .runtime
@@ -711,11 +839,43 @@ impl CctpService {
                 .map_err(CctpServiceError::Builder)?,
         };
 
+        if transfer.direction == CctpDirection::EvmToStellar {
+            let submitter = transfer
+                .mint_submitter
+                .as_deref()
+                .ok_or(CctpServiceError::InvalidState)?;
+            let expires =
+                chrono::DateTime::from_timestamp(bundle.expires_at, 0).unwrap_or_else(Utc::now);
+            self.prepare_lock
+                .try_acquire(&CctpActivePrepare {
+                    source_account: submitter.to_string(),
+                    transfer_id,
+                    kind: CctpPrepareKind::Mint,
+                    payload_hash: bundle.payload_hash.clone(),
+                    expires_at: expires,
+                })
+                .await
+                .map_err(|e| match e {
+                    CctpPrepareLockError::ActivePrepareExists => {
+                        CctpServiceError::ActivePrepareExists
+                    }
+                    CctpPrepareLockError::Database(msg) => CctpServiceError::Store(
+                        CctpStoreError::Database(sqlx::Error::Protocol(msg)),
+                    ),
+                })?;
+        }
+
         let expires =
             chrono::DateTime::from_timestamp(bundle.expires_at, 0).unwrap_or_else(Utc::now);
         let updated = self
             .store
-            .record_mint_prepared(transfer_id, transfer.version, &bundle.payload_hash, expires)
+            .record_mint_prepared(
+                transfer_id,
+                transfer.version,
+                &bundle.payload_hash,
+                expires,
+                transfer.mint_submitter.clone(),
+            )
             .await
             .map_err(CctpServiceError::Store)?;
         metrics::record_cctp_transition("mint_prepared");
@@ -1015,4 +1175,28 @@ fn format_stellar_amount(subunits: u128) -> String {
     let whole = subunits / 10_000_000;
     let frac = subunits % 10_000_000;
     format!("{}.{:07}", whole, frac)
+}
+
+fn burn_prepare_source(transfer: &CctpTransfer) -> Result<&str, CctpServiceError> {
+    if transfer.sender.is_empty() {
+        return Err(CctpServiceError::InvalidState);
+    }
+    Ok(&transfer.sender)
+}
+
+fn wallet_payload_hash(
+    payload: &PreparedWalletPayload,
+    config: &CctpConfig,
+) -> Result<String, VerifierError> {
+    use sha2::Digest;
+    match payload {
+        PreparedWalletPayload::StellarXdr { xdr_envelope, .. } => {
+            payload_hash_from_envelope_xdr(xdr_envelope, config)
+        }
+        PreparedWalletPayload::EvmTransaction { .. } => {
+            let json =
+                serde_json::to_string(payload).map_err(|e| VerifierError::Failed(e.to_string()))?;
+            Ok(hex::encode(sha2::Sha256::digest(json.as_bytes())))
+        }
+    }
 }

@@ -62,6 +62,9 @@ fn service_with_approval(
     CctpService {
         config: cfg,
         store,
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
         runtime,
@@ -85,6 +88,7 @@ async fn burn_prepared_evm() -> (Arc<dyn CctpTransferStore>, uuid::Uuid) {
         destination_asset_canonical: "b".into(),
         sender: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
         recipient: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".into(),
+        mint_submitter: None,
         amount: "10.000000".into(),
         destination_amount: "10.000000".into(),
         finality: CctpFinality::Standard,
@@ -110,6 +114,10 @@ async fn burn_prepared_evm() -> (Arc<dyn CctpTransferStore>, uuid::Uuid) {
         terminal_at: None,
         mint_payload_hash: None,
         mint_payload_expires_at: None,
+        approval_payload_hash: None,
+        approval_expiration_ledger: None,
+        burn_payload_hash: None,
+        burn_prepare_step: None,
     };
     let id = transfer.transfer_id;
     store.insert(&transfer).await.unwrap();
@@ -227,6 +235,7 @@ async fn unverified_hash_does_not_set_verified_at_via_store_direct() {
         destination_asset_canonical: "b".into(),
         sender: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
         recipient: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".into(),
+        mint_submitter: None,
         amount: "10".into(),
         destination_amount: "10".into(),
         finality: CctpFinality::Standard,
@@ -252,6 +261,10 @@ async fn unverified_hash_does_not_set_verified_at_via_store_direct() {
         terminal_at: None,
         mint_payload_hash: None,
         mint_payload_expires_at: None,
+        approval_payload_hash: None,
+        approval_expiration_ledger: None,
+        burn_payload_hash: None,
+        burn_prepare_step: None,
     };
     let id = t.transfer_id;
     store.insert(&t).await.unwrap();

@@ -43,6 +43,7 @@ fn sample_burn_transfer() -> CctpTransfer {
         destination_asset_canonical: "b".into(),
         sender: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".into(),
         recipient: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+        mint_submitter: None,
         amount: "1.0000000".into(),
         destination_amount: "1".into(),
         finality: CctpFinality::Standard,
@@ -68,6 +69,10 @@ fn sample_burn_transfer() -> CctpTransfer {
         terminal_at: None,
         mint_payload_hash: None,
         mint_payload_expires_at: None,
+        approval_payload_hash: None,
+        approval_expiration_ledger: None,
+        burn_payload_hash: None,
+        burn_prepare_step: None,
     }
 }
 

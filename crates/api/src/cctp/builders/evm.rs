@@ -13,7 +13,7 @@ use crate::cctp::builders::{
 };
 use crate::cctp::config::{CctpConfig, FINALITY_STANDARD};
 use crate::cctp::encoding::{
-    build_forwarder_hook_data_g_recipient, decimal_to_cctp_subunits, stellar_contract_to_bytes32,
+    build_forwarder_hook_data_recipient, decimal_to_cctp_subunits, stellar_contract_to_bytes32,
 };
 use crate::cctp::store::CctpTransfer;
 use crate::models::v2_cctp::{CctpDirection, PreparedWalletPayload, SEPOLIA_CHAIN_ID};
@@ -302,7 +302,7 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
 
         let forwarder = stellar_contract_to_bytes32(&config.contracts.stellar_cctp_forwarder)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
-        let hook = build_forwarder_hook_data_g_recipient(&transfer.recipient)
+        let hook = build_forwarder_hook_data_recipient(&transfer.recipient)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
 
         let expires_at = transfer.quote_expires_at.timestamp();
@@ -317,6 +317,7 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
                 required_approvals: vec![],
                 required_prior_payloads: vec![],
                 expires_at,
+                approval_expiration_ledger: None,
             });
         }
 
@@ -338,6 +339,7 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
             required_approvals: vec![],
             required_prior_payloads: vec![],
             expires_at,
+            approval_expiration_ledger: None,
         })
     }
 }
@@ -439,7 +441,7 @@ mod tests {
     #[test]
     fn deposit_for_burn_with_hook_encodes_forwarder_path() {
         let forwarder = stellar_contract_to_bytes32(STELLAR_CCTP_FORWARDER).unwrap();
-        let hook = build_forwarder_hook_data_g_recipient(
+        let hook = build_forwarder_hook_data_recipient(
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
         )
         .unwrap();

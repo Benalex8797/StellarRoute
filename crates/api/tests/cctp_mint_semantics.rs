@@ -60,6 +60,7 @@ fn mint_prepared_transfer() -> CctpTransfer {
         destination_asset_canonical: "b".into(),
         sender: "".into(),
         recipient: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+        mint_submitter: None,
         amount: "1".into(),
         destination_amount: "1".into(),
         finality: CctpFinality::Standard,
@@ -85,6 +86,10 @@ fn mint_prepared_transfer() -> CctpTransfer {
         terminal_at: None,
         mint_payload_hash: Some("payload-hash-abc".into()),
         mint_payload_expires_at: Some(now + Duration::minutes(10)),
+        approval_payload_hash: None,
+        approval_expiration_ledger: None,
+        burn_payload_hash: None,
+        burn_prepare_step: None,
     }
 }
 
@@ -101,6 +106,9 @@ fn service_with_mint_verifier(
             c
         },
         store,
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
         runtime,
@@ -331,6 +339,9 @@ fn service_with_stellar_mint_verifier(
             c
         },
         store,
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
         runtime,

@@ -12,7 +12,7 @@ use crate::cctp::config::{
     STELLAR_TESTNET_DOMAIN,
 };
 use crate::cctp::encoding::{
-    build_forwarder_hook_data_g_recipient, decimal_to_cctp_subunits, evm_address_to_bytes32,
+    build_forwarder_hook_data_recipient, decimal_to_cctp_subunits, evm_address_to_bytes32,
     stellar_account_to_bytes32, stellar_contract_to_bytes32, stellar_outbound_cctp_amount,
 };
 use crate::cctp::message::CorridorMessageExpectations;
@@ -91,7 +91,7 @@ pub fn build_corridor_expectations(
                 .map_err(|e| ExpectationError::Encoding(e.to_string()))?;
             let forwarder = stellar_contract_to_bytes32(STELLAR_CCTP_FORWARDER)
                 .map_err(|e| ExpectationError::Encoding(e.to_string()))?;
-            let hook = build_forwarder_hook_data_g_recipient(&transfer.recipient)
+            let hook = build_forwarder_hook_data_recipient(&transfer.recipient)
                 .map_err(|e| ExpectationError::Encoding(e.to_string()))?;
             let body_sender = body_message_sender(transfer, CctpDirection::EvmToStellar)?;
             Ok(CorridorMessageExpectations {
@@ -205,6 +205,7 @@ mod tests {
             destination_asset_canonical: "b".into(),
             sender: "".into(),
             recipient: recipient.into(),
+            mint_submitter: None,
             amount: "100.000000".into(),
             destination_amount: "100.000000".into(),
             finality: CctpFinality::Standard,
@@ -230,6 +231,10 @@ mod tests {
             terminal_at: None,
             mint_payload_hash: None,
             mint_payload_expires_at: None,
+            approval_payload_hash: None,
+            approval_expiration_ledger: None,
+            burn_payload_hash: None,
+            burn_prepare_step: None,
         }
     }
 
@@ -262,7 +267,7 @@ mod tests {
         assert_eq!(exp.destination_caller, forwarder);
         assert_eq!(
             exp.hook_data,
-            Some(build_forwarder_hook_data_g_recipient(G_RECIPIENT).unwrap())
+            Some(build_forwarder_hook_data_recipient(G_RECIPIENT).unwrap())
         );
         assert_eq!(
             exp.burn_token,

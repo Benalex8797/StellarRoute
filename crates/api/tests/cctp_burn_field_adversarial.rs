@@ -84,6 +84,11 @@ fn sample_quote(direction: CctpDirection) -> CctpQuoteRequest {
         } else {
             Some(G_SENDER.into())
         },
+        mint_submitter: if direction == CctpDirection::EvmToStellar {
+            Some(G_SENDER.into())
+        } else {
+            None
+        },
         finality: CctpFinality::Standard,
     }
 }
@@ -98,6 +103,9 @@ fn base_service(
     CctpService {
         config: cfg,
         store,
+        prepare_lock: Arc::new(
+            stellarroute_api::cctp::prepare_lock::InMemoryCctpPrepareLockStore::default(),
+        ),
         iris: Arc::new(MockIris),
         kill_switch: Arc::new(KillSwitchManager::new(None)),
         runtime: stellarroute_api::cctp::readiness::CctpRuntime::for_tests(
@@ -128,6 +136,7 @@ async fn prepared_transfer(
             destination_asset_canonical: "b".into(),
             sender: sample_quote(direction).sender.clone().unwrap_or_default(),
             recipient: sample_quote(direction).recipient.clone(),
+            mint_submitter: None,
             amount: "100.000000".into(),
             destination_amount: "100.000000".into(),
             finality: CctpFinality::Standard,
@@ -153,6 +162,10 @@ async fn prepared_transfer(
             terminal_at: None,
             mint_payload_hash: None,
             mint_payload_expires_at: None,
+            approval_payload_hash: None,
+            approval_expiration_ledger: None,
+            burn_payload_hash: None,
+            burn_prepare_step: None,
         },
         &cfg,
         TX_HASH,

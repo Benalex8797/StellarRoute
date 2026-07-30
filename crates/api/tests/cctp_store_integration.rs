@@ -25,6 +25,7 @@ fn sample_transfer() -> CctpTransfer {
         destination_asset_canonical: "b".into(),
         sender: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".into(),
         recipient: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".into(),
+        mint_submitter: None,
         amount: "10".into(),
         destination_amount: "10".into(),
         finality: CctpFinality::Standard,
@@ -50,6 +51,10 @@ fn sample_transfer() -> CctpTransfer {
         terminal_at: None,
         mint_payload_hash: None,
         mint_payload_expires_at: None,
+        approval_payload_hash: None,
+        approval_expiration_ledger: None,
+        burn_payload_hash: None,
+        burn_prepare_step: None,
     }
 }
 
@@ -101,6 +106,7 @@ async fn in_memory_approval_and_mint_paths() {
             attestation_ready.version,
             "hash-1",
             Utc::now() + Duration::minutes(5),
+            None,
         )
         .await
         .unwrap();

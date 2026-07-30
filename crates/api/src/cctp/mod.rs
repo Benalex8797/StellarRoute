@@ -20,6 +20,7 @@ pub mod fixtures;
 pub mod iris;
 pub mod iris_public_keys;
 pub mod message;
+pub mod prepare_lock;
 pub mod provenance;
 pub mod readiness;
 pub mod service;
