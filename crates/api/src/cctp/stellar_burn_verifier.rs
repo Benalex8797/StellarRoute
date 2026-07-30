@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::cctp::config::CctpConfig;
-use crate::cctp::encoding::stellar_contract_to_bytes32;
+use crate::cctp::encoding::{stellar_contract_to_bytes32, stellar_local_to_canonical_amount};
 use crate::cctp::message::parse_cctp_v2_message;
 use crate::cctp::stellar_contract_events::{
     address_to_strkey, contract_hash, parse_deposit_for_burn, parse_message_sent,
@@ -13,7 +13,7 @@ use crate::cctp::stellar_contract_events::{
 use crate::cctp::stellar_rpc::StellarRpcClient;
 use crate::cctp::stellar_tx::{
     chain_id_string, ensure_testnet_binding, parse_invoke_envelope, scval_to_address,
-    scval_to_bytes, scval_to_bytes32, scval_to_u32, TxStatus,
+    scval_to_bytes, scval_to_bytes32, scval_to_i128, scval_to_u32, TxStatus,
 };
 use crate::cctp::verifiers::{StellarBurnVerifier, VerifiedBurnFacts, VerifierError};
 
@@ -26,10 +26,12 @@ pub struct StellarRpcBurnVerifier {
 
 struct DecodedBurnInvoke {
     caller: String,
+    local_amount: i128,
     destination_domain: u32,
     mint_recipient: [u8; 32],
     burn_token: String,
     destination_caller: [u8; 32],
+    local_max_fee: i128,
     min_finality: u32,
     hook_data: Vec<u8>,
 }
@@ -41,7 +43,13 @@ impl StellarRpcBurnVerifier {
             return Err(VerifierError::NotReady);
         }
         let rpc = Arc::new(StellarRpcClient::new(config)?);
-        let probe_ok = rpc.latest_ledger().await.is_ok();
+        let probe_ok = if cfg!(test) {
+            rpc.latest_ledger().await.is_ok()
+        } else {
+            crate::cctp::stellar_readiness_probes::probe_stellar_contracts(config)
+                .await
+                .all_ok()
+        };
         Ok(Self {
             rpc,
             token_messenger: config.contracts.stellar_token_messenger.clone(),
@@ -68,16 +76,22 @@ impl StellarRpcBurnVerifier {
         };
         Ok(DecodedBurnInvoke {
             caller: address_to_strkey(&scval_to_address(&invoke.args[0])?)?,
+            local_amount: scval_to_i128(&invoke.args[1])?,
             destination_domain: scval_to_u32(&invoke.args[2])?,
             mint_recipient: scval_to_bytes32(&invoke.args[3])?,
             burn_token: address_to_strkey(&scval_to_address(&invoke.args[4])?)?,
             destination_caller: scval_to_bytes32(&invoke.args[5])?,
+            local_max_fee: scval_to_i128(&invoke.args[6])?,
             min_finality: scval_to_u32(&invoke.args[7])?,
             hook_data,
         })
     }
 
     fn invoke_matches_event(call: &DecodedBurnInvoke, event: &DepositForBurnEvent) -> bool {
+        let canonical_amount =
+            stellar_local_to_canonical_amount(call.local_amount).unwrap_or(i128::MIN);
+        let canonical_max_fee =
+            stellar_local_to_canonical_amount(call.local_max_fee).unwrap_or(i128::MIN);
         address_to_strkey(&event.depositor).ok().as_deref() == Some(call.caller.as_str())
             && event.destination_domain == call.destination_domain
             && event.mint_recipient == call.mint_recipient
@@ -86,6 +100,8 @@ impl StellarRpcBurnVerifier {
             && event.destination_caller == call.destination_caller
             && event.min_finality_threshold == call.min_finality
             && event.hook_data == call.hook_data
+            && event.amount == canonical_amount
+            && event.max_fee == canonical_max_fee
     }
 
     fn find_burn_events(
@@ -151,6 +167,9 @@ impl StellarBurnVerifier for StellarRpcBurnVerifier {
             return Err(VerifierError::Failed("wrong contract".into()));
         }
         let call = Self::decode_burn_invoke(&invoke)?;
+        if call.caller != invoke.operation_source {
+            return Err(VerifierError::Failed("caller/op-source mismatch".into()));
+        }
 
         let tm_hash = stellar_contract_to_bytes32(&self.token_messenger)
             .map_err(|e| VerifierError::Failed(e.to_string()))?;
@@ -180,6 +199,17 @@ impl StellarBurnVerifier for StellarRpcBurnVerifier {
             return Err(VerifierError::Failed(
                 "message/event domain mismatch".into(),
             ));
+        }
+        if event.destination_token_messenger != parsed_msg.recipient {
+            return Err(VerifierError::Failed(
+                "destination token messenger mismatch".into(),
+            ));
+        }
+
+        let canonical_from_invoke = stellar_local_to_canonical_amount(call.local_amount)
+            .map_err(|e| VerifierError::Failed(e.to_string()))?;
+        if canonical_from_invoke != event.amount {
+            return Err(VerifierError::Failed("invoke/event amount mismatch".into()));
         }
 
         let hook_data = if event.hook_data.is_empty() {

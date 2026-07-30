@@ -114,6 +114,25 @@ fn pad_fraction(fraction: &str, width: usize) -> String {
     s
 }
 
+/// Stellar 7dp local token amount -> 6dp canonical (Circle `to_canonical_amount` for 7/6 pair).
+/// Dust (non-zero 7th decimal) must be stripped before burn; normalized local divides evenly by 10.
+pub fn stellar_local_to_canonical_amount(local: i128) -> Result<i128, EncodingError> {
+    if local <= 0 {
+        return Err(EncodingError::AmountOverflow);
+    }
+    if local % 10 != 0 {
+        return Err(EncodingError::StellarRemainder(format!("{local}")));
+    }
+    Ok(local / 10)
+}
+
+/// Canonical 6dp CCTP amount -> Stellar 7dp local (×10).
+pub fn canonical_to_stellar_local_amount(canonical: i128) -> Result<i128, EncodingError> {
+    canonical
+        .checked_mul(10)
+        .ok_or(EncodingError::AmountOverflow)
+}
+
 fn parse_decimal_to_subunits(amount: &str, scale: usize) -> Result<u128, EncodingError> {
     let (whole, fraction) = split_decimal(amount)?;
     let frac = pad_fraction(&fraction, scale);

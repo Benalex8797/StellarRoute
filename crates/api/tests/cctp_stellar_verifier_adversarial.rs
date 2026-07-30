@@ -127,9 +127,18 @@ async fn from_config_async_wires_stellar_verifiers_with_live_rpc() {
     cfg.sepolia_rpc_url = "https://rpc.sepolia.org".into();
     cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
     let rt = CctpRuntime::from_config_async(&cfg).await;
-    assert!(rt.stellar_approval_verifier.is_ready());
-    assert!(rt.stellar_burn_verifier.is_ready());
-    assert!(rt.stellar_mint_verifier.is_ready());
+    assert!(
+        rt.stellar_burn_verifier.is_ready(),
+        "burn verifier should wire with live RPC + contract probes"
+    );
+    assert!(
+        rt.stellar_mint_verifier.is_ready(),
+        "mint verifier should wire with live RPC + contract probes"
+    );
+    assert!(
+        rt.stellar_approval_verifier.is_ready(),
+        "optional approval verifier should wire with live RPC"
+    );
     assert!(!rt.is_public_executable(&cfg));
 }
 

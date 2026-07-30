@@ -54,9 +54,7 @@ impl EvmApprovalVerifier for NotReadyEvmApprovalVerifier {
     }
 }
 
-/// Blocker: Soroban RPC does not expose authoritative SEP-41 `approve` event decoding
-/// for persisted hash verification without circlefin/stellar-cctp event schema pinning.
-/// See `docs/cctp/stellar-verifier-blockers.md`.
+/// Optional standalone SEP-41 approval — Soroban auth in burn tx may satisfy `transfer_from` without this.
 pub struct NotReadyStellarApprovalVerifier;
 
 #[async_trait]

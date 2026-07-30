@@ -1,30 +1,39 @@
 //! Production Stellar Testnet `mint_and_forward` verifier via Soroban RPC `getTransaction`.
 
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::sync::Arc;
 
 use crate::cctp::config::CctpConfig;
+use crate::cctp::encoding::{canonical_to_stellar_local_amount, stellar_contract_to_bytes32};
 use crate::cctp::evm_mint_verifier::EvmRpcMintVerifier;
-use crate::cctp::message::parse_cctp_v2_message;
+use crate::cctp::message::{parse_cctp_v2_message, MESSAGE_HEADER_LEN};
 use crate::cctp::stellar_contract_events::{
-    contract_hash, parse_message_received, parse_mint_and_forward,
+    contract_hash, parse_message_received, parse_mint_and_forward, MessageReceivedEvent,
+    MintAndForwardEvent,
 };
+use crate::cctp::stellar_payload::payload_hash_from_envelope_xdr;
 use crate::cctp::stellar_rpc::StellarRpcClient;
 use crate::cctp::stellar_tx::{
-    ensure_testnet_binding, parse_invoke_envelope, scval_to_bytes, TxStatus,
+    ensure_testnet_binding, parse_invoke_envelope, scval_to_bytes, FinalizedTx, TxStatus,
 };
 use crate::cctp::verifiers::{
     MintVerifyOutcome, StellarMintVerifier, VerifiedMintFacts, VerifierError,
 };
-use crate::models::v2_cctp::{PreparedWalletPayload, STELLAR_TESTNET_CHAIN_ID};
+use crate::models::v2_cctp::STELLAR_TESTNET_CHAIN_ID;
 
 pub struct StellarRpcMintVerifier {
     rpc: Arc<StellarRpcClient>,
     forwarder: String,
     message_transmitter: String,
-    network_passphrase: String,
+    usdc: String,
+    config: CctpConfig,
     probe_ok: bool,
+}
+
+struct BoundMintEvents {
+    forward: MintAndForwardEvent,
+    received: MessageReceivedEvent,
 }
 
 impl StellarRpcMintVerifier {
@@ -34,28 +43,25 @@ impl StellarRpcMintVerifier {
             return Err(VerifierError::NotReady);
         }
         let rpc = Arc::new(StellarRpcClient::new(config)?);
-        let probe_ok = rpc.latest_ledger().await.is_ok();
+        let probe_ok = if cfg!(test) {
+            rpc.latest_ledger().await.is_ok()
+        } else {
+            crate::cctp::stellar_readiness_probes::probe_stellar_contracts(config)
+                .await
+                .all_ok()
+        };
         Ok(Self {
             rpc,
             forwarder: config.contracts.stellar_cctp_forwarder.clone(),
             message_transmitter: config.contracts.stellar_message_transmitter.clone(),
-            network_passphrase: config.stellar_network_passphrase.clone(),
+            usdc: config.contracts.stellar_usdc.clone(),
+            config: config.clone(),
             probe_ok,
         })
     }
 
     fn hash32(data: &[u8]) -> [u8; 32] {
-        Sha256::digest(data).into()
-    }
-
-    fn payload_hash_from_envelope(&self, envelope_xdr: &str) -> Result<String, VerifierError> {
-        let payload = PreparedWalletPayload::StellarXdr {
-            network_passphrase: self.network_passphrase.clone(),
-            xdr_envelope: envelope_xdr.to_string(),
-        };
-        let json =
-            serde_json::to_string(&payload).map_err(|e| VerifierError::Failed(e.to_string()))?;
-        Ok(hex::encode(Sha256::digest(json.as_bytes())))
+        sha2::Sha256::digest(data).into()
     }
 
     fn decode_mint_invoke(
@@ -73,73 +79,160 @@ impl StellarRpcMintVerifier {
         ))
     }
 
+    fn find_bound_mint_events(
+        tx: &FinalizedTx,
+        expected_nonce: [u8; 32],
+        forwarder_hash: [u8; 32],
+        mt_hash: [u8; 32],
+        forwarder_strkey: &str,
+    ) -> Result<Option<BoundMintEvents>, VerifierError> {
+        let mut forward_matches = 0usize;
+        let mut forward_event: Option<MintAndForwardEvent> = None;
+        let mut received_matches = 0usize;
+        let mut received_event: Option<MessageReceivedEvent> = None;
+
+        for event in &tx.contract_events {
+            let hash = contract_hash(event)?;
+            if hash == forwarder_hash {
+                if let Ok(ev) = parse_mint_and_forward(event) {
+                    forward_matches += 1;
+                    forward_event = Some(ev);
+                }
+            }
+            if hash == mt_hash {
+                if let Ok(ev) = parse_message_received(event) {
+                    if ev.nonce == expected_nonce {
+                        received_matches += 1;
+                        received_event = Some(ev);
+                    }
+                }
+            }
+        }
+
+        if forward_matches == 0 && received_matches == 0 {
+            return Ok(None);
+        }
+        if forward_matches != 1 || received_matches != 1 {
+            return Err(VerifierError::Failed("ambiguous mint events".into()));
+        }
+
+        let forward =
+            forward_event.ok_or_else(|| VerifierError::Failed("no forward event".into()))?;
+        let received =
+            received_event.ok_or_else(|| VerifierError::Failed("no message_received".into()))?;
+
+        let caller = crate::cctp::stellar_contract_events::address_to_strkey(&received.caller)?;
+        if caller != forwarder_strkey {
+            return Err(VerifierError::Failed("caller not forwarder".into()));
+        }
+
+        Ok(Some(BoundMintEvents { forward, received }))
+    }
+
+    fn bind_completion_evidence(
+        &self,
+        message: &[u8],
+        nonce: &str,
+        recipient: &str,
+        expected_amount_cctp: u128,
+        events: &BoundMintEvents,
+    ) -> Result<(), VerifierError> {
+        let expected_nonce = EvmRpcMintVerifier::parse_stored_nonce(nonce)?;
+        if events.received.nonce != expected_nonce {
+            return Err(VerifierError::Failed("nonce mismatch".into()));
+        }
+        if events.received.message_body.len() + MESSAGE_HEADER_LEN != message.len() {
+            return Err(VerifierError::Failed("message length mismatch".into()));
+        }
+        if message[MESSAGE_HEADER_LEN..] != events.received.message_body {
+            return Err(VerifierError::Failed("message_body mismatch".into()));
+        }
+
+        let parsed =
+            parse_cctp_v2_message(message).map_err(|e| VerifierError::Failed(e.to_string()))?;
+        if parsed.nonce != expected_nonce {
+            return Err(VerifierError::Failed("parsed nonce mismatch".into()));
+        }
+        if events.received.source_domain != parsed.source_domain {
+            return Err(VerifierError::Failed("source domain mismatch".into()));
+        }
+        if events.received.sender != parsed.sender {
+            return Err(VerifierError::Failed("sender mismatch".into()));
+        }
+
+        let expected_local = canonical_to_stellar_local_amount(expected_amount_cctp as i128)
+            .map_err(|e| VerifierError::Failed(e.to_string()))?;
+        if events.forward.amount != expected_local {
+            return Err(VerifierError::Failed("forward amount mismatch".into()));
+        }
+
+        let usdc_addr = stellar_contract_to_bytes32(&self.usdc)
+            .map_err(|e| VerifierError::Failed(e.to_string()))?;
+        let token_addr =
+            crate::cctp::stellar_contract_events::address_to_strkey(&events.forward.token)?;
+        if token_addr != self.usdc {
+            return Err(VerifierError::Failed("forward token mismatch".into()));
+        }
+        let _ = usdc_addr;
+
+        if !events
+            .forward
+            .forward_recipient
+            .eq_ignore_ascii_case(recipient)
+        {
+            return Err(VerifierError::Failed("recipient mismatch".into()));
+        }
+
+        Ok(())
+    }
+
     async fn completion_outcome(
         &self,
         tx_hash: &str,
         message: &[u8],
         nonce: &str,
         recipient: &str,
+        expected_amount_cctp: u128,
     ) -> Result<MintVerifyOutcome, VerifierError> {
         let expected_nonce = EvmRpcMintVerifier::parse_stored_nonce(nonce)?;
-        let parsed =
-            parse_cctp_v2_message(message).map_err(|e| VerifierError::Failed(e.to_string()))?;
-        if parsed.nonce != expected_nonce {
-            return Err(VerifierError::Failed("nonce/message mismatch".into()));
-        }
-
         let tx = self.rpc.get_finalized_transaction(tx_hash).await?;
         if tx.status == TxStatus::Failed {
             return Ok(MintVerifyOutcome::FailedRetryable {
                 reason: "tx failed".into(),
             });
         }
+        if tx.status != TxStatus::Success {
+            return Ok(MintVerifyOutcome::Pending);
+        }
 
-        let mt_hash = crate::cctp::encoding::stellar_contract_to_bytes32(&self.message_transmitter)
+        let mt_hash = stellar_contract_to_bytes32(&self.message_transmitter)
             .map_err(|e| VerifierError::Failed(e.to_string()))?;
-        let fwd_hash = crate::cctp::encoding::stellar_contract_to_bytes32(&self.forwarder)
+        let fwd_hash = stellar_contract_to_bytes32(&self.forwarder)
             .map_err(|e| VerifierError::Failed(e.to_string()))?;
 
-        let mut forward_matches = 0usize;
-        let mut received_matches = 0usize;
-
-        for event in &tx.contract_events {
-            let hash = contract_hash(event)?;
-            if hash == fwd_hash {
-                if let Ok(ev) = parse_mint_and_forward(event) {
-                    if ev.forward_recipient == recipient {
-                        forward_matches += 1;
-                    }
-                }
-            }
-            if hash == mt_hash {
-                if let Ok(ev) = parse_message_received(event) {
-                    if ev.nonce == expected_nonce
-                        && ev.source_domain == parsed.source_domain
-                        && ev.sender == parsed.sender
-                    {
-                        received_matches += 1;
-                    }
-                }
-            }
-        }
-
-        if forward_matches == 1 || received_matches == 1 {
-            return Ok(MintVerifyOutcome::Succeeded);
-        }
-        if forward_matches > 1 || received_matches > 1 {
-            return Err(VerifierError::Failed("ambiguous mint events".into()));
-        }
-
-        match self
-            .rpc
-            .simulate_is_nonce_used(&self.message_transmitter, expected_nonce)
-            .await
+        match Self::find_bound_mint_events(&tx, expected_nonce, fwd_hash, mt_hash, &self.forwarder)?
         {
-            Ok(true) => Ok(MintVerifyOutcome::NonceUsed),
-            Ok(false) => Ok(MintVerifyOutcome::Pending),
-            Err(VerifierError::Transient(m)) => Err(VerifierError::Transient(m)),
-            Err(VerifierError::NotReady) => Err(VerifierError::NotReady),
-            Err(e) => Err(e),
+            Some(events) => {
+                self.bind_completion_evidence(
+                    message,
+                    nonce,
+                    recipient,
+                    expected_amount_cctp,
+                    &events,
+                )?;
+                Ok(MintVerifyOutcome::Succeeded)
+            }
+            None => {
+                if self
+                    .rpc
+                    .simulate_is_nonce_used(&self.message_transmitter, expected_nonce)
+                    .await?
+                {
+                    Ok(MintVerifyOutcome::ReconciliationNonceConsumed)
+                } else {
+                    Ok(MintVerifyOutcome::Pending)
+                }
+            }
         }
     }
 }
@@ -189,18 +282,12 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
             return Err(VerifierError::Failed("message/attestation mismatch".into()));
         }
 
-        let computed_hash = self.payload_hash_from_envelope(&tx.envelope_xdr)?;
+        let computed_hash = payload_hash_from_envelope_xdr(&tx.envelope_xdr, &self.config)?;
         if computed_hash != expected_payload_hash {
             return Err(VerifierError::Failed("payload hash mismatch".into()));
         }
 
-        let outcome = if tx.status == TxStatus::Success {
-            MintVerifyOutcome::Pending
-        } else {
-            MintVerifyOutcome::FailedRetryable {
-                reason: "tx failed".into(),
-            }
-        };
+        let outcome = MintVerifyOutcome::Pending;
 
         Ok(VerifiedMintFacts {
             tx_hash: tx.tx_hash,
@@ -212,7 +299,7 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
             nonce: nonce.to_string(),
             payload_hash: expected_payload_hash.to_string(),
             outcome,
-            recipient_evidence: Some(invoke.source_account.clone()),
+            recipient_evidence: Some(invoke.operation_source.clone()),
         })
     }
 
@@ -226,16 +313,74 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
         if !self.is_ready() {
             return Err(VerifierError::NotReady);
         }
-        self.completion_outcome(tx_hash, message, nonce, recipient)
+        let amount_cctp = parse_cctp_v2_message(message)
+            .map_err(|e| VerifierError::Failed(e.to_string()))?
+            .body
+            .amount;
+        self.completion_outcome(tx_hash, message, nonce, recipient, amount_cctp as u128)
             .await
+    }
+}
+
+#[cfg(test)]
+impl StellarRpcMintVerifier {
+    fn for_binding_tests(cfg: &CctpConfig) -> Self {
+        Self {
+            rpc: Arc::new(StellarRpcClient::new(cfg).expect("test rpc client")),
+            forwarder: cfg.contracts.stellar_cctp_forwarder.clone(),
+            message_transmitter: cfg.contracts.stellar_message_transmitter.clone(),
+            usdc: cfg.contracts.stellar_usdc.clone(),
+            config: cfg.clone(),
+            probe_ok: true,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cctp::builders::stellar::encoder::encode_invoke_at_sequence;
     use crate::cctp::config::CctpConfig;
+    use crate::cctp::encoding::stellar_contract_to_bytes32;
+    use crate::cctp::fixtures::stellar_live_xdr::{
+        mint_contract_events_xdr, mint_envelope_xdr, MINT_LEDGER, MINT_LOCAL_AMOUNT, MINT_TX_HASH,
+    };
+    use crate::cctp::stellar_contract_events::{collect_contract_events, contract_hash};
+
+    fn mint_finalized_tx() -> FinalizedTx {
+        FinalizedTx {
+            tx_hash: MINT_TX_HASH.into(),
+            status: TxStatus::Success,
+            ledger: MINT_LEDGER,
+            latest_ledger: Some(MINT_LEDGER),
+            created_at: None,
+            envelope_xdr: mint_envelope_xdr(),
+            contract_events: collect_contract_events(&[mint_contract_events_xdr()]).unwrap(),
+        }
+    }
+
+    fn mint_binding_context() -> (CctpConfig, Vec<u8>, String, String, u128, BoundMintEvents) {
+        let cfg = CctpConfig::default_testnet();
+        let invoke = parse_invoke_envelope(&mint_envelope_xdr()).unwrap();
+        let message = scval_to_bytes(&invoke.args[0]).unwrap();
+        let parsed = parse_cctp_v2_message(&message).unwrap();
+        let nonce = format!("0x{}", hex::encode(parsed.nonce));
+        let tx = mint_finalized_tx();
+        let fwd_hash = stellar_contract_to_bytes32(&cfg.contracts.stellar_cctp_forwarder).unwrap();
+        let mt_hash =
+            stellar_contract_to_bytes32(&cfg.contracts.stellar_message_transmitter).unwrap();
+        let events = StellarRpcMintVerifier::find_bound_mint_events(
+            &tx,
+            parsed.nonce,
+            fwd_hash,
+            mt_hash,
+            &cfg.contracts.stellar_cctp_forwarder,
+        )
+        .unwrap()
+        .expect("dual events");
+        let recipient = events.forward.forward_recipient.clone();
+        let amount = parsed.body.amount;
+        (cfg, message, nonce, recipient, amount, events)
+    }
 
     #[tokio::test]
     async fn not_ready_without_rpc() {
@@ -248,18 +393,143 @@ mod tests {
     }
 
     #[test]
-    fn payload_hash_is_deterministic() {
+    fn payload_hash_uses_shared_helper() {
         let cfg = CctpConfig::default_testnet();
-        let verifier = StellarRpcMintVerifier {
-            rpc: Arc::new(StellarRpcClient::new(&cfg).unwrap()),
-            forwarder: cfg.contracts.stellar_cctp_forwarder.clone(),
-            message_transmitter: cfg.contracts.stellar_message_transmitter.clone(),
-            network_passphrase: cfg.stellar_network_passphrase.clone(),
-            probe_ok: true,
-        };
         let xdr = "AAAAAgAAAADuBg+afmvWN9+nlruudR93UO1rDpTe8i6yxgPgBKoBVwAAAGQAAAAAAAAAAQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAA==";
-        let h1 = verifier.payload_hash_from_envelope(xdr).unwrap();
-        let h2 = verifier.payload_hash_from_envelope(xdr).unwrap();
+        let h1 = payload_hash_from_envelope_xdr(xdr, &cfg).unwrap();
+        let h2 = payload_hash_from_envelope_xdr(xdr, &cfg).unwrap();
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn live_fixture_dual_events_bind() {
+        let (cfg, message, nonce, recipient, amount, events) = mint_binding_context();
+        let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
+        verifier
+            .bind_completion_evidence(&message, &nonce, &recipient, amount, &events)
+            .unwrap();
+    }
+
+    #[test]
+    fn rejects_message_received_only() {
+        let cfg = CctpConfig::default_testnet();
+        let tx = mint_finalized_tx();
+        let mt_hash =
+            stellar_contract_to_bytes32(&cfg.contracts.stellar_message_transmitter).unwrap();
+        let received_only: Vec<_> = tx
+            .contract_events
+            .iter()
+            .filter(|ev| contract_hash(ev).ok() == Some(mt_hash))
+            .cloned()
+            .collect();
+        let mut partial = tx.clone();
+        partial.contract_events = received_only;
+        let parsed = parse_cctp_v2_message(
+            &scval_to_bytes(&parse_invoke_envelope(&mint_envelope_xdr()).unwrap().args[0]).unwrap(),
+        )
+        .unwrap();
+        let fwd_hash = stellar_contract_to_bytes32(&cfg.contracts.stellar_cctp_forwarder).unwrap();
+        assert!(matches!(
+            StellarRpcMintVerifier::find_bound_mint_events(
+                &partial,
+                parsed.nonce,
+                fwd_hash,
+                mt_hash,
+                &cfg.contracts.stellar_cctp_forwarder,
+            ),
+            Err(VerifierError::Failed(ref m)) if m.contains("ambiguous")
+        ));
+    }
+
+    #[test]
+    fn rejects_forwarder_only() {
+        let cfg = CctpConfig::default_testnet();
+        let tx = mint_finalized_tx();
+        let fwd_hash = stellar_contract_to_bytes32(&cfg.contracts.stellar_cctp_forwarder).unwrap();
+        let forward_only: Vec<_> = tx
+            .contract_events
+            .iter()
+            .filter(|ev| contract_hash(ev).ok() == Some(fwd_hash))
+            .cloned()
+            .collect();
+        let mut partial = tx.clone();
+        partial.contract_events = forward_only;
+        let parsed = parse_cctp_v2_message(
+            &scval_to_bytes(&parse_invoke_envelope(&mint_envelope_xdr()).unwrap().args[0]).unwrap(),
+        )
+        .unwrap();
+        let mt_hash =
+            stellar_contract_to_bytes32(&cfg.contracts.stellar_message_transmitter).unwrap();
+        assert!(matches!(
+            StellarRpcMintVerifier::find_bound_mint_events(
+                &partial,
+                parsed.nonce,
+                fwd_hash,
+                mt_hash,
+                &cfg.contracts.stellar_cctp_forwarder,
+            ),
+            Err(VerifierError::Failed(ref m)) if m.contains("ambiguous")
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_forward_events() {
+        let cfg = CctpConfig::default_testnet();
+        let tx = mint_finalized_tx();
+        let fwd_hash = stellar_contract_to_bytes32(&cfg.contracts.stellar_cctp_forwarder).unwrap();
+        let forward_ev = tx
+            .contract_events
+            .iter()
+            .find(|ev| contract_hash(ev).ok() == Some(fwd_hash))
+            .cloned()
+            .unwrap();
+        let mut dup = tx.clone();
+        dup.contract_events.push(forward_ev);
+        let parsed = parse_cctp_v2_message(
+            &scval_to_bytes(&parse_invoke_envelope(&mint_envelope_xdr()).unwrap().args[0]).unwrap(),
+        )
+        .unwrap();
+        let mt_hash =
+            stellar_contract_to_bytes32(&cfg.contracts.stellar_message_transmitter).unwrap();
+        assert!(matches!(
+            StellarRpcMintVerifier::find_bound_mint_events(
+                &dup,
+                parsed.nonce,
+                fwd_hash,
+                mt_hash,
+                &cfg.contracts.stellar_cctp_forwarder,
+            ),
+            Err(VerifierError::Failed(ref m)) if m.contains("ambiguous")
+        ));
+    }
+
+    #[test]
+    fn rejects_wrong_recipient_amount_body_nonce() {
+        let (cfg, message, nonce, recipient, amount, mut events) = mint_binding_context();
+        let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
+
+        events.forward.forward_recipient = "GINVALID".into();
+        assert!(matches!(
+            verifier.bind_completion_evidence(&message, &nonce, &recipient, amount, &events),
+            Err(VerifierError::Failed(ref m)) if m.contains("recipient")
+        ));
+        events = mint_binding_context().5;
+        events.forward.amount = MINT_LOCAL_AMOUNT + 1;
+        assert!(matches!(
+            verifier.bind_completion_evidence(&message, &nonce, &recipient, amount, &events),
+            Err(VerifierError::Failed(ref m)) if m.contains("amount")
+        ));
+        events = mint_binding_context().5;
+        events.received.message_body[0] ^= 0xff;
+        assert!(matches!(
+            verifier.bind_completion_evidence(&message, &nonce, &recipient, amount, &events),
+            Err(VerifierError::Failed(ref m)) if m.contains("message_body")
+        ));
+        events = mint_binding_context().5;
+        let bad_nonce = "0x0000000000000000000000000000000000000000000000000000000000000001";
+        assert!(matches!(
+            verifier.bind_completion_evidence(&message, bad_nonce, &recipient, amount, &events),
+            Err(VerifierError::Failed(ref m)) if m.contains("nonce")
+        ));
     }
 }

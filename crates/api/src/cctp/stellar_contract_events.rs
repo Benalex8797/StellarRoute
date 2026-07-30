@@ -220,15 +220,46 @@ pub fn parse_mint_and_forward(event: &ContractEvent) -> Result<MintAndForwardEve
         return Err(VerifierError::Failed("mint_and_forward topic count".into()));
     }
     let forward_recipient = map_get(data, "forward_recipient")?;
-    let recipient_str = match forward_recipient {
-        ScVal::Address(a) => address_to_strkey(a)?,
-        _ => return Err(VerifierError::Failed("forward_recipient type".into())),
-    };
+    let recipient_str = scval_to_muxed_recipient_strkey(forward_recipient)?;
     Ok(MintAndForwardEvent {
         forward_recipient: recipient_str,
         token: scval_to_address(map_get(data, "token")?)?,
         amount: scval_to_i128(map_get(data, "amount")?)?,
     })
+}
+
+/// Circle `MuxedAddress` wire in events — G (ed25519) supported; M with non-zero id and C rejected.
+pub fn scval_to_muxed_recipient_strkey(val: &ScVal) -> Result<String, VerifierError> {
+    match val {
+        ScVal::Address(ScAddress::Account(account_id)) => {
+            use stellar_xdr::curr::{PublicKey, Uint256};
+            let PublicKey::PublicKeyTypeEd25519(Uint256(bytes)) = account_id.0;
+            Ok(format!("{}", stellar_strkey::ed25519::PublicKey(bytes)))
+        }
+        ScVal::Address(ScAddress::Contract(_)) => Err(VerifierError::Failed(
+            "contract forward recipient unsupported".into(),
+        )),
+        ScVal::Map(Some(map)) => {
+            for entry in map.0.iter() {
+                let ScMapEntry { key, val } = entry;
+                if let ScVal::Symbol(sym) = key {
+                    if sym.0.to_string() == "ed25519" {
+                        if let ScVal::Bytes(ScBytes(bytes)) = val {
+                            if bytes.len() == 32 {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(bytes);
+                                return Ok(format!("{}", stellar_strkey::ed25519::PublicKey(arr)));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(VerifierError::Failed(
+                "muxed recipient map unsupported".into(),
+            ))
+        }
+        _ => Err(VerifierError::Failed("forward_recipient type".into())),
+    }
 }
 
 pub fn collect_contract_events(

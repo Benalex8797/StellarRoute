@@ -375,6 +375,10 @@ impl CctpService {
             .map_err(CctpServiceError::Store)?
             .ok_or(CctpServiceError::NotFound)?;
 
+        if transfer.status == CctpTransferStatus::MintSubmitted {
+            return self.poll_mint_completion(transfer).await;
+        }
+
         if transfer.status != CctpTransferStatus::AwaitingAttestation {
             return Ok(transfer);
         }
@@ -811,18 +815,82 @@ impl CctpService {
         };
 
         match completion {
-            MintVerifyOutcome::Succeeded | MintVerifyOutcome::NonceUsed => self
+            MintVerifyOutcome::Succeeded => self
                 .store
                 .record_mint_completed(submitted.transfer_id, submitted.version)
                 .await
                 .map_err(CctpServiceError::Store),
-            MintVerifyOutcome::Pending => Ok(submitted),
+            MintVerifyOutcome::Pending | MintVerifyOutcome::ReconciliationNonceConsumed => {
+                Ok(submitted)
+            }
             MintVerifyOutcome::FailedRetryable { reason } => {
                 let retryable = self
                     .store
                     .transition(
                         transfer_id,
                         submitted.version,
+                        CctpTransferStatus::MintFailedRetryable,
+                        TransferPatch {
+                            last_provider_error: Some(reason),
+                            last_provider_code: Some("mint_retryable".into()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(CctpServiceError::Store)?;
+                metrics::record_cctp_transition("mint_failed_retryable");
+                Ok(retryable)
+            }
+        }
+    }
+
+    async fn poll_mint_completion(
+        &self,
+        transfer: CctpTransfer,
+    ) -> Result<CctpTransfer, CctpServiceError> {
+        let tx_hash = transfer
+            .destination_tx_hash
+            .as_ref()
+            .ok_or(CctpServiceError::InvalidState)?;
+        let message = transfer
+            .raw_message
+            .as_ref()
+            .ok_or(CctpServiceError::InvalidState)?;
+        let nonce = transfer
+            .message_nonce
+            .as_ref()
+            .ok_or(CctpServiceError::InvalidState)?;
+
+        let completion = match transfer.direction {
+            CctpDirection::StellarToEvm => self
+                .runtime
+                .evm_mint_verifier
+                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
+                .await
+                .map_err(CctpServiceError::Verifier)?,
+            CctpDirection::EvmToStellar => self
+                .runtime
+                .stellar_mint_verifier
+                .verify_mint_completion(tx_hash, message, nonce, &transfer.recipient)
+                .await
+                .map_err(CctpServiceError::Verifier)?,
+        };
+
+        match completion {
+            MintVerifyOutcome::Succeeded => self
+                .store
+                .record_mint_completed(transfer.transfer_id, transfer.version)
+                .await
+                .map_err(CctpServiceError::Store),
+            MintVerifyOutcome::Pending | MintVerifyOutcome::ReconciliationNonceConsumed => {
+                Ok(transfer)
+            }
+            MintVerifyOutcome::FailedRetryable { reason } => {
+                let retryable = self
+                    .store
+                    .transition(
+                        transfer.transfer_id,
+                        transfer.version,
                         CctpTransferStatus::MintFailedRetryable,
                         TransferPatch {
                             last_provider_error: Some(reason),

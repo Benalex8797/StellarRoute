@@ -291,7 +291,7 @@ async fn verified_success_transitions_completed() {
 }
 
 #[tokio::test]
-async fn nonce_used_transitions_completed() {
+async fn reconciliation_nonce_consumed_does_not_complete() {
     let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
     let transfer = mint_prepared_transfer();
     let id = transfer.transfer_id;
@@ -300,10 +300,126 @@ async fn nonce_used_transitions_completed() {
         store.clone(),
         Arc::new(FakeMintVerifier {
             facts: base_facts(),
-            completion: MintVerifyOutcome::NonceUsed,
+            completion: MintVerifyOutcome::ReconciliationNonceConsumed,
             ready: true,
         }),
     );
-    let completed = service.record_mint_submission(id, "0xmint").await.unwrap();
+    let submitted = service.record_mint_submission(id, "0xmint").await.unwrap();
+    assert_eq!(submitted.status, CctpTransferStatus::MintSubmitted);
+}
+
+fn service_with_stellar_mint_verifier(
+    store: Arc<dyn CctpTransferStore>,
+    mint: Arc<dyn stellarroute_api::cctp::verifiers::StellarMintVerifier>,
+) -> CctpService {
+    let mut runtime = stellarroute_api::cctp::readiness::CctpRuntime::production_defaults();
+    runtime.stellar_mint_verifier = mint;
+    CctpService {
+        config: {
+            let mut c = CctpConfig::default_testnet();
+            c.enabled = true;
+            c
+        },
+        store,
+        iris: Arc::new(MockIris),
+        kill_switch: Arc::new(KillSwitchManager::new(None)),
+        runtime,
+    }
+}
+
+fn evm_to_stellar_mint_submitted() -> CctpTransfer {
+    let mut t = mint_prepared_transfer();
+    t.direction = CctpDirection::EvmToStellar;
+    t.source_chain_id = SEPOLIA_CHAIN_ID.into();
+    t.destination_chain_id = STELLAR_TESTNET_CHAIN_ID.into();
+    t.status = CctpTransferStatus::MintSubmitted;
+    t.destination_tx_hash =
+        Some("c59b4c64a993fc317d7ed3ea415f061723b2c67f0e2db01cd3d65028a5c0fdc4".into());
+    t
+}
+
+#[tokio::test]
+async fn poll_mint_pending_then_completes() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let transfer = evm_to_stellar_mint_submitted();
+    let id = transfer.transfer_id;
+    store.insert(&transfer).await.unwrap();
+
+    struct PollMintVerifier {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl stellarroute_api::cctp::verifiers::StellarMintVerifier for PollMintVerifier {
+        fn is_ready(&self) -> bool {
+            true
+        }
+        async fn verify_mint_submission(
+            &self,
+            _: &str,
+            _: &[u8],
+            _: &[u8],
+            _: &str,
+            _: &str,
+        ) -> Result<VerifiedMintFacts, VerifierError> {
+            Err(VerifierError::NotReady)
+        }
+        async fn verify_mint_completion(
+            &self,
+            _: &str,
+            _: &[u8],
+            _: &str,
+            _: &str,
+        ) -> Result<MintVerifyOutcome, VerifierError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Ok(MintVerifyOutcome::Pending)
+            } else {
+                Ok(MintVerifyOutcome::Succeeded)
+            }
+        }
+    }
+
+    let service = service_with_stellar_mint_verifier(
+        store.clone(),
+        Arc::new(PollMintVerifier {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+    );
+    let still_pending = service.poll_one_transfer(id).await.unwrap();
+    assert_eq!(still_pending.status, CctpTransferStatus::MintSubmitted);
+    let completed = service.poll_one_transfer(id).await.unwrap();
     assert_eq!(completed.status, CctpTransferStatus::Completed);
+    let again = service.poll_one_transfer(id).await.unwrap();
+    assert_eq!(again.status, CctpTransferStatus::Completed);
+}
+
+#[tokio::test]
+async fn poll_mint_stays_pending_without_full_evidence() {
+    let store: Arc<dyn CctpTransferStore> = Arc::new(InMemoryCctpTransferStore::default());
+    let transfer = evm_to_stellar_mint_submitted();
+    let id = transfer.transfer_id;
+    store.insert(&transfer).await.unwrap();
+    let service = service_with_stellar_mint_verifier(
+        store.clone(),
+        Arc::new(FakeMintVerifier {
+            facts: VerifiedMintFacts {
+                tx_hash: transfer.destination_tx_hash.clone().unwrap(),
+                destination_chain_id: STELLAR_TESTNET_CHAIN_ID.into(),
+                contract_address: "fwd".into(),
+                function_selector: "mint_and_forward".into(),
+                message_hash: [0u8; 32],
+                attestation_hash: [0u8; 32],
+                nonce: transfer.message_nonce.clone().unwrap(),
+                payload_hash: transfer.mint_payload_hash.clone().unwrap(),
+                outcome: MintVerifyOutcome::Pending,
+                recipient_evidence: None,
+            },
+            completion: MintVerifyOutcome::Pending,
+            ready: true,
+        }),
+    );
+    let polled = service.poll_one_transfer(id).await.unwrap();
+    assert_eq!(polled.status, CctpTransferStatus::MintSubmitted);
+    let polled_again = service.poll_one_transfer(id).await.unwrap();
+    assert_eq!(polled_again.status, CctpTransferStatus::MintSubmitted);
 }

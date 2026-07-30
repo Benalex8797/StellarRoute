@@ -278,7 +278,7 @@ impl EvmRpcMintVerifier {
         }
 
         match self.query_nonce_used(expected_msg.nonce).await {
-            Ok(true) => Ok(MintVerifyOutcome::NonceUsed),
+            Ok(true) => Ok(MintVerifyOutcome::ReconciliationNonceConsumed),
             Ok(false) => Ok(MintVerifyOutcome::Pending),
             Err(VerifierError::Transient(m)) => Err(VerifierError::Transient(m)),
             Err(VerifierError::NotReady) => Err(VerifierError::NotReady),
@@ -981,7 +981,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(outcome, MintVerifyOutcome::NonceUsed);
+        assert_eq!(outcome, MintVerifyOutcome::ReconciliationNonceConsumed);
         let _ = nonce_topic;
     }
 

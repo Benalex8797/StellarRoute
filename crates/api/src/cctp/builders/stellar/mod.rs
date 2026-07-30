@@ -21,6 +21,7 @@ use crate::models::v2_cctp::{CctpDirection, PreparedWalletPayload};
 use crate::simulation::{SimulationConfig, SorobanSimulator};
 use crate::swap::tx::AccountSequenceSource;
 
+use crate::cctp::stellar_payload::passphrase_for_config;
 use encoder::{
     approve_args, deposit_for_burn_args, encode_invoke_at_sequence, mint_and_forward_args,
 };
@@ -386,7 +387,7 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
             )
             .await?;
 
-        let payload = Self::stellar_payload(xdr, &passphrase_or_default(config));
+        let payload = Self::stellar_payload(xdr, &passphrase_for_config(config));
         let json = serde_json::to_string(&payload).unwrap_or_default();
         let payload_hash = hex::encode(Sha256::digest(json.as_bytes()));
         let expires_at = (Utc::now() + chrono::Duration::minutes(10)).timestamp();
@@ -396,14 +397,6 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
             expires_at,
             payload_hash,
         })
-    }
-}
-
-fn passphrase_or_default(config: &CctpConfig) -> String {
-    if config.stellar_network_passphrase.is_empty() {
-        STELLAR_TESTNET_PASSPHRASE.to_string()
-    } else {
-        config.stellar_network_passphrase.clone()
     }
 }
 

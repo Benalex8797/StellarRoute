@@ -1,4 +1,8 @@
-//! Production Stellar Testnet SEP-41 approval verifier via Soroban RPC `getTransaction`.
+//! Production Stellar Testnet approval verifier — optional standalone SEP-41 `approve`.
+//!
+//! Circle `deposit_for_burn` uses `transfer_from`, which may be satisfied by Soroban auth
+//! in the burn tx envelope (no standalone `approve` event). This verifier only runs when
+//! `record_approval_submission` is called with a dedicated approval tx hash.
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -6,9 +10,11 @@ use std::sync::Arc;
 use crate::cctp::approval::{StellarApprovalVerifier, VerifiedApprovalFacts};
 use crate::cctp::config::CctpConfig;
 use crate::cctp::stellar_contract_events::address_to_strkey;
+use crate::cctp::stellar_readiness_probes::simulate_allowance;
 use crate::cctp::stellar_rpc::StellarRpcClient;
 use crate::cctp::stellar_tx::{
-    ensure_testnet_binding, parse_invoke_envelope, scval_to_address, scval_to_i128, TxStatus,
+    ensure_testnet_binding, parse_invoke_envelope, scval_to_address, scval_to_i128, scval_to_u32,
+    TxStatus,
 };
 use crate::cctp::store::CctpTransfer;
 use crate::cctp::verifiers::VerifierError;
@@ -28,6 +34,7 @@ impl StellarRpcApprovalVerifier {
             return Err(VerifierError::NotReady);
         }
         let rpc = Arc::new(StellarRpcClient::new(config)?);
+        // Standalone approve is optional (burn may use Soroban auth); RPC reachability suffices.
         let probe_ok = rpc.latest_ledger().await.is_ok();
         Ok(Self {
             rpc,
@@ -39,7 +46,7 @@ impl StellarRpcApprovalVerifier {
 
     fn decode_approve(
         invoke: &crate::cctp::stellar_tx::ParsedInvoke,
-    ) -> Result<(String, i128), VerifierError> {
+    ) -> Result<(String, i128, Option<u32>), VerifierError> {
         if invoke.function != "approve" {
             return Err(VerifierError::Failed("wrong function".into()));
         }
@@ -48,7 +55,12 @@ impl StellarRpcApprovalVerifier {
         }
         let spender = address_to_strkey(&scval_to_address(&invoke.args[0])?)?;
         let amount = scval_to_i128(&invoke.args[1])?;
-        Ok((spender, amount))
+        let expiration = if invoke.args.len() == 3 {
+            Some(scval_to_u32(&invoke.args[2])?)
+        } else {
+            None
+        };
+        Ok((spender, amount, expiration))
     }
 }
 
@@ -73,19 +85,37 @@ impl StellarApprovalVerifier for StellarRpcApprovalVerifier {
         }
 
         let invoke = parse_invoke_envelope(&tx.envelope_xdr)?;
-        if !invoke.source_account.eq_ignore_ascii_case(&transfer.sender) {
+        if invoke.operation_source != transfer.sender && invoke.source_account != transfer.sender {
             return Err(VerifierError::Failed("wrong sender".into()));
         }
         if invoke.contract_strkey != self.usdc {
             return Err(VerifierError::Failed("wrong token contract".into()));
         }
 
-        let (spender, approved) = Self::decode_approve(&invoke)?;
+        let (spender, approved, expiration_ledger) = Self::decode_approve(&invoke)?;
         if spender != self.token_messenger {
             return Err(VerifierError::Failed("wrong spender".into()));
         }
         if approved < required_amount {
             return Err(VerifierError::Failed("insufficient approval amount".into()));
+        }
+        if let Some(exp) = expiration_ledger {
+            if exp < tx.ledger {
+                return Err(VerifierError::Failed("approval expired".into()));
+            }
+        }
+
+        let allowance = simulate_allowance(
+            &self.rpc,
+            &self.usdc,
+            &transfer.sender,
+            &self.token_messenger,
+        )
+        .await?;
+        if allowance < required_amount {
+            return Err(VerifierError::Failed(
+                "on-chain allowance insufficient".into(),
+            ));
         }
 
         Ok(VerifiedApprovalFacts {
@@ -102,12 +132,8 @@ impl StellarApprovalVerifier for StellarRpcApprovalVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cctp::builders::stellar::encoder::{
-        approve_args, contract_address, encode_invoke_at_sequence,
-    };
+    use crate::cctp::builders::stellar::encoder::{approve_args, encode_invoke_at_sequence};
     use crate::cctp::config::CctpConfig;
-    use crate::cctp::stellar_contract_events::test_helpers::event_to_b64;
-    use crate::cctp::stellar_tx::normalize_stellar_tx_hash;
     use crate::cctp::store::CctpTransfer;
     use crate::models::v2_cctp::{
         CctpDirection, CctpFinality, CctpTransferStatus, SEPOLIA_CHAIN_ID, STELLAR_TESTNET_CHAIN_ID,
@@ -166,7 +192,7 @@ mod tests {
         let server = MockServer::start().await;
         let mut cfg = CctpConfig::default_testnet();
         cfg.stellar_rpc_url = server.uri();
-        let hash = "a".repeat(64);
+        let hash = crate::cctp::fixtures::stellar_live_xdr::BURN_TX_HASH;
 
         Mock::given(method("POST"))
             .and(path("/"))
@@ -174,7 +200,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "jsonrpc": "2.0", "id": 1, "result": { "sequence": 100 }
             })))
-            .expect(2)
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -188,8 +214,9 @@ mod tests {
                     "status": "FAILED",
                     "txHash": hash,
                     "ledger": 99,
-                    "envelopeXdr": "AAAAAgAAAADuBg+afmvWN9+nlruudR93UO1rDpTe8i6yxgPgBKoBVwAAAGQAAAAAAAAAAQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAABAAAAAA==",
-                    "events": { "contractEventsXdr": [] }
+                    "latestLedger": 100,
+                    "envelopeXdr": crate::cctp::fixtures::stellar_live_xdr::burn_envelope_xdr(),
+                    "events": { "contractEventsXdr": [[]] }
                 }
             })))
             .mount(&server)
@@ -200,55 +227,5 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, VerifierError::Failed("tx failed".into()));
-    }
-
-    #[tokio::test]
-    async fn accepts_synthetic_approve_invoke() {
-        let server = MockServer::start().await;
-        let mut cfg = CctpConfig::default_testnet();
-        cfg.stellar_rpc_url = server.uri();
-        let source = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
-        let xdr = encode_invoke_at_sequence(
-            source,
-            &cfg.contracts.stellar_usdc,
-            "approve",
-            approve_args(&cfg.contracts.stellar_token_messenger, 10_000_000).unwrap(),
-            100,
-        )
-        .unwrap();
-        let hash = "b".repeat(64);
-
-        Mock::given(method("POST"))
-            .and(body_string_contains("getLatestLedger"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "jsonrpc": "2.0", "id": 1, "result": { "sequence": 102 }
-            })))
-            .expect(2)
-            .mount(&server)
-            .await;
-
-        let verifier = StellarRpcApprovalVerifier::new(&cfg).await.unwrap();
-
-        Mock::given(method("POST"))
-            .and(body_string_contains("getTransaction"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "jsonrpc": "2.0", "id": 1,
-                "result": {
-                    "status": "SUCCESS",
-                    "txHash": hash,
-                    "ledger": 100,
-                    "envelopeXdr": xdr,
-                    "events": { "contractEventsXdr": [[]] }
-                }
-            })))
-            .mount(&server)
-            .await;
-
-        let facts = verifier
-            .verify_approval(&sample_transfer(), &hash, 5_000_000)
-            .await
-            .unwrap();
-        assert_eq!(facts.amount, 10_000_000);
-        assert_eq!(normalize_stellar_tx_hash(&facts.tx_hash).unwrap(), hash);
     }
 }

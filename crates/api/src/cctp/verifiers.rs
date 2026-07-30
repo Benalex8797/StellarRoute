@@ -35,10 +35,15 @@ pub enum VerifierError {
 /// Outcome of destination mint verification — only `FailedRetryable` may transition retry state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MintVerifyOutcome {
+    /// On-chain delivery evidence incomplete; safe to poll the same bound tx again.
     Pending,
+    /// Full mint_and_forward + message_received evidence bound to corridor expectations.
     Succeeded,
-    FailedRetryable { reason: String },
-    NonceUsed,
+    FailedRetryable {
+        reason: String,
+    },
+    /// `is_nonce_used` returned true without delivery proof — reconciliation hint only, never completes.
+    ReconciliationNonceConsumed,
 }
 
 /// Cryptographic/on-chain facts bound to a mint submission.
@@ -61,9 +66,7 @@ impl VerifiedMintFacts {
         !self.payload_hash.is_empty()
             && matches!(
                 self.outcome,
-                MintVerifyOutcome::Pending
-                    | MintVerifyOutcome::Succeeded
-                    | MintVerifyOutcome::NonceUsed
+                MintVerifyOutcome::Pending | MintVerifyOutcome::Succeeded
             )
     }
 }
