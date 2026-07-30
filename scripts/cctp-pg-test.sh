@@ -71,7 +71,8 @@ apply_migrations() {
     "$mig_dir/0018_cctp_approval_tx_hash.sql" \
     "$mig_dir/0019_cctp_approval_verified_at.sql" \
     "$mig_dir/20260730_cctp_review_fixes.sql" \
-    "$mig_dir/20260731_cctp_prepare_lock_hardening.sql"
+    "$mig_dir/20260731_cctp_prepare_lock_hardening.sql" \
+    "$mig_dir/20260801_cctp_http_gate.sql"
   do
     echo "Applying $(basename "$f")"
     if ! psql_test_db -v ON_ERROR_STOP=1 -f "$f" >/dev/null 2>&1; then
