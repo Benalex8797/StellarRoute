@@ -386,8 +386,8 @@ impl EvmMintVerifier for EvmRpcMintVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
     use crate::cctp::config::CctpConfig;
+    use alloy_primitives::Bytes;
     use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
