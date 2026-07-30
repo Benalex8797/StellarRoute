@@ -215,6 +215,7 @@ mod tests {
             status: CctpTransferStatus::Created,
             source_tx_hash: None,
             source_approval_tx_hash: None,
+            source_approval_verified_at: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,

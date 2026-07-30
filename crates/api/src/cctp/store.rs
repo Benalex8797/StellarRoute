@@ -40,6 +40,7 @@ pub struct CctpTransfer {
     pub status: CctpTransferStatus,
     pub source_tx_hash: Option<String>,
     pub source_approval_tx_hash: Option<String>,
+    pub source_approval_verified_at: Option<DateTime<Utc>>,
     pub destination_tx_hash: Option<String>,
     pub iris_message_hash: Option<String>,
     pub message_nonce: Option<String>,
@@ -90,12 +91,13 @@ pub trait CctpTransferStore: Send + Sync {
         patch: TransferPatch,
     ) -> Result<CctpTransfer, CctpStoreError>;
 
-    /// Record on-chain approval tx before burn prepare may return burn payload.
+    /// Record verified on-chain approval tx (hash + verified timestamp).
     async fn record_approval_submission(
         &self,
         transfer_id: Uuid,
         expected_version: i32,
         tx_hash: &str,
+        verified_at: DateTime<Utc>,
     ) -> Result<CctpTransfer, CctpStoreError>;
 
     /// Atomically record verified burn: `burn_prepared` → `awaiting_attestation` with `source_tx_hash`.
@@ -135,6 +137,7 @@ pub trait CctpTransferStore: Send + Sync {
 pub struct TransferPatch {
     pub source_tx_hash: Option<String>,
     pub source_approval_tx_hash: Option<String>,
+    pub source_approval_verified_at: Option<DateTime<Utc>>,
     pub destination_tx_hash: Option<String>,
     pub iris_message_hash: Option<String>,
     pub message_nonce: Option<String>,
@@ -366,6 +369,7 @@ impl CctpTransferStore for PgCctpTransferStore {
         transfer_id: Uuid,
         expected_version: i32,
         tx_hash: &str,
+        verified_at: DateTime<Utc>,
     ) -> Result<CctpTransfer, CctpStoreError> {
         check_str_len("tx_hash", tx_hash, MAX_TX_HASH_LEN)
             .map_err(|_| CctpStoreError::PayloadTooLarge)?;
@@ -385,13 +389,15 @@ impl CctpTransferStore for PgCctpTransferStore {
             r#"
             UPDATE cctp_transfers SET
                 source_approval_tx_hash = $2,
+                source_approval_verified_at = $3,
                 version = version + 1,
                 updated_at = NOW()
-            WHERE transfer_id = $1 AND version = $3
+            WHERE transfer_id = $1 AND version = $4
             "#,
         )
         .bind(transfer_id)
         .bind(tx_hash)
+        .bind(verified_at)
         .bind(expected_version)
         .execute(&self.pool)
         .await;
@@ -585,6 +591,7 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
         transfer_id: Uuid,
         expected_version: i32,
         tx_hash: &str,
+        verified_at: DateTime<Utc>,
     ) -> Result<CctpTransfer, CctpStoreError> {
         check_str_len("tx_hash", tx_hash, MAX_TX_HASH_LEN)
             .map_err(|_| CctpStoreError::PayloadTooLarge)?;
@@ -599,7 +606,14 @@ impl CctpTransferStore for InMemoryCctpTransferStore {
         if transfer.status != CctpTransferStatus::BurnPrepared {
             return Err(CctpStoreError::InvalidTransition);
         }
+        if let Some(existing) = transfer.source_approval_tx_hash.as_deref() {
+            if existing != tx_hash {
+                return Err(CctpStoreError::InvalidTransition);
+            }
+            return Ok(transfer.clone());
+        }
         transfer.source_approval_tx_hash = Some(tx_hash.to_string());
+        transfer.source_approval_verified_at = Some(verified_at);
         transfer.version += 1;
         transfer.updated_at = Utc::now();
         Ok(transfer.clone())
@@ -719,6 +733,7 @@ struct TransferRow {
     status: String,
     source_tx_hash: Option<String>,
     source_approval_tx_hash: Option<String>,
+    source_approval_verified_at: Option<DateTime<Utc>>,
     destination_tx_hash: Option<String>,
     iris_message_hash: Option<String>,
     message_nonce: Option<String>,
@@ -761,6 +776,7 @@ impl TransferRow {
             status: parse_status(&self.status)?,
             source_tx_hash: self.source_tx_hash,
             source_approval_tx_hash: self.source_approval_tx_hash,
+            source_approval_verified_at: self.source_approval_verified_at,
             destination_tx_hash: self.destination_tx_hash,
             iris_message_hash: self.iris_message_hash,
             message_nonce: self.message_nonce,
@@ -894,6 +910,7 @@ mod tests {
             status: CctpTransferStatus::Created,
             source_tx_hash: None,
             source_approval_tx_hash: None,
+            source_approval_verified_at: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,
@@ -1029,6 +1046,7 @@ mod tests {
             status: "created".into(),
             source_tx_hash: None,
             source_approval_tx_hash: None,
+            source_approval_verified_at: None,
             destination_tx_hash: None,
             iris_message_hash: None,
             message_nonce: None,

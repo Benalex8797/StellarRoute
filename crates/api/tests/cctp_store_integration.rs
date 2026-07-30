@@ -35,6 +35,7 @@ fn sample_transfer() -> CctpTransfer {
         status: CctpTransferStatus::Created,
         source_tx_hash: None,
         source_approval_tx_hash: None,
+        source_approval_verified_at: None,
         destination_tx_hash: None,
         iris_message_hash: None,
         message_nonce: None,
@@ -68,7 +69,7 @@ async fn in_memory_approval_and_mint_paths() {
         .await
         .unwrap();
     let with_approval = store
-        .record_approval_submission(id, prepared.version, "approval-tx-1")
+        .record_approval_submission(id, prepared.version, "approval-tx-1", Utc::now())
         .await
         .unwrap();
     assert_eq!(
@@ -112,7 +113,7 @@ async fn in_memory_approval_and_mint_paths() {
 }
 
 #[tokio::test]
-#[ignore = "requires TEST_DATABASE_URL with migrations 0015-0018 applied"]
+#[ignore = "requires TEST_DATABASE_URL with migrations 0015-0019 applied"]
 async fn pg_store_prepare_submit_retry_paths() {
     let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL");
     let pool = PgPoolOptions::new()
@@ -125,6 +126,7 @@ async fn pg_store_prepare_submit_retry_paths() {
         include_str!("../migrations/0016_cctp_transfers_hardening.sql"),
         include_str!("../migrations/0017_cctp_mint_metadata.sql"),
         include_str!("../migrations/0018_cctp_approval_tx_hash.sql"),
+        include_str!("../migrations/0019_cctp_approval_verified_at.sql"),
     ] {
         for stmt in migration
             .split(';')
@@ -148,7 +150,7 @@ async fn pg_store_prepare_submit_retry_paths() {
         .await
         .unwrap();
     let approved = store
-        .record_approval_submission(id, prepared.version, "stellar-approve-hash")
+        .record_approval_submission(id, prepared.version, "stellar-approve-hash", Utc::now())
         .await
         .unwrap();
     assert!(approved.source_approval_tx_hash.is_some());
