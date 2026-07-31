@@ -91,6 +91,24 @@ PostgreSQL connection strings and pool tuning. Used by the API, indexer, replay 
 
 ---
 
+## Circle CCTP v2 bridge (API)
+
+Default-off public bridge settlement. See [`docs/api/cctp-v2-contract.md`](../api/cctp-v2-contract.md).
+
+| Variable | Type | Default | Required | Service(s) | Description |
+|----------|------|---------|----------|------------|-------------|
+| `CCTP_ENABLED` | boolean | `false` | Optional | API | Master switch; when `false`, all `/api/v2/bridge/cctp/*` handlers return `503 cctp_not_enabled` |
+| `CCTP_ACCESS_TOKEN_HMAC_KEY` | string (hex / base64 / base64url) | — | **Required** when `CCTP_ENABLED=true` | API | HMAC key for deterministic idempotent quote tokens. Minimum **32 decoded bytes**. Generate: `python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))"` |
+| `CCTP_ACCESS_TOKEN_HMAC_PREVIOUS_KEYS` | string (comma-separated keys) | — | Optional | API | Up to **2** prior HMAC keys for idempotent replay after rotation (same encodings as primary). See contract doc for drain procedure |
+| `CCTP_IDEMPOTENCY_LEASE_SECS` | integer (seconds) | `30` | Optional | API | Exclusive lease duration for in-flight idempotent quotes (tests often use `2`) |
+| `CCTP_IRIS_BASE_URL` | string (HTTPS URL) | `https://iris-api-sandbox.circle.com` | Optional | API | Circle Iris API base URL (sandbox host enforced on testnet) |
+| `CCTP_SEPOLIA_RPC_URL` | string (HTTPS URL) | — | **Required** when `CCTP_ENABLED=true` | API | Primary Sepolia JSON-RPC for EVM burn/mint builders, verifiers, and dependency probes. Precedence: `CCTP_SEPOLIA_RPC_URL` → `SEPOLIA_RPC_URL`. No implicit default (never `rpc.sepolia.org`). Optional fallbacks: `CCTP_SEPOLIA_RPC_FALLBACK_URLS` (comma-separated, max 8 total) |
+| `SEPOLIA_RPC_URL` | string (HTTPS URL) | — | Alias | API | Generic alias for `CCTP_SEPOLIA_RPC_URL` when the CCTP-specific name is unset |
+| `CCTP_STELLAR_RPC_URL` | string (HTTPS URL) | — | Optional | API | Primary Soroban RPC for Stellar CCTP builders/verifiers and dependency probes. Precedence: `CCTP_STELLAR_RPC_URL` → `STELLAR_RPC_URL` → `SOROBAN_RPC_URL` → `https://soroban-testnet.stellar.org`. Optional fallbacks: `CCTP_STELLAR_RPC_FALLBACK_URLS` |
+| `STELLAR_RPC_URL` | string (HTTPS URL) | — | Alias | API | Generic alias in the Stellar RPC precedence chain |
+
+---
+
 ## Deployment profile & security (M5)
 
 Single switch that flips several hardened defaults on for public deployments. See
@@ -104,7 +122,7 @@ endpoint-by-endpoint inventory.
 | `REQUIRE_STRICT_CORS` | boolean | `false` | Optional | API | Enforce the production CORS allowlist behavior without setting `STELLARROUTE_ENV=production` (e.g. an internet-facing staging environment) |
 | `API_KEYS` | string (comma-separated) | — | Optional | API | Integrator API keys accepted via `x-api-key` or `Authorization: Bearer <key>` |
 | `REQUIRE_AUTH` | boolean | `false` dev/test, `true` production | Optional | API | When `true`, reject requests without a valid API key. Explicit value always wins over the profile default |
-| `PUBLIC_GET_ROUTES` | string (comma-separated path prefixes) | *(empty)* | Optional | API | Explicit allowlist of routes that stay reachable via unauthenticated `GET` even when `REQUIRE_AUTH=true` (e.g. public quote/orderbook reads for a browser frontend). Never exempts non-GET methods, and never applies to `/api/v1/admin/*` or `/api/v1/system/*` |
+| `PUBLIC_GET_ROUTES` | string (comma-separated path prefixes) | *(empty)* | Optional | API | Explicit allowlist of routes that stay reachable via unauthenticated `GET` even when `REQUIRE_AUTH=true` (e.g. public quote/orderbook reads for a browser frontend). Never exempts non-GET methods, and never applies to `/api/v1/admin/*` or `/api/v1/system/*`. **CCTP** `/api/v2/bridge/cctp/*` is exempt from the global API-key gate separately: quote stays public+rate-limited; transfer routes use `x-cctp-transfer-access` |
 | `ALLOW_INSECURE_PUBLIC_API` | boolean | `false` | Optional | API | Break-glass override acknowledging `STELLARROUTE_ENV=production` with auth disabled. Without it, the API refuses to boot in that configuration; with it, it boots and logs a warning. Never set this in a real production deployment |
 | `ADMIN_AUTH_TOKEN` | string | — | Optional (required to use admin/operator endpoints) | API | Bearer/`x-admin-token` for `/api/v1/admin/*`, `/api/v1/system/*`, and (in production) `/metrics`, `/metrics/cache`, `/metrics/pool`, `/api/v1/replay/*`. Requests are denied when unset, even without a token |
 
@@ -252,7 +270,7 @@ Next.js public variables (prefixed with `NEXT_PUBLIC_` so they are exposed to th
 
 | Variable | Type | Default | Required | Service(s) | Description |
 |----------|------|---------|----------|------------|-------------|
-| `NEXT_PUBLIC_API_URL` | string (URL) | `http://localhost:8080/api/v1` (dev only) | **Required in production** | Frontend | Shared API base URL (origin or `…/api/v1`) |
+| `NEXT_PUBLIC_API_URL` | string (URL) | `http://localhost:8080/api/v1` (dev only) | **Required in production** | Frontend | Shared API origin or base including `/api/v1`. The client strips a trailing `/api/v1` when calling `/api/v2` CCTP routes |
 | `NEXT_PUBLIC_API_URL_TESTNET` | string (URL) | — | Recommended for testnet staging | Frontend | Per-network API URL; preferred when `NEXT_PUBLIC_STELLAR_NETWORK=testnet` |
 | `NEXT_PUBLIC_API_URL_MAINNET` | string (URL) | — | Required for mainnet UI | Frontend | Per-network API URL for mainnet |
 | `NEXT_PUBLIC_STELLAR_NETWORK` | `testnet` \| `mainnet` | `testnet` | Recommended | Frontend | App network for wallets, badges, and env-guard resolution |

@@ -592,6 +592,108 @@ lazy_static! {
         &["phase"]
     )
     .expect("Can't create SWAP_INFLIGHT gauge");
+
+    /// CCTP saga state transitions.
+    pub static ref CCTP_TRANSITIONS: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_transitions_total",
+        "CCTP transfer state transitions",
+        &["to_status"]
+    )
+    .expect("Can't create CCTP_TRANSITIONS counter");
+
+    /// Iris client outcomes.
+    pub static ref CCTP_IRIS_OUTCOMES: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_iris_outcomes_total",
+        "CCTP Iris client outcomes",
+        &["operation", "outcome"]
+    )
+    .expect("Can't create CCTP_IRIS_OUTCOMES counter");
+
+    /// Iris request latency.
+    pub static ref CCTP_IRIS_LATENCY: HistogramVec = register_histogram_vec!(
+        "stellarroute_cctp_iris_duration_seconds",
+        "CCTP Iris request latency",
+        &["operation"],
+        vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]
+    )
+    .expect("Can't create CCTP_IRIS_LATENCY histogram");
+
+    pub static ref CCTP_INVALID_MESSAGE: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_invalid_message_total",
+        "CCTP raw message validation failures",
+        &["reason"]
+    )
+    .expect("Can't create CCTP_INVALID_MESSAGE counter");
+
+    pub static ref CCTP_RATE_LIMITED: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_rate_limited_total",
+        "CCTP Iris rate limit events",
+        &["source"]
+    )
+    .expect("Can't create CCTP_RATE_LIMITED counter");
+
+    pub static ref CCTP_VERIFIER_MISMATCH: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_verifier_mismatch_total",
+        "CCTP burn verifier mismatches",
+        &["kind"]
+    )
+    .expect("Can't create CCTP_VERIFIER_MISMATCH counter");
+
+    pub static ref CCTP_PROVIDER_KILLED_NEW: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_provider_killed_new_transfer_total",
+        "CCTP new transfers blocked by provider kill switch",
+        &["provider"]
+    )
+    .expect("Can't create CCTP_PROVIDER_KILLED_NEW counter");
+
+    pub static ref CCTP_ATTESTATION_VERIFY: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_attestation_verify_total",
+        "CCTP attestation verification outcomes",
+        &["reason"]
+    )
+    .expect("Can't create CCTP_ATTESTATION_VERIFY counter");
+
+    pub static ref CCTP_IRIS_KEYS_REFRESH: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_iris_keys_refresh_total",
+        "Iris public keys cache refresh outcomes",
+        &["outcome", "detail"]
+    )
+    .expect("Can't create CCTP_IRIS_KEYS_REFRESH counter");
+
+    pub static ref CCTP_ATTESTER_SNAPSHOT_REFRESH: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_attester_snapshot_refresh_total",
+        "Destination attester snapshot refresh outcomes",
+        &["destination", "outcome"]
+    )
+    .expect("Can't create CCTP_ATTESTER_SNAPSHOT_REFRESH counter");
+
+    pub static ref CCTP_STELLAR_VERIFIER_READINESS: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_stellar_verifier_readiness_total",
+        "Stellar CCTP verifier bootstrap readiness outcomes",
+        &["component", "outcome"]
+    )
+    .expect("Can't create CCTP_STELLAR_VERIFIER_READINESS counter");
+
+    pub static ref CCTP_ENDPOINT_OUTCOMES: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_endpoint_outcomes_total",
+        "CCTP HTTP endpoint gate/handler outcomes",
+        &["endpoint", "outcome"]
+    )
+    .expect("Can't create CCTP_ENDPOINT_OUTCOMES counter");
+
+    pub static ref CCTP_DIRECTION_READINESS: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_direction_readiness_total",
+        "CCTP direction readiness snapshots at bootstrap",
+        &["direction", "outcome"]
+    )
+    .expect("Can't create CCTP_DIRECTION_READINESS counter");
+
+    pub static ref CCTP_POLL_LEASE_OUTCOMES: IntCounterVec = register_int_counter_vec!(
+        "stellarroute_cctp_poll_lease_outcomes_total",
+        "CCTP status poll lease outcomes",
+        &["outcome"]
+    )
+    .expect("Can't create CCTP_POLL_LEASE_OUTCOMES counter");
 }
 
 /// Record a swap prepare outcome.
@@ -678,4 +780,73 @@ pub fn record_live_compare_result(pair: &str, divergence_bps: f64, outcome: &str
     CANARY_COMPARISON_TOTAL
         .with_label_values(&[pair, outcome])
         .inc();
+}
+
+pub fn record_cctp_transition(to_status: &str) {
+    CCTP_TRANSITIONS.with_label_values(&[to_status]).inc();
+}
+
+pub fn record_cctp_iris_latency(duration: Duration, operation: &str) {
+    CCTP_IRIS_LATENCY
+        .with_label_values(&[operation])
+        .observe(duration.as_secs_f64());
+    CCTP_IRIS_OUTCOMES
+        .with_label_values(&[operation, "ok"])
+        .inc();
+}
+
+pub fn record_cctp_invalid_message() {
+    CCTP_INVALID_MESSAGE.with_label_values(&["corridor"]).inc();
+}
+
+pub fn record_cctp_rate_limited() {
+    CCTP_RATE_LIMITED.with_label_values(&["iris"]).inc();
+}
+
+pub fn record_cctp_verifier_mismatch() {
+    CCTP_VERIFIER_MISMATCH.with_label_values(&["burn"]).inc();
+}
+
+pub fn record_cctp_provider_killed_new_transfer() {
+    CCTP_PROVIDER_KILLED_NEW
+        .with_label_values(&["circle-cctp"])
+        .inc();
+}
+
+pub fn record_cctp_attestation_verify(reason: &str) {
+    CCTP_ATTESTATION_VERIFY.with_label_values(&[reason]).inc();
+}
+
+pub fn record_cctp_iris_keys_refresh(outcome: &str, detail: &str) {
+    CCTP_IRIS_KEYS_REFRESH
+        .with_label_values(&[outcome, detail])
+        .inc();
+}
+
+pub fn record_cctp_attester_snapshot_refresh(destination: &str, outcome: &str) {
+    CCTP_ATTESTER_SNAPSHOT_REFRESH
+        .with_label_values(&[destination, outcome])
+        .inc();
+}
+
+pub fn record_cctp_stellar_verifier_readiness(component: &str, outcome: &str) {
+    CCTP_STELLAR_VERIFIER_READINESS
+        .with_label_values(&[component, outcome])
+        .inc();
+}
+
+pub fn record_cctp_endpoint_outcome(endpoint: &str, outcome: &str) {
+    CCTP_ENDPOINT_OUTCOMES
+        .with_label_values(&[endpoint, outcome])
+        .inc();
+}
+
+pub fn record_cctp_direction_readiness(direction: &str, outcome: &str) {
+    CCTP_DIRECTION_READINESS
+        .with_label_values(&[direction, outcome])
+        .inc();
+}
+
+pub fn record_cctp_poll_lease(outcome: &str) {
+    CCTP_POLL_LEASE_OUTCOMES.with_label_values(&[outcome]).inc();
 }

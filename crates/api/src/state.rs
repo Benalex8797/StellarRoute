@@ -198,6 +198,10 @@ pub struct AppState {
     /// Optional test/override price source. When `None`, prepare uses the live
     /// quote pipeline (`LiveQuotePriceSource`) without storing a self-referential Arc.
     pub swap_price_source: Option<Arc<dyn SwapPriceSource>>,
+    /// CCTP component runtime (attestation trust bootstrapped via `bootstrap_cctp_runtime`).
+    pub cctp_runtime: crate::cctp::readiness::CctpRuntime,
+    /// Production CCTP HTTP context (PG store, service, idempotency) when bootstrap succeeds.
+    pub cctp: Option<Arc<crate::cctp::bootstrap::CctpHttpContext>>,
 }
 
 impl AppState {
@@ -287,7 +291,37 @@ impl AppState {
             transaction_broadcaster,
             account_sequences,
             swap_price_source: None,
+            cctp_runtime: crate::cctp::readiness::CctpRuntime::production_defaults(),
+            cctp: None,
         }
+    }
+
+    /// Bootstrap CCTP attestation trust via async factory (`from_config_async`).
+    ///
+    /// Sync constructors leave attestation `NotReady`; production server startup must call this.
+    pub async fn bootstrap_cctp_runtime(&mut self) {
+        match crate::cctp::config::CctpConfig::from_env() {
+            Ok(cfg) => {
+                self.cctp_runtime =
+                    crate::cctp::readiness::CctpRuntime::from_config_async(&cfg).await;
+            }
+            Err(_) => {
+                self.cctp_runtime = crate::cctp::readiness::CctpRuntime::production_defaults();
+            }
+        }
+    }
+
+    /// Test injection for CCTP runtime wiring.
+    pub fn with_cctp_runtime(mut self, runtime: crate::cctp::readiness::CctpRuntime) -> Self {
+        self.cctp_runtime = runtime;
+        self
+    }
+
+    /// Test injection for full CCTP HTTP context.
+    pub fn with_cctp(mut self, ctx: Arc<crate::cctp::bootstrap::CctpHttpContext>) -> Self {
+        self.cctp_runtime = ctx.runtime.clone();
+        self.cctp = Some(ctx);
+        self
     }
 
     /// Override swap services (used in tests).
@@ -417,6 +451,8 @@ impl AppState {
             transaction_broadcaster,
             account_sequences,
             swap_price_source: None,
+            cctp_runtime: crate::cctp::readiness::CctpRuntime::production_defaults(),
+            cctp: None,
         };
 
         // Start cache prewarm job if configured via env `PREWARM_PAIRS`.
@@ -541,5 +577,40 @@ impl AppState {
         // Check Horizon (simplified active probe)
         // In a real app, this would be more sophisticated
         score
+    }
+}
+
+#[cfg(test)]
+mod cctp_bootstrap_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lazy_db() -> DatabasePools {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/unused")
+            .expect("lazy pool");
+        DatabasePools::new(pool, None)
+    }
+
+    #[tokio::test]
+    async fn sync_constructor_leaves_attestation_not_ready() {
+        let state = AppState::new(lazy_db());
+        assert!(!state.cctp_runtime.attestation_verifier.is_ready());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_cctp_runtime_uses_async_factory() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("SEPOLIA_RPC_URL");
+        std::env::remove_var("STELLAR_RPC_URL");
+
+        let mut state = AppState::new(lazy_db());
+        assert!(!state.cctp_runtime.attestation_verifier.is_ready());
+        state.bootstrap_cctp_runtime().await;
+        assert!(!state.cctp_runtime.evm_burn_builder.is_ready());
+        assert!(!state.cctp_runtime.attestation_verifier.is_ready());
     }
 }

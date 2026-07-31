@@ -150,6 +150,61 @@ const API_ERROR_COPY: Record<ApiErrorCode, TraderErrorCopy> = {
     recoveryAction: 'Select a one-hop SDEX pair and refresh the quote.',
     ctaLabel: 'Choose one-hop route',
   },
+  cctp_not_enabled: {
+    headline: 'CCTP bridge unavailable',
+    explanation: 'Cross-chain USDC bridging is not enabled on this API deployment.',
+    recoveryAction: 'Retry when corridor readiness shows executable.',
+    ctaLabel: 'Check status',
+  },
+  transfer_not_found: {
+    headline: 'Transfer authorization lost',
+    explanation: 'This transfer cannot be resumed without its access token.',
+    recoveryAction: 'Start a new quote.',
+    ctaLabel: 'New quote',
+  },
+  provider_killed: {
+    headline: 'Bridge provider paused',
+    explanation: 'Circle CCTP is temporarily disabled on this deployment.',
+    recoveryAction: 'Wait for provider recovery before signing.',
+    ctaLabel: 'Retry later',
+  },
+  payload_expired: {
+    headline: 'Wallet payload expired',
+    explanation: 'The prepared transaction is no longer valid.',
+    recoveryAction: 'Prepare a fresh payload before signing.',
+    ctaLabel: 'Prepare again',
+  },
+  attestation_pending: {
+    headline: 'Attestation in progress',
+    explanation: 'Circle is still attesting your burn transaction.',
+    recoveryAction: 'Wait for attestation before minting.',
+    ctaLabel: 'Keep waiting',
+  },
+  network_mismatch: {
+    headline: 'Wallet network mismatch',
+    explanation: 'Your wallet network does not match the prepared transaction.',
+    recoveryAction: 'Switch networks in your wallet and try again.',
+    ctaLabel: 'Switch network',
+  },
+  idempotency_conflict: {
+    headline: 'Quote already in progress',
+    explanation:
+      'This idempotency key was reused with different transfer inputs.',
+    recoveryAction: 'Start a new quote or wait for the prior attempt to finish.',
+    ctaLabel: 'New quote',
+  },
+  reattest_cooldown: {
+    headline: 'Re-attestation cooling down',
+    explanation: 'A re-attestation was requested recently.',
+    recoveryAction: 'Wait for the cooldown before retrying.',
+    ctaLabel: 'Wait',
+  },
+  reattest_conflict: {
+    headline: 'Re-attestation in progress',
+    explanation: 'Another re-attestation claim is already active.',
+    recoveryAction: 'Wait and check transfer status.',
+    ctaLabel: 'Check status',
+  },
   unknown_error: DEFAULT_COPY,
 };
 

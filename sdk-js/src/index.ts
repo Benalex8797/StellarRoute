@@ -78,6 +78,23 @@ export type {
   SwapSubmitRequest,
   SwapSubmitResponse,
   TradingPair,
+  SupportedCorridor,
+  CctpDirection,
+  CctpFinality,
+  CctpTransferStatus,
+  CctpFeeQuote,
+  PreparedWalletPayload,
+  CctpStatusDetails,
+  CctpQuoteRequest,
+  CctpQuoteResponse,
+  CctpTransferStatusResponse,
+  CctpPrepareBurnResponse,
+  CctpSubmitBurnRequest,
+  CctpSubmitBurnResponse,
+  CctpPrepareMintResponse,
+  CctpSubmitMintRequest,
+  CctpSubmitMintResponse,
+  CctpReattestResponse,
 } from './types.js';
 
 export {
@@ -91,6 +108,8 @@ export {
   getTimeUntilExpiry,
   pathStepToSimulationHop,
   stellarAssetToCanonical,
+  CCTP_PROVIDER_ID,
+  CCTP_TESTNET_CORRIDOR_ID,
 } from './types.js';
 
 export * from './websocket.js';

@@ -185,7 +185,16 @@ export type ApiErrorCode =
   | 'unsupported_execution_mode'
   | 'unsupported_route'
   | 'network_error'
-  | 'unknown_error';
+  | 'unknown_error'
+  | 'cctp_not_enabled'
+  | 'transfer_not_found'
+  | 'provider_killed'
+  | 'payload_expired'
+  | 'attestation_pending'
+  | 'network_mismatch'
+  | 'idempotency_conflict'
+  | 'reattest_cooldown'
+  | 'reattest_conflict';
 
 export interface ApiError {
   error: ApiErrorCode;

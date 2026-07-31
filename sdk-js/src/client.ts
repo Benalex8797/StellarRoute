@@ -24,8 +24,27 @@ import type {
   SwapPrepareRequest,
   SwapSubmitRequest,
   SwapSubmitResponse,
+  ApiV2Info,
+  SupportedCorridor,
+  CctpQuoteRequest,
+  CctpQuoteResponse,
+  CctpCallOptions,
+  CctpTransferStatusResponse,
+  CctpPrepareBurnResponse,
+  CctpSubmitBurnRequest,
+  CctpSubmitBurnResponse,
+  CctpPrepareMintResponse,
+  CctpSubmitMintRequest,
+  CctpSubmitMintResponse,
+  CctpReattestResponse,
 } from './types.js';
-import { DEFAULT_STALENESS_CONFIG, isQuoteStale, isQuoteExpired } from './types.js';
+import {
+  DEFAULT_STALENESS_CONFIG,
+  isQuoteStale,
+  isQuoteExpired,
+  CCTP_TRANSFER_ACCESS_HEADER,
+  CCTP_IDEMPOTENCY_HEADER,
+} from './types.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -770,6 +789,146 @@ export class StellarRouteClient {
     return this.request<PriceHistoryResponse>(path, options?.signal);
   }
 
+  /**
+   * `GET /api/v2` — capability descriptor including CCTP corridor metadata.
+   */
+  async getApiV2Info(signal?: AbortSignal): Promise<ApiV2Info> {
+    const body = await this.request<unknown>('/api/v2', signal);
+    return unwrapApiData<ApiV2Info>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/quote` — CCTP fee quote (fail-closed until enabled).
+   */
+  async cctpQuote(
+    request: CctpQuoteRequest,
+    options?: CctpCallOptions,
+  ): Promise<CctpQuoteResponse> {
+    const headers: Record<string, string> = {};
+    if (options?.idempotencyKey) {
+      headers[CCTP_IDEMPOTENCY_HEADER] = options.idempotencyKey;
+    }
+    const body = await this.request<unknown>(
+      '/api/v2/bridge/cctp/quote',
+      options?.signal,
+      this.retries,
+      'POST',
+      request,
+      headers,
+    );
+    return unwrapApiData<CctpQuoteResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/prepare-burn`
+   */
+  async cctpPrepareBurn(
+    transferId: string,
+    options?: CctpCallOptions,
+  ): Promise<CctpPrepareBurnResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/prepare-burn`,
+      options?.signal,
+      this.retries,
+      'POST',
+      {},
+      cctpAccessHeaders(options),
+    );
+    return unwrapApiData<CctpPrepareBurnResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/submit-burn` — tx hash acknowledgement only.
+   */
+  async cctpSubmitBurn(
+    transferId: string,
+    request: CctpSubmitBurnRequest,
+    options?: CctpCallOptions,
+  ): Promise<CctpSubmitBurnResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/submit-burn`,
+      options?.signal,
+      this.retries,
+      'POST',
+      request,
+      cctpAccessHeaders(options),
+    );
+    return unwrapApiData<CctpSubmitBurnResponse>(body);
+  }
+
+  /**
+   * `GET /api/v2/bridge/cctp/{transfer_id}` — transfer saga status.
+   */
+  async cctpGetTransfer(
+    transferId: string,
+    options?: CctpCallOptions,
+  ): Promise<CctpTransferStatusResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}`,
+      options?.signal,
+      this.retries,
+      'GET',
+      undefined,
+      cctpAccessHeaders(options),
+    );
+    return unwrapApiData<CctpTransferStatusResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/prepare-mint`
+   */
+  async cctpPrepareMint(
+    transferId: string,
+    options?: CctpCallOptions,
+  ): Promise<CctpPrepareMintResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/prepare-mint`,
+      options?.signal,
+      this.retries,
+      'POST',
+      {},
+      cctpAccessHeaders(options),
+    );
+    return unwrapApiData<CctpPrepareMintResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/submit-mint` — tx hash acknowledgement only.
+   */
+  async cctpSubmitMint(
+    transferId: string,
+    request: CctpSubmitMintRequest,
+    options?: CctpCallOptions,
+  ): Promise<CctpSubmitMintResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/submit-mint`,
+      options?.signal,
+      this.retries,
+      'POST',
+      request,
+      cctpAccessHeaders(options),
+    );
+    return unwrapApiData<CctpSubmitMintResponse>(body);
+  }
+
+  /**
+   * `POST /api/v2/bridge/cctp/{transfer_id}/reattest`
+   */
+  async cctpReattest(
+    transferId: string,
+    options?: CctpCallOptions,
+  ): Promise<CctpReattestResponse> {
+    const body = await this.request<unknown>(
+      `/api/v2/bridge/cctp/${encodeURIComponent(transferId)}/reattest`,
+      options?.signal,
+      this.retries,
+      'POST',
+      {},
+      cctpAccessHeaders(options),
+    );
+    return unwrapApiData<CctpReattestResponse>(body);
+  }
+
   // ── Internal helpers ────────────────────────────────────────────────────────
 
   private async request<T>(
@@ -778,6 +937,7 @@ export class StellarRouteClient {
     attemptsLeft = this.retries,
     method: 'GET' | 'POST' = 'GET',
     body?: unknown,
+    extraHeaders?: Record<string, string>,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
@@ -792,6 +952,7 @@ export class StellarRouteClient {
         headers: {
           Accept: 'application/json',
           ...this.extraHeaders,
+          ...extraHeaders,
         },
         signal: controller.signal,
       };
@@ -831,7 +992,7 @@ export class StellarRouteClient {
             ? retryAfterSec * 1_000
             : backoffMs(this.retries - attemptsLeft);
           await sleep(delayMs);
-          return this.request<T>(path, signal, attemptsLeft - 1, method, body);
+          return this.request<T>(path, signal, attemptsLeft - 1, method, body, extraHeaders);
         }
 
         throw new StellarRouteApiError(response.status, code, message, details);
@@ -856,6 +1017,13 @@ export class StellarRouteClient {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+function cctpAccessHeaders(
+  options?: CctpCallOptions,
+): Record<string, string> | undefined {
+  if (!options?.accessToken) return undefined;
+  return { [CCTP_TRANSFER_ACCESS_HEADER]: options.accessToken };
+}
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));

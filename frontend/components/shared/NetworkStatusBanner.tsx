@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { AlertTriangle, ArrowRight, ExternalLink, Loader2, Radio } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useWallet } from '@/components/providers/wallet-provider';
@@ -64,7 +65,16 @@ export function NetworkStatusBanner() {
   const { network, networkMismatch, walletNetwork, walletId, disconnect, setNetwork } =
     useWallet();
   const { data: health, loading: healthLoading, error: healthError } = useHealth(30_000);
+  const [reachabilityMounted, setReachabilityMounted] = useState(false);
+
+  useEffect(() => {
+    setReachabilityMounted(true);
+  }, []);
+
   const apiOk = Boolean(health) && !healthError;
+  const reachabilityLoading = !reachabilityMounted || healthLoading;
+  const reachabilityError =
+    reachabilityMounted && healthError ? new Error(healthError.message) : null;
 
   const walletDocsUrl = walletId ? WALLET_DOCS[walletId] : null;
   const canUseWalletNetwork =
@@ -177,9 +187,9 @@ export function NetworkStatusBanner() {
         </p>
         <div className="flex flex-wrap items-center gap-4">
           <ApiReachability
-            loading={healthLoading}
-            ok={apiOk}
-            error={healthError ? new Error(healthError.message) : null}
+            loading={reachabilityLoading}
+            ok={reachabilityMounted && apiOk}
+            error={reachabilityError}
           />
           <p className="hidden text-muted-foreground sm:block">
             {network === 'mainnet'

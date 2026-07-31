@@ -21,6 +21,7 @@ pub mod routes_endpoint;
 pub mod simulation_route;
 pub mod swap;
 pub mod v2;
+pub mod v2_cctp;
 pub mod ws;
 
 use axum::{
@@ -159,6 +160,31 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         // API v2 seam (chain-aware assets; quotes remain on v1)
         .route("/api/v2", get(v2::api_v2_info))
         .route("/api/v2/assets/canonicalize", post(v2::canonicalize_asset))
+        .route("/api/v2/bridge/cctp/quote", post(v2_cctp::cctp_quote))
+        .route(
+            "/api/v2/bridge/cctp/:transfer_id/prepare-burn",
+            post(v2_cctp::cctp_prepare_burn),
+        )
+        .route(
+            "/api/v2/bridge/cctp/:transfer_id/submit-burn",
+            post(v2_cctp::cctp_submit_burn),
+        )
+        .route(
+            "/api/v2/bridge/cctp/:transfer_id",
+            get(v2_cctp::cctp_get_transfer),
+        )
+        .route(
+            "/api/v2/bridge/cctp/:transfer_id/prepare-mint",
+            post(v2_cctp::cctp_prepare_mint),
+        )
+        .route(
+            "/api/v2/bridge/cctp/:transfer_id/submit-mint",
+            post(v2_cctp::cctp_submit_mint),
+        )
+        .route(
+            "/api/v2/bridge/cctp/:transfer_id/reattest",
+            post(v2_cctp::cctp_reattest),
+        )
         // API v1 routes
         .route("/api/v1/assets", get(assets::list_assets_metadata))
         .route("/api/v1/assets/:code", get(assets::get_asset_metadata))

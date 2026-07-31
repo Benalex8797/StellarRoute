@@ -741,6 +741,26 @@ pub enum ApiErrorCode {
     UnsupportedExecutionMode,
     /// Route shape is not supported (e.g. multi-hop classic path)
     UnsupportedRoute,
+    /// Circle CCTP bridge settlement is not enabled
+    CctpNotEnabled,
+    /// Requested CCTP corridor is unknown or unsupported
+    UnsupportedCorridor,
+    /// CCTP finality mode is invalid for the source chain
+    InvalidFinality,
+    /// Recipient address failed CCTP validation
+    InvalidRecipient,
+    /// Runtime CCTP fee quote is unavailable
+    FeeQuoteUnavailable,
+    /// Attestation is still pending (saga / operation guard)
+    AttestationPending,
+    /// Attestation has expired
+    AttestationExpired,
+    /// Mint failed but may be retried
+    MintRetryable,
+    /// CCTP transfer id is unknown
+    TransferNotFound,
+    /// CCTP provider kill-switch is active
+    ProviderKilled,
 }
 
 impl ApiErrorCode {
@@ -771,6 +791,16 @@ impl ApiErrorCode {
         Self::Conflict,
         Self::UnsupportedExecutionMode,
         Self::UnsupportedRoute,
+        Self::CctpNotEnabled,
+        Self::UnsupportedCorridor,
+        Self::InvalidFinality,
+        Self::InvalidRecipient,
+        Self::FeeQuoteUnavailable,
+        Self::AttestationPending,
+        Self::AttestationExpired,
+        Self::MintRetryable,
+        Self::TransferNotFound,
+        Self::ProviderKilled,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -796,6 +826,16 @@ impl ApiErrorCode {
             Self::Conflict => "duplicate_quote",
             Self::UnsupportedExecutionMode => "unsupported_execution_mode",
             Self::UnsupportedRoute => "unsupported_route",
+            Self::CctpNotEnabled => "cctp_not_enabled",
+            Self::UnsupportedCorridor => "unsupported_corridor",
+            Self::InvalidFinality => "invalid_finality",
+            Self::InvalidRecipient => "invalid_recipient",
+            Self::FeeQuoteUnavailable => "fee_quote_unavailable",
+            Self::AttestationPending => "attestation_pending",
+            Self::AttestationExpired => "attestation_expired",
+            Self::MintRetryable => "mint_retryable",
+            Self::TransferNotFound => "transfer_not_found",
+            Self::ProviderKilled => "provider_killed",
         }
     }
 }

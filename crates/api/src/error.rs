@@ -80,6 +80,10 @@ pub enum ApiError {
         status: String,
     },
 
+    /// Idempotent operation still in progress — client should retry shortly.
+    #[error("Too early: {0}")]
+    TooEarly(String),
+
     /// Classic prepare only supports PathPaymentStrictSend; AMM/Soroban is gated.
     #[error("Unsupported execution mode: {0}")]
     UnsupportedExecutionMode(String),
@@ -87,6 +91,46 @@ pub enum ApiError {
     /// Route shape is not supported by this prepare build (e.g. multi-hop).
     #[error("Unsupported route: {0}")]
     UnsupportedRoute(String),
+
+    /// Circle CCTP bridge settlement is not enabled on this deployment.
+    #[error("CCTP not enabled: {0}")]
+    CctpNotEnabled(String),
+
+    /// Requested CCTP corridor is unknown or unsupported.
+    #[error("Unsupported CCTP corridor")]
+    UnsupportedCorridor,
+
+    /// CCTP finality mode is invalid for the source chain (e.g. fast from Stellar).
+    #[error("Invalid CCTP finality for source chain")]
+    InvalidFinality,
+
+    /// Recipient address failed CCTP validation.
+    #[error("Invalid CCTP recipient")]
+    InvalidRecipient,
+
+    /// Runtime CCTP fee quote is unavailable.
+    #[error("CCTP fee quote unavailable: {0}")]
+    FeeQuoteUnavailable(String),
+
+    /// Attestation is still pending for this transfer.
+    #[error("CCTP attestation pending for transfer {transfer_id}")]
+    AttestationPending { transfer_id: String },
+
+    /// Attestation has expired for this transfer.
+    #[error("CCTP attestation expired for transfer {transfer_id}")]
+    AttestationExpired { transfer_id: String },
+
+    /// Mint failed but may be retried (saga state `mint_failed_retryable`).
+    #[error("CCTP mint failed retryable for transfer {transfer_id}")]
+    MintRetryable { transfer_id: String },
+
+    /// CCTP transfer id is unknown.
+    #[error("CCTP transfer not found: {transfer_id}")]
+    TransferNotFound { transfer_id: String },
+
+    /// CCTP provider kill-switch is active.
+    #[error("CCTP provider killed: {0}")]
+    ProviderKilled(String),
 }
 
 impl From<anyhow::Error> for ApiError {
@@ -209,6 +253,7 @@ impl IntoResponse for ApiError {
                 let body = Json(ApiResponse::new(payload, "system"));
                 return (StatusCode::CONFLICT, body).into_response();
             }
+            ApiError::TooEarly(msg) => (StatusCode::TOO_EARLY, ApiErrorCode::Conflict, msg),
             ApiError::UnsupportedExecutionMode(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ApiErrorCode::UnsupportedExecutionMode,
@@ -217,6 +262,73 @@ impl IntoResponse for ApiError {
             ApiError::UnsupportedRoute(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ApiErrorCode::UnsupportedRoute,
+                msg,
+            ),
+            ApiError::CctpNotEnabled(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ApiErrorCode::CctpNotEnabled,
+                msg,
+            ),
+            ApiError::UnsupportedCorridor => (
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::UnsupportedCorridor,
+                "Unsupported or unknown CCTP corridor".to_string(),
+            ),
+            ApiError::InvalidFinality => (
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::InvalidFinality,
+                "Stellar outbound CCTP burns require standard finality; fast is not supported"
+                    .to_string(),
+            ),
+            ApiError::InvalidRecipient => (
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::InvalidRecipient,
+                "Invalid CCTP recipient address".to_string(),
+            ),
+            ApiError::FeeQuoteUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ApiErrorCode::FeeQuoteUnavailable,
+                msg,
+            ),
+            ApiError::AttestationPending { transfer_id } => {
+                let payload = ErrorResponse::new(
+                    ApiErrorCode::AttestationPending,
+                    "CCTP attestation is still pending for this transfer",
+                )
+                .with_details(serde_json::json!({ "transfer_id": transfer_id }));
+                let body = Json(ApiResponse::new(payload, "system"));
+                return (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
+            }
+            ApiError::AttestationExpired { transfer_id } => {
+                let payload = ErrorResponse::new(
+                    ApiErrorCode::AttestationExpired,
+                    "CCTP attestation has expired; request re-attestation before minting",
+                )
+                .with_details(serde_json::json!({ "transfer_id": transfer_id }));
+                let body = Json(ApiResponse::new(payload, "system"));
+                return (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
+            }
+            ApiError::MintRetryable { transfer_id } => {
+                let payload = ErrorResponse::new(
+                    ApiErrorCode::MintRetryable,
+                    "CCTP mint failed but may be retried",
+                )
+                .with_details(serde_json::json!({ "transfer_id": transfer_id, "retryable": true }));
+                let body = Json(ApiResponse::new(payload, "system"));
+                return (StatusCode::UNPROCESSABLE_ENTITY, body).into_response();
+            }
+            ApiError::TransferNotFound { transfer_id } => {
+                let payload = ErrorResponse::new(
+                    ApiErrorCode::TransferNotFound,
+                    format!("Unknown CCTP transfer: {transfer_id}"),
+                )
+                .with_details(serde_json::json!({ "transfer_id": transfer_id }));
+                let body = Json(ApiResponse::new(payload, "system"));
+                return (StatusCode::NOT_FOUND, body).into_response();
+            }
+            ApiError::ProviderKilled(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ApiErrorCode::ProviderKilled,
                 msg,
             ),
             ApiError::Database(_) | ApiError::Internal(_) => (

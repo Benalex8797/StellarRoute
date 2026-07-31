@@ -4,13 +4,29 @@ StellarRoute uses a lightweight, two-layer feature flag system to gate experimen
 
 ## How it works
 
-Ordinary flags are resolved in this priority order:
+Ordinary flags are resolved in this priority order **after hydration** (remote fetch and window overrides applied):
 
 | Priority | Source | How |
 |---|---|---|
 | 1 (highest) | Remote config | JSON file fetched from `NEXT_PUBLIC_FLAGS_URL` |
-| 2 | Environment variable | `NEXT_PUBLIC_FLAG_<NAME>=true` |
-| 3 (default) | Hardcoded | Always `false` (default-off) |
+| 2 | Window override | `window.__STELLAR_ROUTE_FLAGS__ = { flag_name: true }` (dev/e2e only; applied after mount) |
+| 3 | Environment variable | `NEXT_PUBLIC_FLAG_<NAME>=true` |
+| 4 (default) | Hardcoded | Always `false` (default-off) |
+
+### SSR / hydration (initial render)
+
+The server and the first client paint use an **SSR-safe snapshot** that never reads `window.__STELLAR_ROUTE_FLAGS__`:
+
+| Priority | Source |
+|---|---|
+| 1 | Security-pinned env/default (`real_xdr`) |
+| 2 | Warmed remote cache (module cache only when already fetched) |
+| 3 | Environment variable |
+| 4 (default) | `false` |
+
+Window overrides apply in a `useEffect` after mount. Remote fetch then applies full post-hydration precedence (`remote > window > env`). This avoids hydration mismatches while still supporting dev/e2e `window.__STELLAR_ROUTE_FLAGS__` toggles.
+
+When only `NEXT_PUBLIC_FLAGS_URL` is set (no env), hooks start in `loading: true` with `enabled: false` until the remote JSON resolves.
 
 Ordinary flags are **off by default**. You must explicitly enable them.
 
@@ -104,7 +120,7 @@ export function SwapPage() {
 | `NEXT_PUBLIC_FLAGS_URL` | URL to remote JSON flags config (optional; does **not** control `real_xdr`) |
 | `NEXT_PUBLIC_FLAG_ROUTES_BETA` | Enable routes beta (`true`/`false`) |
 | `NEXT_PUBLIC_FLAG_BATCH_SWAPS` | Enable batch swaps (`true`/`false`) |
-| `NEXT_PUBLIC_FLAG_SWAP_UI_V2` | Enable swap UI v2 (`true`/`false`) |
+| `NEXT_PUBLIC_FLAG_SWAP_UI_V2` | Enable swap UI v2 cross-chain route deck (`true`/`false`). When on, `/swap` renders the wide Stellar-centered corridor UI; when off, the legacy swap card experience is unchanged. |
 | `NEXT_PUBLIC_FLAG_TRANSACTION_HISTORY` | Enable transaction history tab |
 | `NEXT_PUBLIC_FLAG_ADVANCED_SLIPPAGE` | Enable advanced slippage controls |
 | `NEXT_PUBLIC_FLAG_REAL_XDR` | **Default on** when unset. Classic API prepare → Freighter sign → API submit → Horizon confirm (`real_xdr`; one-hop SDEX only). Security-pinned: remote flags cannot disable. When false, product swaps fail closed (no client-XDR fallback). |

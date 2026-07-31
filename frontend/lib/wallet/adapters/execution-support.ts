@@ -13,6 +13,19 @@ const CROSS_CHAIN_BACKEND_ROUTES: ReadonlySet<string> = new Set([
   // Format: `${source}->${destination}`
 ]);
 
+let cctpExecutableRoutes: ReadonlySet<string> = new Set();
+
+/** Updated from `GET /api/v2` corridor executability — test-only reset via clear. */
+export function setCctpExecutableRoutes(
+  routes: Array<{ source: ChainFamily; destination: ChainFamily }>
+): void {
+  cctpExecutableRoutes = new Set(routes.map((r) => routeKey(r.source, r.destination)));
+}
+
+export function clearCctpExecutableRoutesForTests(): void {
+  cctpExecutableRoutes = new Set();
+}
+
 export function routeKey(
   source: ChainFamily,
   destination: ChainFamily
@@ -25,6 +38,9 @@ export function hasBackendRoute(
   destination: ChainFamily
 ): boolean {
   if (source === destination && source === 'stellar') {
+    return true;
+  }
+  if (cctpExecutableRoutes.has(routeKey(source, destination))) {
     return true;
   }
   return CROSS_CHAIN_BACKEND_ROUTES.has(routeKey(source, destination));
