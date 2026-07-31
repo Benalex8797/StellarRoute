@@ -86,6 +86,8 @@ struct ParsedMessageFields {
 pub struct EvmRpcMintVerifier {
     rpc: EvmRpcClient,
     message_transmitter: Address,
+    /// Configured wire `to` string — must match mint builder for payload hash parity.
+    message_transmitter_configured: String,
     min_confirmations: u64,
     probe_ok: bool,
 }
@@ -109,6 +111,7 @@ impl EvmRpcMintVerifier {
         Ok(Self {
             rpc,
             message_transmitter,
+            message_transmitter_configured: config.contracts.sepolia_message_transmitter.clone(),
             min_confirmations,
             probe_ok: false,
         })
@@ -364,7 +367,7 @@ impl EvmMintVerifier for EvmRpcMintVerifier {
         let payload = ProductionEvmCctpBuilder::encode_receive_message(message, attestation);
         let payload_wallet = crate::models::v2_cctp::PreparedWalletPayload::EvmTransaction {
             chain_id: SEPOLIA_CHAIN_ID.into(),
-            to: format!("{:#x}", self.message_transmitter),
+            to: self.message_transmitter_configured.clone(),
             data: format!("0x{}", hex::encode(&payload)),
             value: "0".into(),
         };
