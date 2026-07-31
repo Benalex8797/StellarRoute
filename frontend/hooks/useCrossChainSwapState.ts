@@ -30,7 +30,7 @@ export function useCrossChainSwapState(options?: {
     options?.initialSourceChainId ?? 'stellar'
   );
   const [destChainId, setDestChainId] = useState<ChainDisplayId>(
-    options?.initialDestChainId ?? 'stellar'
+    options?.initialDestChainId ?? 'ethereum-sepolia'
   );
   const [sourceAmount, setSourceAmount] = useState('');
   const [recipientOverride, setRecipientOverride] = useState('');

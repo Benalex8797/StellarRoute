@@ -94,7 +94,10 @@ describe('CrossChainSwapDeck', () => {
   });
 
   it('shows paired chain selectors and delegates SwapCard on stellar-native', () => {
-    renderDeck();
+    renderDeck({
+      initialSourceChainId: 'stellar',
+      initialDestChainId: 'stellar',
+    });
     expect(screen.getByTestId('paired-chain-selectors')).toBeInTheDocument();
     expect(screen.getByTestId('chain-leg-source')).toBeInTheDocument();
     expect(screen.getByTestId('chain-leg-destination')).toBeInTheDocument();
@@ -103,6 +106,17 @@ describe('CrossChainSwapDeck', () => {
     expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
       /executable corridor/i
     );
+  });
+
+  it('defaults to the proven Stellar to Sepolia corridor', () => {
+    renderDeck();
+
+    expect(screen.getByTestId('chain-option-source-stellar')).toBeChecked();
+    expect(
+      screen.getByTestId('chain-option-destination-ethereum-sepolia')
+    ).toBeChecked();
+    expect(screen.queryByTestId('swap-card')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cctp-route-rail')).toBeInTheDocument();
   });
 
   it('shows unsupported alert for catalogued coming-soon corridor', () => {
