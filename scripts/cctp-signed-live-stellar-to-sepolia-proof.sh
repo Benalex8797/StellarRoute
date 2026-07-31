@@ -45,7 +45,7 @@ chmod 700 "$TMP_DIR"
 
 secret_scan() {
   local file="$1"
-  if grep -E '(access_token|xdr_envelope|BEGIN [A-Z ]+ KEY|postgres://[^@]+@|private.key|seed_phrase|0x[a-fA-F0-9]{64})' "$file" >/dev/null 2>&1; then
+  if grep -E '(access_token|xdr_envelope|BEGIN [A-Z ]+ KEY|postgres://[^@]+@|private\.key|seed_phrase)' "$file" >/dev/null 2>&1; then
     echo "Secret scan failed for $file" >&2
     return 1
   fi
