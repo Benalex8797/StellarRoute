@@ -151,6 +151,15 @@ pub fn stellar_local_to_canonical_amount(local: i128) -> Result<i128, EncodingEr
     Ok(local / 10)
 }
 
+/// Like [`stellar_local_to_canonical_amount`] but allows zero (valid for `max_fee` on burns).
+pub fn stellar_local_to_canonical_amount_allow_zero(local: i128) -> Result<i128, EncodingError> {
+    if local == 0 {
+        Ok(0)
+    } else {
+        stellar_local_to_canonical_amount(local)
+    }
+}
+
 /// Canonical 6dp CCTP amount -> Stellar 7dp local (×10).
 pub fn canonical_to_stellar_local_amount(canonical: i128) -> Result<i128, EncodingError> {
     canonical
@@ -231,6 +240,16 @@ mod tests {
         let (cctp, rem) = stellar_outbound_cctp_amount("0.1234567").unwrap();
         assert_eq!(cctp, 123456);
         assert_eq!(rem.as_deref(), Some("0.0000007"));
+    }
+
+    #[test]
+    fn canonical_amount_rejects_zero_but_allow_zero_helper_accepts_it() {
+        assert!(stellar_local_to_canonical_amount(0).is_err());
+        assert_eq!(stellar_local_to_canonical_amount_allow_zero(0).unwrap(), 0);
+        assert_eq!(
+            stellar_local_to_canonical_amount_allow_zero(10_000_000).unwrap(),
+            1_000_000
+        );
     }
 
     #[test]
