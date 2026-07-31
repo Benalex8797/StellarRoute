@@ -279,9 +279,16 @@ stellar_invoke_from_xdr() {
 
   combined="$(STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
     stellar contract invoke "${invoke_args[@]}" 2>"$TMP_DIR/stellar-send.err")"
-  hash="$(echo "$combined" | rg -o '[0-9a-f]{64}' | head -1 || true)"
+  # Prefer explicit CLI markers; bare 64-hex can match mint_recipient bytes32.
+  hash="$( { echo "$combined"; cat "$TMP_DIR/stellar-send.err"; } \
+    | rg -o 'Signing transaction: [0-9a-f]{64}' \
+    | head -1 \
+    | rg -o '[0-9a-f]{64}' || true)"
   if [[ -z "$hash" ]]; then
-    hash="$(grep -oE '[0-9a-f]{64}' "$TMP_DIR/stellar-send.err" | head -1 || true)"
+    hash="$( { echo "$combined"; cat "$TMP_DIR/stellar-send.err"; } \
+      | rg -o 'stellar\.expert/explorer/testnet/tx/[0-9a-f]{64}' \
+      | head -1 \
+      | rg -o '[0-9a-f]{64}$' || true)"
   fi
   if [[ -z "$hash" ]]; then
     echo "Stellar broadcast failed; see $TMP_DIR/stellar-send.err" >&2

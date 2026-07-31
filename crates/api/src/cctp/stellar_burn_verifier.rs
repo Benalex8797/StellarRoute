@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::cctp::config::CctpConfig;
-use crate::cctp::encoding::{stellar_contract_to_bytes32, stellar_local_to_canonical_amount};
+use crate::cctp::encoding::{
+    stellar_contract_to_bytes32, stellar_local_to_canonical_amount,
+    stellar_local_to_canonical_amount_allow_zero,
+};
 use crate::cctp::message::parse_cctp_v2_message;
 use crate::cctp::stellar_contract_events::{
     address_to_strkey, contract_hash, parse_deposit_for_burn, parse_message_sent,
@@ -91,7 +94,7 @@ impl StellarRpcBurnVerifier {
         let canonical_amount =
             stellar_local_to_canonical_amount(call.local_amount).unwrap_or(i128::MIN);
         let canonical_max_fee =
-            stellar_local_to_canonical_amount(call.local_max_fee).unwrap_or(i128::MIN);
+            stellar_local_to_canonical_amount_allow_zero(call.local_max_fee).unwrap_or(i128::MIN);
         address_to_strkey(&event.depositor).ok().as_deref() == Some(call.caller.as_str())
             && event.destination_domain == call.destination_domain
             && event.mint_recipient == call.mint_recipient
@@ -259,6 +262,38 @@ mod tests {
             StellarRpcBurnVerifier::new(&cfg).await,
             Err(VerifierError::NotReady)
         ));
+    }
+
+    #[test]
+    fn invoke_matches_event_allows_zero_max_fee() {
+        let call = DecodedBurnInvoke {
+            caller: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".into(),
+            local_amount: 10_000_000,
+            destination_domain: 0,
+            mint_recipient: [9u8; 32],
+            burn_token: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA".into(),
+            destination_caller: [0u8; 32],
+            local_max_fee: 0,
+            min_finality: FINALITY_STANDARD,
+            hook_data: vec![],
+        };
+        let event = DepositForBurnEvent {
+            burn_token: contract_address(&call.burn_token).unwrap(),
+            depositor: {
+                use stellar_xdr::curr::{AccountId, PublicKey, ScAddress, Uint256};
+                let pk = stellar_strkey::ed25519::PublicKey::from_string(&call.caller).unwrap();
+                ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(pk.0))))
+            },
+            min_finality_threshold: FINALITY_STANDARD,
+            amount: 1_000_000,
+            mint_recipient: [9u8; 32],
+            destination_domain: 0,
+            destination_token_messenger: [1u8; 32],
+            destination_caller: [0u8; 32],
+            max_fee: 0,
+            hook_data: vec![],
+        };
+        assert!(StellarRpcBurnVerifier::invoke_matches_event(&call, &event));
     }
 
     #[test]
