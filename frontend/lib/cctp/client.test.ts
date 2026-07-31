@@ -7,6 +7,7 @@ import {
   redactSecretsForLogs,
   saveCctpSession,
 } from './session-vault';
+import { buildWalletRoleBindings } from './wallet-role-binding';
 import { CCTP_IDEMPOTENCY_HEADER, CCTP_TRANSFER_ACCESS_HEADER } from './types';
 
 describe('CctpApiClient', () => {
@@ -158,6 +159,15 @@ describe('session vault', () => {
         destChainId: 'stellar',
         amount: '1',
         recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        walletBindings:
+          buildWalletRoleBindings({
+            direction: 'evm_to_stellar',
+            sourceChainId: 'eip155:11155111',
+            destChainId: 'stellar:testnet',
+            sender: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
+            recipient: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+            mintSubmitter: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+          }) ?? undefined,
       },
     });
     saveCctpSession(record);
