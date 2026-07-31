@@ -290,3 +290,39 @@ mod tests {
         assert_eq!(decoded.destination_caller, ANY_DESTINATION_CALLER);
     }
 }
+
+#[cfg(test)]
+mod live_diag {
+    use super::*;
+    use crate::cctp::config::CctpConfig;
+    use crate::cctp::stellar_readiness_probes::probe_stellar_contracts;
+
+    #[tokio::test]
+    #[ignore = "live diag"]
+    async fn verify_known_burn_tx() {
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.enabled = true;
+        cfg.stellar_rpc_url = "https://soroban-testnet.stellar.org".into();
+        cfg.sepolia_rpc_url = "https://sepolia.drpc.org".into();
+        let probe = probe_stellar_contracts(&cfg).await;
+        eprintln!("probe={probe:?} all_ok={}", probe.all_ok());
+        let rpc = StellarRpcClient::new(&cfg).expect("rpc");
+        eprintln!("rpc_ready={} latest={:?}", rpc.is_ready(), rpc.latest_ledger().await);
+        let mut v = StellarRpcBurnVerifier::new(&cfg).await.expect("verifier");
+        eprintln!("constructed probe_ok={} is_ready={}", v.probe_ok, v.is_ready());
+        // Bypass probe for diagnosis
+        v.probe_ok = true;
+        let hash = std::env::var("CCTP_DIAG_BURN_HASH")
+            .unwrap_or_else(|_| "951714911af3ea05180704e365dbb6e98b93dbcd56a72dffdd9920fa0af5abde".into());
+        match v.verify_burn(&hash).await {
+            Ok(facts) => {
+                eprintln!(
+                    "OK amount={} sender={} domains={}->{} recipient={:?}",
+                    facts.amount_cctp_subunits, facts.sender, facts.source_domain, facts.destination_domain,
+                    hex::encode(facts.mint_recipient_bytes32)
+                );
+            }
+            Err(e) => panic!("verify failed: {e:?}"),
+        }
+    }
+}

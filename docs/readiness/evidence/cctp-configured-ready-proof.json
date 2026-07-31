@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-07-30T22:02:05Z",
-  "tested_git_head": "cac865ed5c6a96a98da1540efc8ee7557416ed42",
+  "timestamp": "2026-07-31T09:58:42Z",
+  "tested_git_head": "0e94a508342ee1e5e1cc9090056ae766f8b4ada1",
   "proof_script_sha256": "5273678cd01f5e02cb79349037ae2aaddd85ff9dadd2b7d1b6a46b5b197987a2",
   "evidence_scope": "unsigned_testnet_probes_no_chain_writes",
   "public_endpoints": {
@@ -33,19 +33,19 @@
       "prepare_burn_status": 200
     }
   },
-  "transfer_id_redacted": "7db7d0be…50d5",
-  "evm_transfer_id_redacted": "eb49666f…22e1",
+  "transfer_id_redacted": "9eb33e58…c6fb",
+  "evm_transfer_id_redacted": "ce7c9cf8…2232",
   "stellar_to_evm_prepare_sanitized": {
     "payload_type": "stellar_xdr",
     "network": "stellar_testnet",
-    "expires_at": 1785449220,
+    "expires_at": 1785492186,
     "payload_hash_present": true
   },
   "evm_to_stellar_prepare_sanitized": {
     "payload_type": "evm_transaction",
     "chain_id": "eip155:11155111",
     "contract": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
-    "expires_at": 1785449224,
+    "expires_at": 1785492189,
     "payload_hash_present": true
   }
 }
