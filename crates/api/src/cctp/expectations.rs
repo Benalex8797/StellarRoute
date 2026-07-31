@@ -7,8 +7,7 @@
 use thiserror::Error;
 
 use crate::cctp::config::{
-    CctpConfig, FINALITY_STANDARD, SEPOLIA_DOMAIN, SEPOLIA_MESSAGE_TRANSMITTER,
-    SEPOLIA_TOKEN_MESSENGER, SEPOLIA_USDC, STELLAR_CCTP_FORWARDER, STELLAR_MESSAGE_TRANSMITTER,
+    CctpConfig, FINALITY_STANDARD, SEPOLIA_DOMAIN, SEPOLIA_TOKEN_MESSENGER, SEPOLIA_USDC, STELLAR_CCTP_FORWARDER, STELLAR_MESSAGE_TRANSMITTER,
     STELLAR_TESTNET_DOMAIN,
 };
 use crate::cctp::encoding::{
@@ -70,7 +69,7 @@ pub fn build_corridor_expectations(
             Ok(CorridorMessageExpectations {
                 source_domain: STELLAR_TESTNET_DOMAIN,
                 destination_domain: SEPOLIA_DOMAIN,
-                header_recipient: evm_address_to_bytes32(SEPOLIA_MESSAGE_TRANSMITTER)
+                header_recipient: evm_address_to_bytes32(SEPOLIA_TOKEN_MESSENGER)
                     .map_err(|e| ExpectationError::Encoding(e.to_string()))?,
                 header_sender: stellar_contract_to_bytes32(
                     &config.contracts.stellar_token_messenger,

@@ -327,7 +327,7 @@ impl CctpConfig {
         if parsed.scheme != "https" {
             return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
         }
-        if parsed.path.contains('?') || url.contains('?') {
+        if !parsed.path.starts_with("/v2") {
             return Err(CctpConfigError::NonHttpsUrl(redact_url(url)));
         }
         Ok(())
@@ -488,6 +488,27 @@ mod tests {
             cfg.iris_base_url = url.into();
             assert!(cfg.validate().is_err(), "must reject {url}");
         }
+    }
+
+    #[test]
+    fn iris_poll_url_with_query_matches_allowed_host() {
+        let cfg = CctpConfig::default_testnet();
+        let hash = "26514bc123354d8c2ff72f73ad56da48824b03e851c33b2772f2df0f13a96c3d";
+        let url = format!(
+            "{}/v2/messages/27?transactionHash={hash}",
+            DEFAULT_IRIS_SANDBOX_URL
+        );
+        cfg.request_url_matches_allowed_host(&url, IRIS_SANDBOX_HOST)
+            .expect("Iris poll URLs carry query params");
+    }
+
+    #[test]
+    fn iris_outbound_url_rejects_non_v2_path() {
+        let cfg = CctpConfig::default_testnet();
+        let url = format!("{}/v1/messages/27", DEFAULT_IRIS_SANDBOX_URL);
+        assert!(cfg
+            .request_url_matches_allowed_host(&url, IRIS_SANDBOX_HOST)
+            .is_err());
     }
 
     #[test]
