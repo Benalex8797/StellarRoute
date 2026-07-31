@@ -223,22 +223,65 @@ sys.exit(0 if have >= need else 1)
 PY
 }
 
-stellar_sign_and_send() {
+stellar_invoke_from_xdr() {
   local xdr="$1"
-  local signed send_out hash
-  signed="$(STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
-    stellar tx sign --sign-with-key "$STELLAR_IDENTITY" --auto-sign "$xdr" 2>"$TMP_DIR/stellar-sign.err")"
-  send_out="$(STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
-    stellar tx send "$signed" 2>"$TMP_DIR/stellar-send.err")"
-  hash="$(echo "$send_out" | jq -r '.hash // .txHash // .id // empty' 2>/dev/null || true)"
-  if [[ -z "$hash" || "$hash" == "null" ]]; then
-    hash="$(echo "$send_out" | rg -o '[0-9a-f]{64}' | head -1 || true)"
+  local decoded contract func combined hash
+  decoded="$(STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
+    stellar tx decode "$xdr" 2>"$TMP_DIR/stellar-decode.err")"
+  contract="$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.contract_address // empty')"
+  func="$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.function_name // empty')"
+  if [[ -z "$contract" || -z "$func" ]]; then
+    echo "Failed to decode Soroban invoke from prepared XDR; see $TMP_DIR/stellar-decode.err" >&2
+    return 1
+  fi
+
+  local -a invoke_args=(--id "$contract" --source "$STELLAR_IDENTITY" --network testnet --send=yes -- "$func")
+  case "$func" in
+    approve)
+      invoke_args+=(
+        --from "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[0].address')"
+        --spender "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[1].address')"
+        --amount "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[2].i128')"
+        --expiration_ledger "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[3].u32')"
+      )
+      ;;
+    deposit_for_burn)
+      invoke_args+=(
+        --caller "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[0].address')"
+        --amount "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[1].i128')"
+        --destination_domain "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[2].u32')"
+        --mint_recipient "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[3].bytes')"
+        --burn_token "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[4].address')"
+        --destination_caller "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[5].bytes')"
+        --max_fee "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[6].i128')"
+        --min_finality_threshold "$(echo "$decoded" | jq -r '.tx.tx.operations[0].body.invoke_host_function.host_function.invoke_contract.args[7].u32')"
+      )
+      ;;
+    *)
+      echo "Unsupported Soroban invoke for signed-live proof: ${func}" >&2
+      return 1
+      ;;
+  esac
+
+  combined="$(STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
+    stellar contract invoke "${invoke_args[@]}" 2>"$TMP_DIR/stellar-send.err")"
+  hash="$(echo "$combined" | rg -o '[0-9a-f]{64}' | head -1 || true)"
+  if [[ -z "$hash" ]]; then
+    hash="$(grep -oE '[0-9a-f]{64}' "$TMP_DIR/stellar-send.err" | head -1 || true)"
   fi
   if [[ -z "$hash" ]]; then
     echo "Stellar broadcast failed; see $TMP_DIR/stellar-send.err" >&2
     return 1
   fi
+  if ! curl -fsS "https://horizon-testnet.stellar.org/transactions/${hash}" >/dev/null 2>&1; then
+    echo "Stellar transaction hash not found on Horizon: ${hash}" >&2
+    return 1
+  fi
   echo "$hash"
+}
+
+stellar_sign_and_send() {
+  stellar_invoke_from_xdr "$1"
 }
 
 evm_sign_and_send() {
