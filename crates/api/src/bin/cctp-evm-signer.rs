@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use tiny_keccak::{Hasher, Keccak};
 
 const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
-const SEPOLIA_MESSAGE_TRANSMITTER: &str = "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa";
+const SEPOLIA_MESSAGE_TRANSMITTER: &str =
+    stellarroute_api::cctp::config::SEPOLIA_MESSAGE_TRANSMITTER;
 const RECEIVE_MESSAGE_SELECTOR: [u8; 4] = [0x57, 0xec, 0xfd, 0x28];
 const MAX_CALLDATA_BYTES: usize = 256 * 1024;
 

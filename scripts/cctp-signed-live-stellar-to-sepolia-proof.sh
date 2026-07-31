@@ -493,20 +493,29 @@ cargo build -q -p stellarroute-api --bin stellarroute-api
 API_PID=$!
 
 BASE_URL="http://${API_HOST}:${API_PORT}"
-for _ in $(seq 1 240); do
-  code="$(curl -m 5 -sS -o /dev/null -w '%{http_code}' -H "x-api-key: ${PROOF_API_KEY}" "${BASE_URL}/api/v2" 2>/dev/null || true)"
-  if [[ "$code" == "200" ]]; then break; fi
+stellar_exec=""
+for _ in $(seq 1 300); do
   if ! kill -0 "$API_PID" >/dev/null 2>&1; then
     tail -40 "/tmp/stellarroute-cctp-signed-api-${RUN_ID}.log" >&2 || true
     exit 1
   fi
+  code="$(curl -m 5 -sS -o "$TMP_DIR/v2-info.json" -w '%{http_code}' \
+    -H "x-api-key: ${PROOF_API_KEY}" "${BASE_URL}/api/v2" 2>/dev/null || true)"
+  if [[ "$code" == "200" ]]; then
+    stellar_exec="$(jq -r '.data.supported_corridors[]? | select(.direction=="stellar_to_evm") | .executable' \
+      "$TMP_DIR/v2-info.json" 2>/dev/null || true)"
+    if [[ "$stellar_exec" == "true" ]]; then
+      break
+    fi
+  fi
   sleep 1
 done
 
-stellar_exec="$(curl -fsS -H "x-api-key: ${PROOF_API_KEY}" "${BASE_URL}/api/v2" \
-  | jq -r '.data.supported_corridors[] | select(.direction=="stellar_to_evm") | .executable')"
 if [[ "$stellar_exec" != "true" ]]; then
   echo "stellar_to_evm not executable" >&2
+  jq '{bridge_settlement_executable: .data.bridge_settlement_executable, supported_corridors: .data.supported_corridors}' \
+    "$TMP_DIR/v2-info.json" >&2 2>/dev/null || true
+  tail -40 "/tmp/stellarroute-cctp-signed-api-${RUN_ID}.log" >&2 || true
   exit 1
 fi
 

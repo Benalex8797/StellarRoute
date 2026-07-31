@@ -9,7 +9,7 @@ use std::{
 
 const MARKER_ADDRESS: &str = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
 const EXPECTED_FIXTURE_HASH: &str =
-    "0xe3c7239bb0fbc5a189637ead1f38bae25c274c45e75d0c08927815d7dfba1a03";
+    "0x7b47b66cef01df36b34bef6c1d438dc32e2f96b7a1c3c245e3c4d594596710cd";
 
 fn marker_private_key() -> String {
     format!("0x{}1", "0".repeat(63))
@@ -43,8 +43,8 @@ fn fixture_request() -> String {
         r#"{{
   "chain_id": 11155111,
   "recipient": "{MARKER_ADDRESS}",
-  "contract": "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
-  "to": "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
+  "contract": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+  "to": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
   "data": "0x57ecfd28000000000000000000000000{}",
   "value": "0",
   "max_gas_limit": 1000000,
