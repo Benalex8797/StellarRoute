@@ -55,6 +55,60 @@ describe('HeroSection — reduced-motion', () => {
     expect(screen.getByTestId('hero-gradient-1')).toBeInTheDocument();
     expect(screen.getByTestId('hero-gradient-2')).toBeInTheDocument();
   });
+
+  it('does not render motion classes when reduced motion is active', () => {
+    setReducedMotion(true);
+    const { container } = render(<HeroSection />);
+    expect(container.querySelectorAll('[class*="animate-"]')).toHaveLength(0);
+  });
+});
+
+describe('HeroSection — product positioning', () => {
+  afterEach(() => setReducedMotion(false));
+
+  it('positions StellarRoute as a non-custodial Stellar execution layer', () => {
+    render(<HeroSection />);
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: /Stellar-native execution\. A proven route beyond it\./i,
+      })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Non-custodial execution layer/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Stellar SDEX and Soroban AMMs/i)
+    ).not.toHaveLength(0);
+  });
+
+  it('links both primary calls to action directly to the swap deck', () => {
+    render(<HeroSection />);
+    const links = screen.getAllByRole('link', {
+      name: /Open execution deck/i,
+    });
+    expect(links).toHaveLength(2);
+    links.forEach((link) => expect(link).toHaveAttribute('href', '/swap'));
+  });
+
+  it('labels the live corridor as testnet and states its limits', () => {
+    render(<HeroSection />);
+    expect(screen.getAllByText('TESTNET CORRIDOR')).not.toHaveLength(0);
+    expect(screen.getAllByText(/Stellar → Ethereum Sepolia/i)).not.toHaveLength(0);
+    expect(
+      screen.getByText(/CCTP is disabled by default at the API layer/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/does not claim mainnet availability/i)
+    ).toBeInTheDocument();
+  });
+
+  it('shows the signed-live testnet evidence metrics', () => {
+    render(<HeroSection />);
+    expect(screen.getByText('Signed-live / testnet evidence')).toBeInTheDocument();
+    expect(screen.getByText('Total saga')).toBeInTheDocument();
+    expect(screen.getByText('Burn → attestation')).toBeInTheDocument();
+    expect(screen.getByText('63')).toBeInTheDocument();
+    expect(screen.getByText('33')).toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------------------

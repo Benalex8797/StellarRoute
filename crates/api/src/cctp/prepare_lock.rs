@@ -84,6 +84,28 @@ fn validate_reservation(reservation: &CctpActivePrepare) -> Result<(), CctpPrepa
     Ok(())
 }
 
+fn is_pg_unique_violation(err: &sqlx::Error) -> bool {
+    matches!(
+        err,
+        sqlx::Error::Database(db_err) if db_err.code().as_deref() == Some("23505")
+    )
+}
+
+fn map_active_row_conflict(
+    active: CctpActivePrepare,
+    reservation: &CctpActivePrepare,
+) -> Result<PrepareAcquireResult, CctpPrepareLockError> {
+    if active.transfer_id == reservation.transfer_id {
+        if active.payload_hash == reservation.payload_hash {
+            return Ok(PrepareAcquireResult::Idempotent(active));
+        }
+        return Err(CctpPrepareLockError::PayloadHashMismatch);
+    }
+    Ok(PrepareAcquireResult::ConflictOtherTransfer {
+        holder_transfer_id: active.transfer_id,
+    })
+}
+
 #[async_trait]
 pub trait CctpPrepareLockStore: Send + Sync {
     async fn expire_stale_for_source(
@@ -305,28 +327,14 @@ impl CctpPrepareLockStore for PgCctpPrepareLockStore {
 
         if let Some(row) = existing {
             let active = Self::map_row(row.0, row.1, row.2, row.3, row.4, row.5, row.6);
-            if active.transfer_id == reservation.transfer_id {
-                if active.payload_hash == reservation.payload_hash {
-                    tx.commit()
-                        .await
-                        .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
-                    return Ok(PrepareAcquireResult::Idempotent(active));
-                }
-                tx.rollback()
-                    .await
-                    .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
-                return Err(CctpPrepareLockError::PayloadHashMismatch);
-            }
             tx.rollback()
                 .await
                 .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
-            return Ok(PrepareAcquireResult::ConflictOtherTransfer {
-                holder_transfer_id: active.transfer_id,
-            });
+            return map_active_row_conflict(active, reservation);
         }
 
         let now = Utc::now();
-        sqlx::query(
+        let insert_result = sqlx::query(
             r#"
             INSERT INTO cctp_active_prepares (
                 source_account, transfer_id, prepare_kind, payload_hash,
@@ -342,13 +350,63 @@ impl CctpPrepareLockStore for PgCctpPrepareLockStore {
         .bind(reservation.expires_at)
         .bind(now)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+        .await;
 
-        tx.commit()
-            .await
-            .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
-        Ok(PrepareAcquireResult::Acquired)
+        match insert_result {
+            Ok(_) => {
+                tx.commit()
+                    .await
+                    .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                Ok(PrepareAcquireResult::Acquired)
+            }
+            Err(e) if is_pg_unique_violation(&e) => {
+                let row = sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Uuid,
+                        String,
+                        String,
+                        Option<String>,
+                        DateTime<Utc>,
+                        DateTime<Utc>,
+                    ),
+                >(
+                    r#"
+                    SELECT source_account, transfer_id, prepare_kind, payload_hash,
+                           prepared_payload, expires_at, updated_at
+                    FROM cctp_active_prepares
+                    WHERE source_account = $1 AND expires_at > NOW()
+                    FOR UPDATE
+                    "#,
+                )
+                .bind(&reservation.source_account)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+
+                if let Some(row) = row {
+                    let active = Self::map_row(row.0, row.1, row.2, row.3, row.4, row.5, row.6);
+                    tx.rollback()
+                        .await
+                        .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                    map_active_row_conflict(active, reservation)
+                } else {
+                    tx.rollback()
+                        .await
+                        .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                    Err(CctpPrepareLockError::Database(
+                        "unique violation without active row".into(),
+                    ))
+                }
+            }
+            Err(e) => {
+                tx.rollback()
+                    .await
+                    .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                Err(CctpPrepareLockError::Database(e.to_string()))
+            }
+        }
     }
 
     async fn release(

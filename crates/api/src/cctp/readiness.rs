@@ -228,8 +228,7 @@ impl CctpRuntime {
         }
 
         let evm_sender = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0";
-        let stellar_recipient =
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+        let stellar_recipient = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
         Self {
             stellar_mint_builder: Arc::new(HarnessStellarMintBuilder(payload_hash.clone())),

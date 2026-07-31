@@ -54,12 +54,12 @@ afterEach(() => {
 });
 
 describe('resolveFlagForInitialRender', () => {
-  it('ignores window overrides for hydration snapshot', () => {
+  it('uses the default-on hydration snapshot before a window false override', () => {
     (window as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
-      swap_ui_v2: true,
+      swap_ui_v2: false,
     };
-    expect(resolveFlagForInitialRender('swap_ui_v2')).toBe(false);
-    expect(resolveFlag('swap_ui_v2')).toBe(true);
+    expect(resolveFlagForInitialRender('swap_ui_v2')).toBe(true);
+    expect(resolveFlag('swap_ui_v2')).toBe(false);
   });
 
   it('reads env for initial snapshot', () => {
@@ -69,12 +69,12 @@ describe('resolveFlagForInitialRender', () => {
 });
 
 describe('useFeatureFlag hydration', () => {
-  it('window-only swap_ui_v2: initial off, no recoverable errors, then on after mount', async () => {
+  it('window-only false: initial on, no recoverable errors, then off after mount', async () => {
     const serverHtml = renderToString(<FlagProbe flag="swap_ui_v2" />);
-    expect(serverHtml).toContain('off');
+    expect(serverHtml).toContain('on');
 
     (window as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
-      swap_ui_v2: true,
+      swap_ui_v2: false,
     };
 
     const container = document.createElement('div');
@@ -106,17 +106,13 @@ describe('useFeatureFlag hydration', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('on');
+    expect(container.textContent).toContain('off');
   });
 
-  it('env=true and window=false: initial on, hydrates cleanly, then window override after mount', async () => {
-    process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2 = 'true';
+  it('env=false disables swap_ui_v2 for initial and hydrated renders', async () => {
+    process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2 = 'false';
     const serverHtml = renderToString(<FlagProbe flag="swap_ui_v2" />);
-    expect(serverHtml).toContain('on');
-
-    (window as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
-      swap_ui_v2: false,
-    };
+    expect(serverHtml).toContain('off');
 
     const container = document.createElement('div');
     container.innerHTML = serverHtml;
@@ -143,24 +139,24 @@ describe('useFeatureFlag hydration', () => {
 
   it('FLAGS_URL-only path stays loading until remote resolves', async () => {
     process.env.NEXT_PUBLIC_FLAGS_URL = 'https://flags.example.com/flags.json';
-    mockFetch({ swap_ui_v2: true });
+    mockFetch({ swap_ui_v2: false });
 
     const { result } = renderHook(() => useFeatureFlag('swap_ui_v2'));
     expect(result.current.loading).toBe(true);
-    expect(result.current.enabled).toBe(false);
+    expect(result.current.enabled).toBe(true);
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.enabled).toBe(true);
+    expect(result.current.enabled).toBe(false);
   });
 });
 
 describe('useFeatureFlags hydration', () => {
-  it('matches SSR snapshot and applies window override after mount', async () => {
+  it('matches default-on SSR snapshot and applies window false after mount', async () => {
     const serverHtml = renderToString(<BatchProbe flags={['swap_ui_v2']} />);
-    expect(serverHtml).toContain('legacy');
+    expect(serverHtml).toContain('v2');
 
     (window as { __STELLAR_ROUTE_FLAGS__?: Record<string, boolean> }).__STELLAR_ROUTE_FLAGS__ = {
-      swap_ui_v2: true,
+      swap_ui_v2: false,
     };
 
     const container = document.createElement('div');
@@ -183,6 +179,6 @@ describe('useFeatureFlags hydration', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('v2');
+    expect(container.textContent).toContain('legacy');
   });
 });

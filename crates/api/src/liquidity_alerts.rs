@@ -160,13 +160,7 @@ impl LiquidityThinnessAlerts {
         thresholds: HashMap<String, PairThinnessThreshold>,
         webhook_url: Option<String>,
     ) -> Self {
-        let webhook_url = webhook_url.and_then(|url| {
-            if reqwest::Url::parse(&url).is_ok() {
-                Some(url)
-            } else {
-                None
-            }
-        });
+        let webhook_url = webhook_url.filter(|url| reqwest::Url::parse(url).is_ok());
         Self {
             thresholds: thresholds
                 .into_iter()

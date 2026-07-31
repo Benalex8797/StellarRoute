@@ -7,8 +7,8 @@
 use thiserror::Error;
 
 use crate::cctp::config::{
-    CctpConfig, FINALITY_STANDARD, SEPOLIA_DOMAIN, SEPOLIA_TOKEN_MESSENGER, SEPOLIA_USDC, STELLAR_CCTP_FORWARDER, STELLAR_MESSAGE_TRANSMITTER,
-    STELLAR_TESTNET_DOMAIN,
+    CctpConfig, FINALITY_STANDARD, SEPOLIA_DOMAIN, SEPOLIA_TOKEN_MESSENGER, SEPOLIA_USDC,
+    STELLAR_CCTP_FORWARDER, STELLAR_MESSAGE_TRANSMITTER, STELLAR_TESTNET_DOMAIN,
 };
 use crate::cctp::encoding::{
     build_forwarder_hook_data_recipient, decimal_to_cctp_subunits, evm_address_to_bytes32,

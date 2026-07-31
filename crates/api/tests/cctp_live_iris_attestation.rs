@@ -84,12 +84,10 @@ async fn verify_known_stellar_burn_iris_payload() {
     let burn_hash = std::env::var("CCTP_DIAG_BURN_HASH").unwrap_or_else(|_| {
         "26514bc123354d8c2ff72f73ad56da48824b03e851c33b2772f2df0f13a96c3d".into()
     });
-    let recipient = std::env::var("CCTP_DIAG_EVM_RECIPIENT").unwrap_or_else(|_| {
-        "0xB94E6a26CA0b75cF98c0441c80072957dc9CC533".into()
-    });
-    let sender = std::env::var("CCTP_DIAG_STELLAR_SENDER").unwrap_or_else(|_| {
-        "GBH24C7D2IFM4RF7SDWPLREQYQ3CL32PCJJEATMYIPWBKB6PPGTNAAIX".into()
-    });
+    let recipient = std::env::var("CCTP_DIAG_EVM_RECIPIENT")
+        .unwrap_or_else(|_| "0xB94E6a26CA0b75cF98c0441c80072957dc9CC533".into());
+    let sender = std::env::var("CCTP_DIAG_STELLAR_SENDER")
+        .unwrap_or_else(|_| "GBH24C7D2IFM4RF7SDWPLREQYQ3CL32PCJJEATMYIPWBKB6PPGTNAAIX".into());
 
     let mut cfg = CctpConfig::default_testnet();
     cfg.enabled = true;

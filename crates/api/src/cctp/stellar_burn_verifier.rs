@@ -342,18 +342,30 @@ mod live_diag {
         let probe = probe_stellar_contracts(&cfg).await;
         eprintln!("probe={probe:?} all_ok={}", probe.all_ok());
         let rpc = StellarRpcClient::new(&cfg).expect("rpc");
-        eprintln!("rpc_ready={} latest={:?}", rpc.is_ready(), rpc.latest_ledger().await);
+        eprintln!(
+            "rpc_ready={} latest={:?}",
+            rpc.is_ready(),
+            rpc.latest_ledger().await
+        );
         let mut v = StellarRpcBurnVerifier::new(&cfg).await.expect("verifier");
-        eprintln!("constructed probe_ok={} is_ready={}", v.probe_ok, v.is_ready());
+        eprintln!(
+            "constructed probe_ok={} is_ready={}",
+            v.probe_ok,
+            v.is_ready()
+        );
         // Bypass probe for diagnosis
         v.probe_ok = true;
-        let hash = std::env::var("CCTP_DIAG_BURN_HASH")
-            .unwrap_or_else(|_| "951714911af3ea05180704e365dbb6e98b93dbcd56a72dffdd9920fa0af5abde".into());
+        let hash = std::env::var("CCTP_DIAG_BURN_HASH").unwrap_or_else(|_| {
+            "951714911af3ea05180704e365dbb6e98b93dbcd56a72dffdd9920fa0af5abde".into()
+        });
         match v.verify_burn(&hash).await {
             Ok(facts) => {
                 eprintln!(
                     "OK amount={} sender={} domains={}->{} recipient={:?}",
-                    facts.amount_cctp_subunits, facts.sender, facts.source_domain, facts.destination_domain,
+                    facts.amount_cctp_subunits,
+                    facts.sender,
+                    facts.source_domain,
+                    facts.destination_domain,
                     hex::encode(facts.mint_recipient_bytes32)
                 );
             }
