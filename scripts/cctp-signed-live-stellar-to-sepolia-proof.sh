@@ -359,10 +359,15 @@ poll_transfer_status() {
   local target="$1" deadline="$2"
   local status=""
   while [[ "$(date +%s)" -lt "$deadline" ]]; do
-    curl -fsS "${BASE_URL}/api/v2/bridge/cctp/${transfer_id}" \
-      -H "x-cctp-transfer-access: ${ACCESS_TOKEN}" \
-      -o "$TMP_DIR/status.json"
-    status="$(jq -r '.data.status' "$TMP_DIR/status.json")"
+    local http
+    http="$(curl -sS -o "$TMP_DIR/status.json" -w '%{http_code}' \
+      "${BASE_URL}/api/v2/bridge/cctp/${transfer_id}" \
+      -H "x-cctp-transfer-access: ${ACCESS_TOKEN}" 2>/dev/null || echo "000")"
+    if [[ "$http" != "200" ]]; then
+      sleep 10
+      continue
+    fi
+    status="$(jq -r '.data.status // empty' "$TMP_DIR/status.json")"
     if [[ "$status" == "$target" || "$status" == "completed" ]]; then
       echo "$status"
       return 0
