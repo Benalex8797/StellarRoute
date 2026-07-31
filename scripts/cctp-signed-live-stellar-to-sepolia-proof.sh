@@ -616,6 +616,9 @@ COMPLETE_TS="$(date +%s)"
 
 burn_ledger="$(curl -fsS "https://horizon-testnet.stellar.org/transactions/${burn_hash}" | jq -r '.ledger // empty' 2>/dev/null || true)"
 mint_block="$(cast receipt "$mint_hash" --rpc-url "$SEPOLIA_RPC" --json 2>/dev/null | jq -r '.blockNumber // empty' || true)"
+if [[ "$mint_block" == 0x* ]]; then
+  mint_block=$((16#${mint_block#0x}))
+fi
 
 if ! git -C "$ROOT" diff --quiet || ! git -C "$ROOT" diff --cached --quiet; then
   echo "Git working tree must be clean before writing evidence" >&2
