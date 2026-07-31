@@ -557,7 +557,7 @@ if [[ "$approval_required" == "true" ]]; then
   approval_hash="$(stellar_sign_and_send "$approval_xdr")"
   api_post "/api/v2/bridge/cctp/${transfer_id}/submit-burn" "{\"tx_hash\":\"${approval_hash}\"}" "$TMP_DIR/submit-approval.json" >/dev/null
   prepare_http="$(api_post "/api/v2/bridge/cctp/${transfer_id}/prepare-burn" '{}' "$TMP_DIR/prepare-burn.json")"
-  [[ "$prepare_http" == "200" || "$prepare_http" == "409" ]] || exit 1
+  [[ "$prepare_http" == "200" || "$prepare_http" == "409" ]] || { jq 'del(.data.payload)' "$TMP_DIR/prepare-burn.json" >&2; exit 1; }
 fi
 
 burn_xdr="$(jq -r '.data.payload.xdr_envelope' "$TMP_DIR/prepare-burn.json")"

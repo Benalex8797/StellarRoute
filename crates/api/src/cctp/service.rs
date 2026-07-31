@@ -309,6 +309,9 @@ impl CctpService {
             .map_err(CctpServiceError::Store)?
             .ok_or(CctpServiceError::NotFound)?;
 
+        if transfer.status == CctpTransferStatus::BurnPrepared {
+            return Ok(transfer);
+        }
         if transfer.status != CctpTransferStatus::Created {
             return Err(CctpServiceError::InvalidState);
         }
