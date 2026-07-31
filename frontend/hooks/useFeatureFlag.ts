@@ -16,6 +16,10 @@ export type FlagMap = Partial<Record<FlagName, boolean>>;
 /** Security-critical: secure API swap path — not remotely killable. */
 export const SECURITY_PINNED_FLAGS: ReadonlySet<FlagName> = new Set(['real_xdr']);
 
+function defaultFlagValue(flag: FlagName): boolean {
+  return flag === 'swap_ui_v2';
+}
+
 // Cache layer
 let remoteFlags: FlagMap | null = null;
 let remoteFetchPromise: Promise<FlagMap> | null = null;
@@ -94,7 +98,7 @@ export function resolveFlagForInitialRender(flag: FlagName): boolean {
   }
   const env = readEnvFlag(flag);
   if (env !== undefined) return env;
-  return false;
+  return defaultFlagValue(flag);
 }
 
 function initialFlagLoading(flag: FlagName): boolean {
@@ -105,7 +109,7 @@ function initialFlagLoading(flag: FlagName): boolean {
 }
 
 /**
- * Full post-hydration resolution for ordinary flags: remote > window > env > false.
+ * Full post-hydration resolution for ordinary flags: remote > window > env > default.
  * `real_xdr` is security-pinned: env/default only (default on). Remote and window
  * cannot disable the secure API prepare/sign/submit path.
  */
@@ -120,7 +124,7 @@ export function resolveFlag(flag: FlagName, remote: FlagMap = {}): boolean {
   if (windowFlag !== undefined) return windowFlag;
   const env = readEnvFlag(flag);
   if (env !== undefined) return env;
-  return false;
+  return defaultFlagValue(flag);
 }
 
 export function useFeatureFlag(flag: FlagName): {

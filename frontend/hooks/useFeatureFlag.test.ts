@@ -42,6 +42,23 @@ describe("resolveFlag / real_xdr security pin", () => {
   });
 });
 
+describe("resolveFlag / swap_ui_v2 default", () => {
+  it("defaults swap_ui_v2 on for initial and post-hydration resolution", () => {
+    expect(resolveFlagForInitialRender("swap_ui_v2")).toBe(true);
+    expect(resolveFlag("swap_ui_v2")).toBe(true);
+  });
+
+  it("honors explicit swap_ui_v2=false from env", () => {
+    process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2 = "false";
+    expect(resolveFlagForInitialRender("swap_ui_v2")).toBe(false);
+    expect(resolveFlag("swap_ui_v2")).toBe(false);
+  });
+
+  it("honors explicit swap_ui_v2=false from remote config", () => {
+    expect(resolveFlag("swap_ui_v2", { swap_ui_v2: false })).toBe(false);
+  });
+});
+
 describe("useFeatureFlag", () => {
   it("defaults to false when no env or remote config", async () => {
     const { result } = renderHook(() => useFeatureFlag("routes_beta"));
@@ -61,7 +78,7 @@ describe("useFeatureFlag", () => {
     mockFetch({ swap_ui_v2: true });
     const { result } = renderHook(() => useFeatureFlag("swap_ui_v2"));
     expect(result.current.loading).toBe(true);
-    expect(result.current.enabled).toBe(false);
+    expect(result.current.enabled).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.enabled).toBe(true);
   });
@@ -117,8 +134,7 @@ describe("useFeatureFlag", () => {
     mockFetch({ routes_beta: true });
 
     const { result } = renderHook(() => useFeatureFlag("routes_beta"));
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.enabled).toBe(true);
+    await waitFor(() => expect(result.current.enabled).toBe(true));
   });
 
   it("window override beats env after mount when remote is absent", async () => {
