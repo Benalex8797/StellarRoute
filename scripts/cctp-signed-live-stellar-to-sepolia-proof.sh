@@ -228,8 +228,8 @@ stellar_sign_and_send() {
   local signed send_out hash
   signed="$(STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
     stellar tx sign --sign-with-key "$STELLAR_IDENTITY" --auto-sign "$xdr" 2>"$TMP_DIR/stellar-sign.err")"
-  send_out="$(echo "$signed" | STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
-    stellar tx send - 2>"$TMP_DIR/stellar-send.err")"
+  send_out="$(STELLAR_NETWORK_PASSPHRASE="$STELLAR_NETWORK_PASSPHRASE" \
+    stellar tx send "$signed" 2>"$TMP_DIR/stellar-send.err")"
   hash="$(echo "$send_out" | jq -r '.hash // .txHash // .id // empty' 2>/dev/null || true)"
   if [[ -z "$hash" || "$hash" == "null" ]]; then
     hash="$(echo "$send_out" | rg -o '[0-9a-f]{64}' | head -1 || true)"
