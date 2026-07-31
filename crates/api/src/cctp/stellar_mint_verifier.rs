@@ -343,7 +343,7 @@ impl StellarMintVerifier for StellarRpcMintVerifier {
             message,
             nonce,
             recipient,
-            amount_cctp as u128,
+            amount_cctp,
             quoted_finality,
         )
         .await

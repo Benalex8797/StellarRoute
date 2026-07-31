@@ -95,11 +95,11 @@ pub fn map_horizon_result_codes(
             "tx_failed" => {
                 // Inspect ops below.
             }
+            "tx_too_late" | "tx_insufficient_balance" => {
+                return Some(BroadcastError::Permanent(code.to_string()));
+            }
             other if other.starts_with("tx_") => {
                 // Unknown tx_* codes are permanent unless clearly retryable.
-                if other == "tx_too_late" || other == "tx_insufficient_balance" {
-                    return Some(BroadcastError::Permanent(other.to_string()));
-                }
             }
             _ => {}
         }
