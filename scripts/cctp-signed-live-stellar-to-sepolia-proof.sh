@@ -223,6 +223,20 @@ sys.exit(0 if have >= need else 1)
 PY
 }
 
+wait_for_stellar_tx() {
+  local hash="$1"
+  local deadline=$(( $(date +%s) + 120 ))
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    if curl -fsS "https://horizon-testnet.stellar.org/transactions/${hash}" \
+      | jq -e '.successful == true' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Stellar transaction not finalized on Horizon: ${hash}" >&2
+  return 1
+}
+
 stellar_invoke_from_xdr() {
   local xdr="$1"
   local decoded contract func combined hash
@@ -277,6 +291,7 @@ stellar_invoke_from_xdr() {
     echo "Stellar transaction hash not found on Horizon: ${hash}" >&2
     return 1
   fi
+  wait_for_stellar_tx "$hash" || return 1
   echo "$hash"
 }
 
