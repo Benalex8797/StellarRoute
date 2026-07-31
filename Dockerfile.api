@@ -16,7 +16,7 @@ WORKDIR /app
 
 # Copy the full workspace needed to compile stellarroute-api and its path deps.
 # .dockerignore excludes .env, target/, frontend/, secrets, etc.
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
 RUN cargo build -p stellarroute-api --release --bin stellarroute-api \
