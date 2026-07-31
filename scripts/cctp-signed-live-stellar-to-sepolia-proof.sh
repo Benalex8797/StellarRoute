@@ -237,6 +237,20 @@ wait_for_stellar_tx() {
   return 1
 }
 
+wait_for_evm_tx() {
+  local hash="$1"
+  local deadline=$(( $(date +%s) + 120 ))
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    if cast receipt "$hash" --rpc-url "$SEPOLIA_RPC" --json 2>/dev/null \
+      | jq -e '.status == "0x1"' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "EVM transaction not finalized on Sepolia: ${hash}" >&2
+  return 1
+}
+
 stellar_invoke_from_xdr() {
   local xdr="$1"
   local decoded contract func combined hash
@@ -589,8 +603,9 @@ if [[ "$mint_chain_id" != "eip155:11155111" \
   exit 1
 fi
 mint_hash="$(evm_sign_and_send "$mint_to" "$mint_data" "$mint_value" "$EVM_RECIPIENT")"
+wait_for_evm_tx "$mint_hash" || exit 1
 submit_mint_http="$(api_post "/api/v2/bridge/cctp/${transfer_id}/submit-mint" "{\"tx_hash\":\"${mint_hash}\"}" "$TMP_DIR/submit-mint.json")"
-[[ "$submit_mint_http" == "200" ]] || exit 1
+[[ "$submit_mint_http" == "200" ]] || { jq 'del(.data)' "$TMP_DIR/submit-mint.json" >&2; exit 1; }
 
 deadline=$(( $(date +%s) + 600 ))
 final_status="$(poll_transfer_status completed "$deadline")" || {
