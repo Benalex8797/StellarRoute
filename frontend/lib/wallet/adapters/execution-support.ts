@@ -1,16 +1,19 @@
 /**
  * Execution support for multi-chain wallet sessions.
  *
- * StellarRoute's live swap path is Stellar-native today. EVM/Solana/
- * Bitcoin/TRON adapters may sign chain-native payloads, but MUST surface
- * `unsupported` / `degraded` when no backend cross-chain route exists.
+ * Live paths: Stellar-native swaps, plus testnet Stellar→EVM CCTP when the
+ * API reports bridge readiness. Other adapters may sign chain-native
+ * payloads, but MUST surface `unsupported` / `degraded` when no backend
+ * cross-chain route exists.
  */
 
 import type { ChainFamily, ExecutionSupport } from './types';
 
 const CROSS_CHAIN_BACKEND_ROUTES: ReadonlySet<string> = new Set([
-  // Intentionally empty until backend exposes non-Stellar (or bridge) routes.
+  // Proven testnet CCTP direction (Stellar USDC burn → Sepolia mint).
+  // Settlement still requires API readiness (`CCTP_ENABLED` + /api/v2).
   // Format: `${source}->${destination}`
+  'stellar->evm',
 ]);
 
 let cctpExecutableRoutes: ReadonlySet<string> = new Set();

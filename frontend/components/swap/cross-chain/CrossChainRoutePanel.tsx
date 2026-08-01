@@ -85,19 +85,31 @@ export function CrossChainRoutePanel({
 
       <div className="flex items-center justify-center gap-3 py-2">
         <HubNode
-          label={sourceChainId === 'stellar' ? 'Stellar hub' : 'Source'}
-          active={sourceChainId === 'stellar'}
+          label={sourceChainId === 'stellar' ? 'Stellar' : 'Source'}
+          active
         />
         <ArrowRight className="h-5 w-5 text-primary shrink-0" aria-hidden />
         <HubNode
-          label="Stellar hub"
-          active={destChainId === 'stellar' || sourceChainId === 'stellar'}
+          label={
+            protocol === 'stellar-native'
+              ? 'SDEX / Soroban'
+              : protocol === 'cctp-preview'
+                ? 'CCTP'
+                : 'Route'
+          }
+          active
           emphasized
         />
         <ArrowRight className="h-5 w-5 text-primary shrink-0" aria-hidden />
         <HubNode
-          label={destChainId === 'stellar' ? 'Stellar hub' : 'Destination'}
-          active={destChainId === 'stellar'}
+          label={
+            destChainId === 'stellar'
+              ? 'Stellar'
+              : destChainId === 'ethereum-sepolia'
+                ? 'ETH Sepolia'
+                : 'Destination'
+          }
+          active
         />
       </div>
 

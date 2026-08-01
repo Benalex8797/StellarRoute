@@ -51,6 +51,7 @@ export function useCrossChainSwapState(options?: {
     ? 'unsupported'
     : resolveCorridorAvailability(corridor!);
 
+  // Catalog/backend-route executable. CCTP settlement still gates on /api/v2 readiness.
   const executable = !isUncatalogued && isCorridorExecutable(corridor!);
   const isStellarNativePair =
     sourceChainId === 'stellar' && destChainId === 'stellar';

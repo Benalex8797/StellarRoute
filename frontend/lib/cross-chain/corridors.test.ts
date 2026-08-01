@@ -13,10 +13,11 @@ describe('corridor catalog', () => {
     expect(catalogMatchesBackendRoutes()).toBe(true);
   });
 
-  it('only marks stellar-native as executable', () => {
-    const executable = CORRIDOR_CATALOG.filter((c) => isCorridorExecutable(c));
-    expect(executable).toHaveLength(1);
-    expect(executable[0].id).toBe('stellar-native');
+  it('marks stellar-native and stellar→Sepolia CCTP as executable', () => {
+    const executable = CORRIDOR_CATALOG.filter((c) => isCorridorExecutable(c)).map(
+      (c) => c.id
+    );
+    expect(executable).toEqual(['stellar-native', 'stellar-to-evm']);
   });
 
   it('reflects backend route registration per corridor leg', () => {

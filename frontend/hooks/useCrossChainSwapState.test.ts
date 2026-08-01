@@ -51,6 +51,16 @@ describe('useCrossChainSwapState', () => {
     expect(result.current.executable).toBe(false);
   });
 
+  it('marks default Stellar → Sepolia as catalog-executable', () => {
+    const { result } = renderHook(() => useCrossChainSwapState());
+
+    expect(result.current.sourceChainId).toBe('stellar');
+    expect(result.current.destChainId).toBe('ethereum-sepolia');
+    expect(result.current.corridorId).toBe('stellar-to-evm');
+    expect(result.current.executable).toBe(true);
+    expect(result.current.isStellarNativeExecutable).toBe(false);
+  });
+
   it('does not allow review for catalogued coming-soon corridors', () => {
     const { result } = renderHook(() =>
       useCrossChainSwapState({

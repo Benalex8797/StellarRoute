@@ -138,7 +138,7 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
   const { data: indexedPairs } = usePairs();
 
   // Prefer an indexed native (XLM) pair; migrate off the old BTC/EXT default.
-  // Fall back to defaults, then the first indexed pair when liquidity is sparse.
+  // Never force BTC/EXT just because it is the only indexed staging pair.
   useEffect(() => {
     if (!indexedPairs?.length) return;
     const assets = new Set(
@@ -147,6 +147,12 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     const isLegacyDefaultPair =
       fromToken === LEGACY_DEFAULT_FROM_TOKEN &&
       toToken === LEGACY_DEFAULT_TO_TOKEN;
+    const isLegacyIndexedPair = (pair: {
+      base_asset: string;
+      counter_asset: string;
+    }) =>
+      pair.base_asset === LEGACY_DEFAULT_FROM_TOKEN &&
+      pair.counter_asset === LEGACY_DEFAULT_TO_TOKEN;
 
     if (assets.has(fromToken) && assets.has(toToken) && !isLegacyDefaultPair) {
       return;
@@ -154,7 +160,8 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
 
     const nativePair = indexedPairs.find(
       (pair) =>
-        pair.base_asset === 'native' || pair.counter_asset === 'native'
+        (pair.base_asset === 'native' || pair.counter_asset === 'native') &&
+        !isLegacyIndexedPair(pair)
     );
     if (nativePair) {
       if (nativePair.base_asset === 'native') {
@@ -170,8 +177,13 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
       return;
     }
 
-    const first = indexedPairs[0];
-    setTokenPair(first.base_asset, first.counter_asset);
+    const firstNonLegacy = indexedPairs.find((pair) => !isLegacyIndexedPair(pair));
+    if (firstNonLegacy) {
+      setTokenPair(firstNonLegacy.base_asset, firstNonLegacy.counter_asset);
+      return;
+    }
+
+    setTokenPair(DEFAULT_FROM_TOKEN, DEFAULT_TO_TOKEN);
   }, [indexedPairs, fromToken, toToken, setTokenPair]);
 
   const [selectedRoute, setSelectedRoute] = useState<AlternativeRoute | null>(
