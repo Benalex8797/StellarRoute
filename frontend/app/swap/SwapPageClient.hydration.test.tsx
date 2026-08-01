@@ -79,7 +79,7 @@ describe('SwapPageClient hydration with swap_ui_v2', () => {
   });
 
   it('hydrates legacy surface when swap_ui_v2 env is off', () => {
-    delete process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2;
+    process.env.NEXT_PUBLIC_FLAG_SWAP_UI_V2 = 'false';
 
     const container = document.createElement('div');
     container.innerHTML = renderToString(renderSwapPageTree());
