@@ -30,6 +30,8 @@ import {
   DEFAULT_FROM_TOKEN,
   DEFAULT_SLIPPAGE,
   DEFAULT_TO_TOKEN,
+  LEGACY_DEFAULT_FROM_TOKEN,
+  LEGACY_DEFAULT_TO_TOKEN,
   SESSION_RECOVERY_THRESHOLD_MS,
   type TradeFormSnapshot,
 } from '@/hooks/useTradeFormStorage';
@@ -135,22 +137,53 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
 
   const { data: indexedPairs } = usePairs();
 
-  // Staging often only has BTC/EXT liquidity. Reset stale localStorage pairs
-  // (e.g. XLM→USDC) that cannot quote against the indexed market set.
+  // Prefer an indexed native (XLM) pair; migrate off the old BTC/EXT default.
+  // Never force BTC/EXT just because it is the only indexed staging pair.
   useEffect(() => {
     if (!indexedPairs?.length) return;
     const assets = new Set(
       indexedPairs.flatMap((pair) => [pair.base_asset, pair.counter_asset])
     );
-    if (assets.has(fromToken) && assets.has(toToken)) return;
+    const isLegacyDefaultPair =
+      fromToken === LEGACY_DEFAULT_FROM_TOKEN &&
+      toToken === LEGACY_DEFAULT_TO_TOKEN;
+    const isLegacyIndexedPair = (pair: {
+      base_asset: string;
+      counter_asset: string;
+    }) =>
+      pair.base_asset === LEGACY_DEFAULT_FROM_TOKEN &&
+      pair.counter_asset === LEGACY_DEFAULT_TO_TOKEN;
+
+    if (assets.has(fromToken) && assets.has(toToken) && !isLegacyDefaultPair) {
+      return;
+    }
+
+    const nativePair = indexedPairs.find(
+      (pair) =>
+        (pair.base_asset === 'native' || pair.counter_asset === 'native') &&
+        !isLegacyIndexedPair(pair)
+    );
+    if (nativePair) {
+      if (nativePair.base_asset === 'native') {
+        setTokenPair(nativePair.base_asset, nativePair.counter_asset);
+      } else {
+        setTokenPair('native', nativePair.base_asset);
+      }
+      return;
+    }
 
     if (assets.has(DEFAULT_FROM_TOKEN) && assets.has(DEFAULT_TO_TOKEN)) {
       setTokenPair(DEFAULT_FROM_TOKEN, DEFAULT_TO_TOKEN);
       return;
     }
 
-    const first = indexedPairs[0];
-    setTokenPair(first.base_asset, first.counter_asset);
+    const firstNonLegacy = indexedPairs.find((pair) => !isLegacyIndexedPair(pair));
+    if (firstNonLegacy) {
+      setTokenPair(firstNonLegacy.base_asset, firstNonLegacy.counter_asset);
+      return;
+    }
+
+    setTokenPair(DEFAULT_FROM_TOKEN, DEFAULT_TO_TOKEN);
   }, [indexedPairs, fromToken, toToken, setTokenPair]);
 
   const [selectedRoute, setSelectedRoute] = useState<AlternativeRoute | null>(

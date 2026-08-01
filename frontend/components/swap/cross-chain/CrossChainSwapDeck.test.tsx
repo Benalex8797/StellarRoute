@@ -116,7 +116,15 @@ describe('CrossChainSwapDeck', () => {
       screen.getByTestId('chain-option-destination-ethereum-sepolia')
     ).toBeChecked();
     expect(screen.queryByTestId('swap-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('unsupported-corridor-alert')).not.toBeInTheDocument();
     expect(screen.getByTestId('cctp-route-rail')).toBeInTheDocument();
+    expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
+      /executable corridor/i
+    );
+    // Settlement still waits on API readiness in this mock.
+    expect(
+      screen.getByText(/CCTP corridor is listed but not executable on this API yet/i)
+    ).toBeInTheDocument();
   });
 
   it('shows unsupported alert for catalogued coming-soon corridor', () => {

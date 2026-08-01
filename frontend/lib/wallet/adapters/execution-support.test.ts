@@ -61,6 +61,7 @@ describe('execution support', () => {
   });
 
   it('reports no backend route for non-stellar pairs even when signing is available', () => {
+    expect(hasBackendRoute('stellar', 'evm')).toBe(true);
     expect(hasBackendRoute('evm', 'stellar')).toBe(false);
     expect(hasBackendRoute('bitcoin', 'stellar')).toBe(false);
     expect(hasBackendRoute('tron', 'bitcoin')).toBe(false);
