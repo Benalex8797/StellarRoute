@@ -92,20 +92,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          cat > /tmp/ssm-commands.json <<EOF
+          cat > /tmp/ssm-commands.json <<'EOF'
           {
             "commands": [
               "cd /opt/stellarroute",
               "git config --global --add safe.directory /opt/stellarroute",
               "git fetch --all --prune",
-              "git checkout ${DEPLOY_REF}",
-              "git pull --ff-only origin ${DEPLOY_REF}",
+              "git checkout main",
+              "git pull --ff-only origin main",
               "bash deploy/aws/scripts/deploy-ec2-staging.sh",
-              "for i in $(seq 1 60); do if curl -fsS http://127.0.0.1:8080/health >/dev/null && curl -fsS http://127.0.0.1:8080/health/deps >/dev/null; then echo 'API is healthy'; break; fi; echo 'Waiting for API health...'; sleep 5; done",
-              "bash deploy/aws/scripts/ec2-postdeploy-smoke.sh ${DEPLOY_URL}"
+              "for i in {1..60}; do if curl -fsS http://127.0.0.1:8080/health >/dev/null && curl -fsS http://127.0.0.1:8080/health/deps >/dev/null; then echo 'API is healthy'; break; fi; echo 'Waiting for API health...'; sleep 5; done"
             ]
           }
           EOF
+          
+          # Substitute variables into the JSON
+          sed -i "s|git checkout main|git checkout ${DEPLOY_REF}|" /tmp/ssm-commands.json
+          sed -i "s|git pull --ff-only origin main|git pull --ff-only origin ${DEPLOY_REF}|" /tmp/ssm-commands.json
+          
+          # Add the smoke test command with URL
+          jq --arg url "${DEPLOY_URL}" '.commands += ["bash deploy/aws/scripts/ec2-postdeploy-smoke.sh \($url)"]' /tmp/ssm-commands.json > /tmp/ssm-commands-final.json
+          mv /tmp/ssm-commands-final.json /tmp/ssm-commands.json
 
           COMMAND_ID="$(aws ssm send-command \
             --region "${AWS_REGION}" \
