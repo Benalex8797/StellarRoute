@@ -95,7 +95,6 @@ jobs:
           cat > /tmp/ssm-commands.json <<EOF
           {
             "commands": [
-              "set -euo pipefail",
               "cd /opt/stellarroute",
               "git fetch --all --prune",
               "git checkout ${DEPLOY_REF}",
