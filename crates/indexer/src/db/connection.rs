@@ -122,6 +122,10 @@ impl Database {
                 "0013_amm_pools.sql",
                 include_str!("../../migrations/0013_amm_pools.sql"),
             ),
+            (
+                "0014_assets_native_singleton.sql",
+                include_str!("../../migrations/0014_assets_native_singleton.sql"),
+            ),
         ];
 
         for (name, sql) in migrations {
