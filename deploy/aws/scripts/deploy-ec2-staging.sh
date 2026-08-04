@@ -32,9 +32,14 @@ for key in "${required_vars[@]}"; do
 done
 
 cd "${ROOT}"
+GIT_SHA="$(git -c safe.directory=* rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "Deploying git SHA ${GIT_SHA}"
+
 docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod config >/dev/null
 docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --build
 
 echo "Local health checks:"
-curl -sf http://127.0.0.1:${API_HOST_PORT:-8080}/health && echo " - /health OK"
-curl -sf http://127.0.0.1:${API_HOST_PORT:-8080}/health/deps && echo " - /health/deps OK"
+# API may still be booting; do not fail the whole deploy on a racing curl here.
+# Post-deploy smoke waits for readiness separately.
+curl -sf http://127.0.0.1:${API_HOST_PORT:-8080}/health && echo " - /health OK" || echo " - /health not ready yet"
+curl -sf http://127.0.0.1:${API_HOST_PORT:-8080}/health/deps && echo " - /health/deps OK" || echo " - /health/deps not ready yet"
