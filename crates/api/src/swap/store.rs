@@ -76,7 +76,9 @@ pub enum SwapStoreError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimSubmitOutcome {
     Claimed(Box<PreparedSwapQuote>),
-    InProgress,
+    /// Another request already moved the quote to `submitting` (or a retry
+    /// raced claim). Carry the bound quote so the caller can reconcile.
+    InProgress(Box<PreparedSwapQuote>),
     AlreadySubmitted { tx_hash: String },
     PermanentlyFailed,
 }
@@ -245,7 +247,7 @@ impl SwapQuoteStore for PgSwapQuoteStore {
             }
             SubmissionStatus::Submitting => {
                 tx.commit().await?;
-                return Ok(ClaimSubmitOutcome::InProgress);
+                return Ok(ClaimSubmitOutcome::InProgress(Box::new(row.into_quote())));
             }
             SubmissionStatus::Failed => {
                 tx.commit().await?;
@@ -383,6 +385,14 @@ impl InMemorySwapQuoteStore {
             q.expires_at = expires_at;
         }
     }
+
+    /// Test helper: overwrite `timebounds_max` without changing submission status.
+    pub fn set_timebounds_max_for_tests(&self, quote_id: &str, timebounds_max: Option<i64>) {
+        let mut guard = self.quotes.lock().unwrap();
+        if let Some(q) = guard.get_mut(quote_id) {
+            q.timebounds_max = timebounds_max;
+        }
+    }
 }
 
 #[async_trait]
@@ -429,7 +439,9 @@ impl SwapQuoteStore for InMemorySwapQuoteStore {
             SubmissionStatus::Submitted => Ok(ClaimSubmitOutcome::AlreadySubmitted {
                 tx_hash: quote.tx_hash.clone().unwrap_or_default(),
             }),
-            SubmissionStatus::Submitting => Ok(ClaimSubmitOutcome::InProgress),
+            SubmissionStatus::Submitting => {
+                Ok(ClaimSubmitOutcome::InProgress(Box::new(quote.clone())))
+            }
             SubmissionStatus::Failed => Ok(ClaimSubmitOutcome::PermanentlyFailed),
             SubmissionStatus::Prepared => {
                 quote.submission_status = SubmissionStatus::Submitting;

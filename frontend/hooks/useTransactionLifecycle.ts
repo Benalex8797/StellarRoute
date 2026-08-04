@@ -487,6 +487,8 @@ export function useTransactionLifecycle(
       void resubmit();
       return;
     }
+    // Permanent failures must start a fresh prepare/sign — drop the old envelope.
+    lastSignedXdrRef.current = null;
     clearDeadlineTimer();
     setStatus("review");
     clearError();

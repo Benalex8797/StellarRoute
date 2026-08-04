@@ -270,6 +270,9 @@ export function userCopyForSwapExecutionError(err: unknown): string {
     if (conflictStatus === 'active_prepare_exists') {
       return 'An active prepare already exists for this wallet. Finish or wait for it to expire before preparing again.';
     }
+    if (conflictStatus === 'permanently_failed') {
+      return 'This quote can no longer be submitted. Add any missing trustlines, refresh for a new quote, then try again.';
+    }
     if (conflictStatus === 'already_submitted' || conflictStatus === 'in_progress') {
       return 'This swap was already submitted. Check wallet activity before trying again.';
     }
@@ -500,7 +503,13 @@ export function createApiSwapExecution(
       }
 
       if (!submitted) {
-        if (lastErr instanceof StellarRouteApiError) {
+        // Only ambiguous Horizon outcomes become pending_reconcile + Resubmit.
+        // Permanent failures (422 op_no_trust, 409 permanently_failed, etc.)
+        // must keep their original status so the UI does not retry forever.
+        if (
+          lastErr instanceof StellarRouteApiError &&
+          isAmbiguousSubmitError(lastErr)
+        ) {
           throw new StellarRouteApiError(
             lastErr.status,
             lastErr.code,
@@ -514,9 +523,11 @@ export function createApiSwapExecution(
             },
           );
         }
+        pendingSignedXdr = null;
+        pendingQuoteId = null;
         throw lastErr instanceof Error
           ? lastErr
-          : new Error('Submit pending — reconcile before preparing again');
+          : new Error('Swap submit failed. Refresh the quote and try again.');
       }
 
       lastSubmit = submitted;

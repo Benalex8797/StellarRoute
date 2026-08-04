@@ -336,6 +336,41 @@ describe('createApiSwapExecution', () => {
     });
   });
 
+  it('does not rewrite permanent submit failures as pending_reconcile', async () => {
+    const client = {
+      prepareSwap: vi.fn().mockResolvedValue(
+        preparedFixture({ quote_id: 'q-trust', expected_output: '9.9' }),
+      ),
+      submitSwap: vi.fn().mockRejectedValue(
+        new StellarRouteApiError(
+          422,
+          'not_executable',
+          'op_no_trust',
+          { status: 'broadcast_failed' },
+        ),
+      ),
+    } as unknown as StellarRouteClient;
+
+    const deps = createApiSwapExecution({
+      client,
+      sender: tradeParams.walletAddress,
+      slippageBps: 50,
+      network: 'testnet',
+      signTransaction: async () => 'opaque_signed_xdr',
+      ambiguousSubmitRetries: 3,
+      confirmOnHorizon: false,
+    });
+
+    await deps.buildXdr(tradeParams);
+    await deps.signTransaction('opaque_unsigned_xdr');
+    await expect(deps.submitTransaction('opaque_signed_xdr')).rejects.toMatchObject({
+      code: 'not_executable',
+      status: 422,
+      details: expect.not.objectContaining({ status: 'pending_reconcile' }),
+    });
+    expect(client.submitSwap).toHaveBeenCalledTimes(1);
+  });
+
   it('confirmation timeout fails closed', async () => {
     const client = {
       prepareSwap: vi.fn().mockResolvedValue(
