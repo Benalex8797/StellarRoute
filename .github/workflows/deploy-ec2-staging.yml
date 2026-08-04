@@ -92,27 +92,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          cat > /tmp/ssm-commands.json <<'EOF'
-          {
-            "commands": [
-              "cd /opt/stellarroute",
-              "git config --global --add safe.directory /opt/stellarroute",
-              "git fetch --all --prune",
-              "git checkout main",
-              "git pull --ff-only origin main",
-              "bash deploy/aws/scripts/deploy-ec2-staging.sh",
-              "for i in {1..60}; do if curl -fsS http://127.0.0.1:8080/health >/dev/null && curl -fsS http://127.0.0.1:8080/health/deps >/dev/null; then echo 'API is healthy'; break; fi; echo 'Waiting for API health...'; sleep 5; done"
-            ]
-          }
-          EOF
-          
-          # Substitute variables into the JSON
-          sed -i "s|git checkout main|git checkout ${DEPLOY_REF}|" /tmp/ssm-commands.json
-          sed -i "s|git pull --ff-only origin main|git pull --ff-only origin ${DEPLOY_REF}|" /tmp/ssm-commands.json
-          
-          # Add the smoke test command with URL
-          jq --arg url "${DEPLOY_URL}" '.commands += ["bash deploy/aws/scripts/ec2-postdeploy-smoke.sh \($url)"]' /tmp/ssm-commands.json > /tmp/ssm-commands-final.json
-          mv /tmp/ssm-commands-final.json /tmp/ssm-commands.json
+          # SSM RunShellScript often has no $HOME, so `git config --global` fails
+          # with "fatal: $HOME not set" and the tree never updates (stale Docker cache).
+          # Use per-command `git -c safe.directory=*` + HOME=/root instead.
+          jq -n \
+            --arg ref "${DEPLOY_REF}" \
+            --arg url "${DEPLOY_URL}" \
+            '{
+              commands: [
+                "cd /opt/stellarroute",
+                "export HOME=/root",
+                "git -c safe.directory=* fetch --all --prune",
+                ("git -c safe.directory=* checkout " + $ref),
+                ("git -c safe.directory=* pull --ff-only origin " + $ref),
+                "git -c safe.directory=* log -1 --oneline",
+                "bash deploy/aws/scripts/deploy-ec2-staging.sh",
+                "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do if curl -fsS http://127.0.0.1:8080/health >/dev/null && curl -fsS http://127.0.0.1:8080/health/deps >/dev/null; then echo API_is_healthy; break; fi; echo Waiting_for_API_health; sleep 5; done",
+                ("bash deploy/aws/scripts/ec2-postdeploy-smoke.sh " + $url)
+              ]
+            }' > /tmp/ssm-commands.json
 
           COMMAND_ID="$(aws ssm send-command \
             --region "${AWS_REGION}" \
