@@ -463,6 +463,16 @@ function copyForConflictStatus(
       ctaLabel: 'Check activity',
     };
   }
+  if (status === 'permanently_failed') {
+    return {
+      headline: 'This quote can no longer be submitted',
+      explanation:
+        'The prepared swap failed permanently (missing trustline, expired timebounds, or a prior reject).',
+      recoveryAction:
+        'Add any missing asset trustlines in Freighter, refresh for a new quote, then swap again.',
+      ctaLabel: 'Refresh quote',
+    };
+  }
   if (status === 'pending_reconcile') {
     return API_ERROR_COPY.dependency_unavailable;
   }

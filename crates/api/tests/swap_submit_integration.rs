@@ -485,6 +485,41 @@ async fn submit_swap_broadcast_failure_marks_failed() {
 }
 
 #[tokio::test]
+async fn submit_submitting_past_timebounds_absent_horizon_marks_failed() {
+    let store = Arc::new(InMemorySwapQuoteStore::default());
+    let (quote, signed, _, _) = build_prepared_pair("q-tb", false);
+    store.insert_prepared(&quote).await.unwrap();
+
+    let broadcaster =
+        Arc::new(MockTransactionBroadcaster::fail(BroadcastError::Timeout).with_lookup(None));
+    let router = make_submit_router(store.clone(), broadcaster).await;
+    let (status, _) = post_submit(
+        &router,
+        json!({ "quote_id": "q-tb", "signed_xdr": signed.clone() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // Close the Stellar timebounds window while Horizon still has no tx.
+    store.set_timebounds_max_for_tests("q-tb", Some(Utc::now().timestamp() - 10));
+
+    let broadcaster2 =
+        Arc::new(MockTransactionBroadcaster::succeed("").with_lookup(None));
+    let router2 = make_submit_router(store.clone(), broadcaster2.clone()).await;
+    let (status2, json2) = post_submit(
+        &router2,
+        json!({ "quote_id": "q-tb", "signed_xdr": signed }),
+    )
+    .await;
+    assert_eq!(status2, StatusCode::CONFLICT, "{json2}");
+    assert_eq!(json2["data"]["details"]["status"], "permanently_failed");
+    assert_eq!(broadcaster2.call_count(), 0);
+
+    let after = store.get("q-tb").await.unwrap().unwrap();
+    assert_eq!(after.submission_status, SubmissionStatus::Failed);
+}
+
+#[tokio::test]
 async fn submit_timeout_keeps_submitting_then_allows_reconcile_retry() {
     let store = Arc::new(InMemorySwapQuoteStore::default());
     let (quote, signed, _, _) = build_prepared_pair("q-retry", false);

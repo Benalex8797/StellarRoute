@@ -398,9 +398,22 @@ async fn submit_swap_inner(
         });
     }
 
-    // Submitting remains reconcilable past prepare TTL — never TTL-fail it.
+    // Submitting remains reconcilable past prepare TTL — never TTL-fail it
+    // unless the on-chain timebounds window has already closed.
     if quote.submission_status == SubmissionStatus::Submitting {
-        let Some(stored_hash) = quote.tx_hash.clone() else {
+        let Some(stored_hash) = quote.tx_hash.clone().filter(|h| !h.is_empty()) else {
+            if quote_timebounds_expired(&quote) {
+                let _ = state
+                    .swap_quote_store
+                    .mark_failed(body.quote_id.trim())
+                    .await;
+                return Err(ApiError::Conflict {
+                    message: "Quote submission window expired; request a fresh prepare".into(),
+                    quote_id: body.quote_id.clone(),
+                    tx_hash: String::new(),
+                    status: "permanently_failed".into(),
+                });
+            }
             return Err(ApiError::Conflict {
                 message: "Quote is submitting without a bound transaction hash; request operator reconciliation or a fresh prepare".into(),
                 quote_id: body.quote_id.clone(),
@@ -471,13 +484,39 @@ async fn submit_swap_inner(
                 status: "already_submitted".to_string(),
             });
         }
-        ClaimSubmitOutcome::InProgress => {
-            return Err(ApiError::Conflict {
-                message: "Quote submission is already in progress".to_string(),
-                quote_id: body.quote_id.clone(),
-                tx_hash: String::new(),
-                status: "in_progress".to_string(),
-            });
+        ClaimSubmitOutcome::InProgress(current) => {
+            // Race: another request already claimed. Reconcile/rebroadcast with
+            // the bound hash instead of hard-409ing the client into a retry loop.
+            let Some(stored_hash) = current.tx_hash.clone().filter(|h| !h.is_empty()) else {
+                if quote_timebounds_expired(&current) {
+                    let _ = state
+                        .swap_quote_store
+                        .mark_failed(body.quote_id.trim())
+                        .await;
+                    return Err(ApiError::Conflict {
+                        message: "Quote submission window expired; request a fresh prepare".into(),
+                        quote_id: body.quote_id.clone(),
+                        tx_hash: String::new(),
+                        status: "permanently_failed".into(),
+                    });
+                }
+                return Err(ApiError::Conflict {
+                    message: "Quote is submitting without a bound transaction hash; request operator reconciliation or a fresh prepare".into(),
+                    quote_id: body.quote_id.clone(),
+                    tx_hash: String::new(),
+                    status: "submitting_without_hash".into(),
+                });
+            };
+            return reconcile_or_rebroadcast(
+                state,
+                body,
+                &current,
+                &stored_hash,
+                request_id,
+                trace_id,
+                started,
+            )
+            .await;
         }
         ClaimSubmitOutcome::PermanentlyFailed => {
             return Err(ApiError::Conflict {
@@ -597,6 +636,32 @@ async fn reconcile_or_rebroadcast(
             Ok((resp, status, quote.sender_account_hash.clone()))
         }
         Ok(None) => {
+            // Horizon has no tx. If timebounds already closed, rebroadcast can
+            // never succeed — release the sender lock instead of looping 409s.
+            if quote_timebounds_expired(quote) {
+                let _ = state
+                    .swap_quote_store
+                    .mark_failed(body.quote_id.trim())
+                    .await;
+                state.swap_submit_audit_writer.emit_swap_submit(
+                    &body.quote_id,
+                    Some(stored_hash),
+                    &quote.sender_account_hash,
+                    request_id,
+                    trace_id,
+                    started.elapsed().as_millis() as u64,
+                    SwapSubmitOutcome::Failed,
+                    "timebounds_expired",
+                    serde_json::json!({ "event": "reconciliation_timebounds_expired" }),
+                );
+                return Err(ApiError::Conflict {
+                    message: "Transaction timebounds expired before confirmation; request a fresh prepare"
+                        .into(),
+                    quote_id: body.quote_id.clone(),
+                    tx_hash: stored_hash.to_string(),
+                    status: "permanently_failed".into(),
+                });
+            }
             state.swap_submit_audit_writer.emit_swap_submit(
                 &body.quote_id,
                 Some(stored_hash),
@@ -864,6 +929,14 @@ fn map_envelope_error(err: EnvelopeValidationError) -> ApiError {
     }
 }
 
+/// True when the prepared envelope's max time is in the past (unix seconds).
+fn quote_timebounds_expired(quote: &PreparedSwapQuote) -> bool {
+    match quote.timebounds_max {
+        Some(max) if max > 0 => Utc::now().timestamp() > max,
+        _ => false,
+    }
+}
+
 fn submit_error_class(err: &ApiError) -> &'static str {
     match err {
         ApiError::QuoteExpired { .. } => "quote_expired",
@@ -891,9 +964,41 @@ fn validate_stellar_account(sender: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[test]
     fn validate_stellar_account_rejects_short_keys() {
         assert!(validate_stellar_account("GSHORT").is_err());
+    }
+
+    #[test]
+    fn quote_timebounds_expired_requires_positive_max() {
+        let mut quote = PreparedSwapQuote {
+            quote_id: "q".into(),
+            sender_account: "G".into(),
+            sender_account_hash: "h".into(),
+            unsigned_xdr_hash: "u".into(),
+            expires_at: Utc::now() + Duration::minutes(1),
+            estimated_output: "1".into(),
+            min_output: "1".into(),
+            amount_in: "1".into(),
+            execution_mode: "classic_path_payment".into(),
+            network_passphrase: "p".into(),
+            route_digest: "r".into(),
+            price_digest: "pd".into(),
+            source_sequence: None,
+            timebounds_max: None,
+            base_fee: None,
+            valid_until_ledger: None,
+            submission_status: SubmissionStatus::Submitting,
+            tx_hash: Some("abc".into()),
+        };
+        assert!(!quote_timebounds_expired(&quote));
+        quote.timebounds_max = Some(0);
+        assert!(!quote_timebounds_expired(&quote));
+        quote.timebounds_max = Some(Utc::now().timestamp() - 5);
+        assert!(quote_timebounds_expired(&quote));
+        quote.timebounds_max = Some(Utc::now().timestamp() + 60);
+        assert!(!quote_timebounds_expired(&quote));
     }
 }
