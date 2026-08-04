@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { ChevronDown } from 'lucide-react';
 import { TokenSearchModal, AssetOption } from '@/components/shared/TokenSearchModal';
 import { usePairs } from '@/hooks/useApi';
+import { counterpartsFor } from '@/lib/trading-pairs';
 import { cn } from '@/lib/utils';
 
 interface TokenSelectorProps {
@@ -14,6 +15,11 @@ interface TokenSelectorProps {
   disabled?: boolean;
   /** Optional override for loading state (useful for stories/tests) */
   isLoading?: boolean;
+  /**
+   * When set, only show assets that share an indexed market with this asset
+   * (used for the receive-side selector so users can't pick dead pairs).
+   */
+  compatibleWith?: string;
 }
 
 export function TokenSelector({
@@ -22,6 +28,7 @@ export function TokenSelector({
   className,
   disabled = false,
   isLoading: propLoading,
+  compatibleWith,
 }: TokenSelectorProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const { data: pairs, loading: hookLoading } = usePairs();
@@ -34,31 +41,32 @@ export function TokenSelector({
 
     const assetMap = new Map<string, AssetOption>();
 
+    const allow = compatibleWith
+      ? new Set(counterpartsFor(compatibleWith, pairs))
+      : null;
+
     pairs.forEach((pair) => {
-      if (!assetMap.has(pair.base_asset)) {
-        assetMap.set(pair.base_asset, {
-          code: pair.base === 'native' ? 'XLM' : pair.base,
-          asset: pair.base_asset,
-          issuer: pair.base_asset.includes(':')
-            ? pair.base_asset.split(':')[1]
+      const maybeAdd = (canonical: string, code: string) => {
+        if (allow && !allow.has(canonical)) return;
+        if (assetMap.has(canonical)) return;
+        assetMap.set(canonical, {
+          code: code === 'native' ? 'XLM' : code,
+          asset: canonical,
+          issuer: canonical.includes(':')
+            ? canonical.split(':')[1]
             : undefined,
-          displayName: pair.base === 'native' ? 'Stellar Lumens' : undefined,
+          displayName: code === 'native' ? 'Stellar Lumens' : undefined,
         });
-      }
-      if (!assetMap.has(pair.counter_asset)) {
-        assetMap.set(pair.counter_asset, {
-          code: pair.counter === 'native' ? 'XLM' : pair.counter,
-          asset: pair.counter_asset,
-          issuer: pair.counter_asset.includes(':')
-            ? pair.counter_asset.split(':')[1]
-            : undefined,
-          displayName: pair.counter === 'native' ? 'Stellar Lumens' : undefined,
-        });
-      }
+      };
+
+      maybeAdd(pair.base_asset, pair.base);
+      maybeAdd(pair.counter_asset, pair.counter);
     });
 
-    return Array.from(assetMap.values());
-  }, [pairs]);
+    return Array.from(assetMap.values()).sort((a, b) =>
+      a.code.localeCompare(b.code)
+    );
+  }, [pairs, compatibleWith]);
 
   const selectedAssetOption = useMemo(() => {
     return assets.find((a) => a.asset === selectedAsset);

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { ArrowUpDown, RefreshCw, Stethoscope } from 'lucide-react';
 import { AmountInput } from './AmountInput';
 import { TokenSelector } from './TokenSelector';
+import { SwapPresetTemplates } from './SwapPresetTemplates';
 import { PriceInfoPanel } from './PriceInfoPanel';
 import type { AlternativeRoute } from './RouteDisplay';
 import RouteDisplay from './RoutePanelAsync';
@@ -35,6 +36,11 @@ import {
   SESSION_RECOVERY_THRESHOLD_MS,
   type TradeFormSnapshot,
 } from '@/hooks/useTradeFormStorage';
+import {
+  counterpartsFor,
+  pairExists,
+  pickPreferredDemoPair,
+} from '@/lib/trading-pairs';
 import { useBatchQuote, usePairs, useRoutes } from '@/hooks/useApi';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
 import type { QuoteRequestItem } from '@/lib/api/client';
@@ -137,54 +143,51 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
 
   const { data: indexedPairs } = usePairs();
 
-  // Prefer an indexed native (XLM) pair; migrate off the old BTC/EXT default.
-  // Never force BTC/EXT just because it is the only indexed staging pair.
+  // Prefer an indexed demo market that currently quotes (EUR/USDy, BTC/EXT, …).
+  // Avoid legacy Circle-USDC defaults and unpaired token combinations.
   useEffect(() => {
     if (!indexedPairs?.length) return;
-    const assets = new Set(
-      indexedPairs.flatMap((pair) => [pair.base_asset, pair.counter_asset])
-    );
+
     const isLegacyDefaultPair =
-      fromToken === LEGACY_DEFAULT_FROM_TOKEN &&
+      (fromToken === LEGACY_DEFAULT_FROM_TOKEN &&
+        toToken === LEGACY_DEFAULT_TO_TOKEN) ||
       toToken === LEGACY_DEFAULT_TO_TOKEN;
-    const isLegacyIndexedPair = (pair: {
-      base_asset: string;
-      counter_asset: string;
-    }) =>
-      pair.base_asset === LEGACY_DEFAULT_FROM_TOKEN &&
-      pair.counter_asset === LEGACY_DEFAULT_TO_TOKEN;
 
-    if (assets.has(fromToken) && assets.has(toToken) && !isLegacyDefaultPair) {
+    if (pairExists(fromToken, toToken, indexedPairs) && !isLegacyDefaultPair) {
       return;
     }
 
-    const nativePair = indexedPairs.find(
-      (pair) =>
-        (pair.base_asset === 'native' || pair.counter_asset === 'native') &&
-        !isLegacyIndexedPair(pair)
-    );
-    if (nativePair) {
-      if (nativePair.base_asset === 'native') {
-        setTokenPair(nativePair.base_asset, nativePair.counter_asset);
-      } else {
-        setTokenPair('native', nativePair.base_asset);
-      }
-      return;
-    }
-
-    if (assets.has(DEFAULT_FROM_TOKEN) && assets.has(DEFAULT_TO_TOKEN)) {
+    if (pairExists(DEFAULT_FROM_TOKEN, DEFAULT_TO_TOKEN, indexedPairs)) {
       setTokenPair(DEFAULT_FROM_TOKEN, DEFAULT_TO_TOKEN);
       return;
     }
 
-    const firstNonLegacy = indexedPairs.find((pair) => !isLegacyIndexedPair(pair));
-    if (firstNonLegacy) {
-      setTokenPair(firstNonLegacy.base_asset, firstNonLegacy.counter_asset);
+    const preferred = pickPreferredDemoPair(indexedPairs);
+    if (preferred) {
+      setTokenPair(preferred.from, preferred.to);
       return;
     }
 
     setTokenPair(DEFAULT_FROM_TOKEN, DEFAULT_TO_TOKEN);
   }, [indexedPairs, fromToken, toToken, setTokenPair]);
+
+  // When pay asset changes, keep receive asset on a real indexed market.
+  const handleFromTokenSelect = useCallback(
+    (asset: string) => {
+      const counterparts = counterpartsFor(asset, indexedPairs);
+      if (counterparts.includes(toToken)) {
+        setFromToken(asset);
+        return;
+      }
+      const nextTo = counterparts[0];
+      if (nextTo) {
+        setTokenPair(asset, nextTo);
+        return;
+      }
+      setFromToken(asset);
+    },
+    [indexedPairs, setFromToken, setTokenPair, toToken]
+  );
 
   const [selectedRoute, setSelectedRoute] = useState<AlternativeRoute | null>(
     null
@@ -1223,6 +1226,16 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
             </div>
           </div>
 
+          {indexedPairs && indexedPairs.length > 0 && (
+            <SwapPresetTemplates
+              availablePairs={indexedPairs}
+              selectedBase={fromToken}
+              selectedQuote={toToken}
+              onSelect={(base, quote) => setTokenPair(base, quote)}
+              className={cn(isCompact ? 'mb-2' : 'mb-3')}
+            />
+          )}
+
           {/* Pay Section */}
           <div className={cn('space-y-2 group', isCompact && 'space-y-1')}>
             <div
@@ -1254,7 +1267,7 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
                 />
                 <TokenSelector
                   selectedAsset={fromToken}
-                  onSelect={setFromToken}
+                  onSelect={handleFromTokenSelect}
                   className="mt-6"
                 />
               </div>
@@ -1298,6 +1311,7 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
                 <TokenSelector
                   selectedAsset={toToken}
                   onSelect={setToToken}
+                  compatibleWith={fromToken}
                   className="mt-6"
                 />
               </div>
