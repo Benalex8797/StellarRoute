@@ -21,6 +21,10 @@ Copy `deploy/env.prod.example` → repo-root `.env.prod` and fill:
 - [ ] `PUBLIC_GET_ROUTES` — keep the defaults from `env.prod.example` for browser GETs
 - [ ] `ADMIN_AUTH_TOKEN` — strong random; required when `STELLARROUTE_ENV=production`
 - [ ] `ENABLE_ADMIN_ROUTES=false` until kill-switch security review is done
+- [ ] `CCTP_ENABLED=false` until operator is ready to open bridge settlement (default-off / fail-closed)
+- [ ] When enabling CCTP: `CCTP_ACCESS_TOKEN_HMAC_KEY` (≥32 random bytes; generate per `docs/development/environment-variables.md`)
+- [ ] When enabling CCTP: `CCTP_SEPOLIA_RPC_URL` (explicit Sepolia JSON-RPC — no `rpc.sepolia.org` fallback)
+- [ ] Optional: `CCTP_STELLAR_RPC_URL` (else API uses `SOROBAN_RPC_URL`)
 - [ ] Cloudflare Tunnel named hostname (record as `STAGING_API_BASE_URL` / Vercel `NEXT_PUBLIC_API_URL`)
 - [ ] `OTEL_EXPORTER_OTLP_ENDPOINT` — optional
 

@@ -75,6 +75,12 @@ services:
       PUBLIC_GET_ROUTES: ${PUBLIC_GET_ROUTES:-/api/v1/quote,/api/v1/pairs,/api/v1/markets,/api/v1/orderbook,/api/v1/routes,/api/v1/price-history,/health}
       ADMIN_AUTH_TOKEN: ${ADMIN_AUTH_TOKEN:?required}
       ENABLE_ADMIN_ROUTES: ${ENABLE_ADMIN_ROUTES:-false}
+      CCTP_ENABLED: ${CCTP_ENABLED:-false}
+      CCTP_ACCESS_TOKEN_HMAC_KEY: ${CCTP_ACCESS_TOKEN_HMAC_KEY:-}
+      CCTP_SEPOLIA_RPC_URL: ${CCTP_SEPOLIA_RPC_URL:-}
+      SEPOLIA_RPC_URL: ${SEPOLIA_RPC_URL:-}
+      CCTP_STELLAR_RPC_URL: ${CCTP_STELLAR_RPC_URL:-}
+      CCTP_IRIS_BASE_URL: ${CCTP_IRIS_BASE_URL:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:

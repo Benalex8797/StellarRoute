@@ -93,7 +93,7 @@ PostgreSQL connection strings and pool tuning. Used by the API, indexer, replay 
 
 ## Circle CCTP v2 bridge (API)
 
-Default-off public bridge settlement. See [`docs/api/cctp-v2-contract.md`](../api/cctp-v2-contract.md).
+Default-off public bridge settlement. See [`docs/api/cctp-v2-contract.md`](../api/cctp-v2-contract.md). EC2 / Oracle staging copies: set these in repo-root `.env.prod` (see [`deploy/env.prod.example`](../../deploy/env.prod.example)).
 
 | Variable | Type | Default | Required | Service(s) | Description |
 |----------|------|---------|----------|------------|-------------|

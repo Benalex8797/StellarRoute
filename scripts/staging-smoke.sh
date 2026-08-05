@@ -63,6 +63,32 @@ check_endpoint "health_deps" "${ORIGIN}/health/deps" "${DEPS_BUDGET_MS}"
 QUOTE_URL="${ORIGIN}/api/v1/quote/${QUOTE_BASE}/${QUOTE_ASSET}?amount=${QUOTE_AMOUNT}"
 check_endpoint "quote" "${QUOTE_URL}" "${QUOTE_BUDGET_MS}"
 
+API_V2_BUDGET_MS="${API_V2_BUDGET_MS:-3000}"
+check_endpoint "api_v2" "${ORIGIN}/api/v2" "${API_V2_BUDGET_MS}"
+
+python3 - "${tmpdir}/api_v2.body" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    data = json.load(f)
+payload = data.get("data", data)
+if not isinstance(payload, dict):
+    print("FAIL api_v2: missing data object", file=sys.stderr)
+    sys.exit(1)
+if "bridge_settlement_executable" not in payload:
+    print("FAIL api_v2: missing bridge_settlement_executable", file=sys.stderr)
+    sys.exit(1)
+corridors = payload.get("supported_corridors")
+if not isinstance(corridors, list):
+    print("FAIL api_v2: supported_corridors must be a list", file=sys.stderr)
+    sys.exit(1)
+print(
+    "OK   api_v2: shape valid "
+    f"(bridge_settlement_executable={payload['bridge_settlement_executable']}, "
+    f"corridors={len(corridors)})"
+)
+PY
+
 python3 - "${tmpdir}/quote.body" <<'PY'
 import json, sys
 path = sys.argv[1]
