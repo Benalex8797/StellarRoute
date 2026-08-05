@@ -96,7 +96,14 @@ else
 fi
 
 echo "Recreating API with CCTP enabled..."
-docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --force-recreate --no-deps api
+COMPOSE=(docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod)
+# Clear stale name conflicts from overlapping deploy/enable SSM runs.
+"${COMPOSE[@]}" stop api >/dev/null 2>&1 || true
+docker rm -f stellarroute-api-1 >/dev/null 2>&1 || true
+# Compose sometimes leaves a hashed temporary name after a failed recreate.
+docker ps -a --format '{{.Names}}' | grep -E '_?stellarroute-api-1$' \
+  | xargs -r docker rm -f >/dev/null 2>&1 || true
+"${COMPOSE[@]}" up -d --force-recreate --no-deps api
 
 API_PORT="${API_HOST_PORT:-8080}"
 echo "Waiting for API health..."
