@@ -14,6 +14,7 @@ interface DestinationAddressFieldProps {
   onChange: (value: string) => void;
   validation: RecipientValidationResult;
   disabled?: boolean;
+  setupHint?: string | null;
 }
 
 export function DestinationAddressField({
@@ -24,6 +25,7 @@ export function DestinationAddressField({
   onChange,
   validation,
   disabled = false,
+  setupHint,
 }: DestinationAddressFieldProps) {
   return (
     <div className="space-y-3 rounded-2xl border border-border/40 bg-muted/20 p-4">
@@ -44,6 +46,15 @@ export function DestinationAddressField({
             Override the default wallet address on {chain.label}. Required format
             must match the destination chain.
           </p>
+          {!enabled && setupHint && (
+            <p
+              className="text-xs text-muted-foreground"
+              role="status"
+              data-testid="destination-recipient-setup-hint"
+            >
+              {setupHint}
+            </p>
+          )}
         </div>
       </div>
 
