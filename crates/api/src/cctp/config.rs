@@ -181,18 +181,20 @@ impl CctpConfig {
         let mut cfg = Self::default_testnet();
         cfg.enabled = parse_bool_env("CCTP_ENABLED");
 
-        if let Ok(v) = std::env::var("CCTP_IRIS_BASE_URL") {
+        // Compose often injects `VAR=` for optional keys. Treat empty as unset so
+        // defaults (Iris sandbox, etc.) are not wiped to invalid URLs.
+        if let Some(v) = env_nonempty("CCTP_IRIS_BASE_URL") {
             cfg.iris_base_url = v;
         }
         cfg.stellar_rpc_url = resolve_stellar_rpc_primary();
         cfg.sepolia_rpc_url = resolve_sepolia_rpc_primary();
-        if let Ok(v) = std::env::var("STELLAR_HORIZON_URL") {
+        if let Some(v) = env_nonempty("STELLAR_HORIZON_URL") {
             cfg.stellar_horizon_url = v;
         }
-        if let Ok(v) = std::env::var("STELLAR_NETWORK_PASSPHRASE") {
+        if let Some(v) = env_nonempty("STELLAR_NETWORK_PASSPHRASE") {
             cfg.stellar_network_passphrase = v;
         }
-        if let Ok(v) = std::env::var("CCTP_AMOUNT_CAP") {
+        if let Some(v) = env_nonempty("CCTP_AMOUNT_CAP") {
             cfg.amount_cap = v;
         }
         if let Ok(v) = std::env::var("CCTP_QUOTE_TTL_SECS") {
@@ -332,6 +334,13 @@ impl CctpConfig {
         }
         Ok(())
     }
+}
+
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn validate_iris_url(url: &str) -> Result<(), CctpConfigError> {
@@ -557,6 +566,37 @@ mod tests {
         let mut cfg = CctpConfig::default_testnet();
         cfg.sepolia_rpc_url.clear();
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn empty_optional_url_envs_keep_defaults() {
+        let previous_iris = std::env::var("CCTP_IRIS_BASE_URL").ok();
+        let previous_horizon = std::env::var("STELLAR_HORIZON_URL").ok();
+        let previous_enabled = std::env::var("CCTP_ENABLED").ok();
+        let previous_sepolia = std::env::var("CCTP_SEPOLIA_RPC_URL").ok();
+        std::env::set_var("CCTP_IRIS_BASE_URL", "");
+        std::env::set_var("STELLAR_HORIZON_URL", "   ");
+        std::env::set_var("CCTP_ENABLED", "true");
+        std::env::set_var("CCTP_SEPOLIA_RPC_URL", "https://sepolia.drpc.org");
+        let cfg = CctpConfig::from_env().expect("empty optional URLs must not invalidate config");
+        assert_eq!(cfg.iris_base_url, DEFAULT_IRIS_SANDBOX_URL);
+        assert!(!cfg.stellar_horizon_url.trim().is_empty());
+        match previous_iris {
+            Some(v) => std::env::set_var("CCTP_IRIS_BASE_URL", v),
+            None => std::env::remove_var("CCTP_IRIS_BASE_URL"),
+        }
+        match previous_horizon {
+            Some(v) => std::env::set_var("STELLAR_HORIZON_URL", v),
+            None => std::env::remove_var("STELLAR_HORIZON_URL"),
+        }
+        match previous_enabled {
+            Some(v) => std::env::set_var("CCTP_ENABLED", v),
+            None => std::env::remove_var("CCTP_ENABLED"),
+        }
+        match previous_sepolia {
+            Some(v) => std::env::set_var("CCTP_SEPOLIA_RPC_URL", v),
+            None => std::env::remove_var("CCTP_SEPOLIA_RPC_URL"),
+        }
     }
 
     #[test]
