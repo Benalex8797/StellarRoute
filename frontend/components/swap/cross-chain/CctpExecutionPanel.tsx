@@ -28,6 +28,7 @@ interface CctpExecutionPanelProps {
     recovery: CctpSessionRecoveryMeta;
   } | null;
   reattestCooldownUntil?: number | null;
+  ctaHint?: string | null;
   className?: string;
 }
 
@@ -46,6 +47,7 @@ export function CctpExecutionPanel({
   walletRoleMismatch,
   sessionPublic,
   reattestCooldownUntil,
+  ctaHint,
   className,
 }: CctpExecutionPanelProps) {
   const [cooldownSec, setCooldownSec] = useState(0);
@@ -181,16 +183,26 @@ export function CctpExecutionPanel({
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          className="min-h-11"
-          disabled={primaryDisabled}
-          onClick={onPrimary}
-          data-testid="cross-chain-review-cta"
-        >
-          {primaryLabel}
-        </Button>
+      <div className="space-y-2">
+        {ctaHint && primaryDisabled && (
+          <p
+            className="text-xs text-muted-foreground"
+            role="status"
+            data-testid="cctp-cta-hint"
+          >
+            {ctaHint}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            className="min-h-11"
+            disabled={primaryDisabled}
+            onClick={onPrimary}
+            data-testid="cross-chain-review-cta"
+          >
+            {primaryLabel}
+          </Button>
         {onReset &&
           (stage === 'failed' ||
             stage === 'completed' ||
@@ -208,6 +220,7 @@ export function CctpExecutionPanel({
               {resetLabel}
             </Button>
           )}
+        </div>
       </div>
     </section>
   );

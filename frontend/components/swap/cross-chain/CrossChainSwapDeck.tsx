@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { NetworkMismatchBanner } from '@/components/shared/NetworkMismatchBanner';
+import { Button } from '@/components/ui/button';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
 import { useCrossChainSwapState } from '@/hooks/useCrossChainSwapState';
 import { useApiV2Readiness } from '@/hooks/useApiV2Readiness';
@@ -23,6 +24,11 @@ import { PairedChainSelectors } from './PairedChainSelectors';
 import { RouteDisclosurePanel } from './RouteDisclosurePanel';
 import { UnsupportedCorridorState } from './UnsupportedCorridorState';
 import type { CrossChainDeckStoryPresentation } from './crossChainStoryPresentation';
+import {
+  isCctpPrimaryActionDisabled,
+  resolveCctpCtaHint,
+  resolveDestinationRecipientSetupHint,
+} from './cctpCtaHint';
 
 const SwapCard = dynamic(
   () => import('@/components/swap/SwapCard').then((m) => m.SwapCard),
@@ -154,6 +160,53 @@ export function CrossChainSwapDeck({
     setConfirmAbandon(false);
   };
 
+  const bridgeReady = readiness.cctpGloballyReady;
+  const cctpBlockInput = useMemo(
+    () => ({
+      direction: walletRoles.direction,
+      sourceAmount: state.sourceAmount,
+      destRecipientAddress: walletRoles.destRecipientAddress,
+      useRecipientOverride: state.useRecipientOverride,
+      recipientOverride: state.recipientOverride,
+      recipientValidation: state.recipientValidation,
+      bridgeReady,
+      readinessLoading: readiness.loading,
+      sagaPrimaryDisabled: saga.primaryAction.disabled,
+    }),
+    [
+      bridgeReady,
+      readiness.loading,
+      saga.primaryAction.disabled,
+      state.recipientOverride,
+      state.recipientValidation,
+      state.sourceAmount,
+      state.useRecipientOverride,
+      walletRoles.destRecipientAddress,
+      walletRoles.direction,
+    ],
+  );
+  const ctaHint = useMemo(
+    () => resolveCctpCtaHint(cctpBlockInput),
+    [cctpBlockInput],
+  );
+  const cctpPrimaryDisabled = useMemo(
+    () => isCctpPrimaryActionDisabled(cctpBlockInput),
+    [cctpBlockInput],
+  );
+  const destinationRecipientSetupHint = useMemo(
+    () =>
+      resolveDestinationRecipientSetupHint(
+        walletRoles.direction,
+        walletRoles.destRecipientAddress,
+        state.useRecipientOverride,
+      ),
+    [
+      state.useRecipientOverride,
+      walletRoles.destRecipientAddress,
+      walletRoles.direction,
+    ],
+  );
+
   return (
     <div
       className="cross-chain-deck w-full mx-auto space-y-5"
@@ -202,6 +255,7 @@ export function CrossChainSwapDeck({
         destWalletBinding={walletRoles.destChipBinding}
         mintSubmitterBinding={walletRoles.mintSubmitterChipBinding}
         inputsLocked={saga.inputsLocked}
+        destWalletHint={destinationRecipientSetupHint}
       />
 
       <div
@@ -239,11 +293,12 @@ export function CrossChainSwapDeck({
                     onChange={state.setRecipientOverride}
                     validation={state.recipientValidation}
                     disabled={saga.inputsLocked}
+                    setupHint={destinationRecipientSetupHint}
                   />
                   {state.executable && walletRoles.direction && (
                     <label className="block space-y-1">
                       <span className="text-xs font-medium text-muted-foreground">
-                        USDC amount (source)
+                        USDC amount (CCTP)
                       </span>
                       <input
                         type="text"
@@ -255,6 +310,22 @@ export function CrossChainSwapDeck({
                         data-testid="cctp-source-amount"
                         disabled={saga.inputsLocked}
                       />
+                      <p
+                        className="text-xs text-muted-foreground"
+                        data-testid="cctp-usdc-only-note"
+                      >
+                        CCTP bridges native USDC only. To move XLM or USDy, swap
+                        to USDC on Stellar first, then bridge.{' '}
+                        <Button
+                          type="button"
+                          variant="link"
+                          className="h-auto p-0 text-xs font-normal"
+                          onClick={() => state.selectCorridor('stellar-native')}
+                          data-testid="swap-to-usdc-on-stellar-link"
+                        >
+                          Swap to USDC on Stellar
+                        </Button>
+                      </p>
                     </label>
                   )}
                   {state.executable && walletRoles.direction && (
@@ -264,12 +335,8 @@ export function CrossChainSwapDeck({
                       transferStatus={saga.transferStatus}
                       error={saga.error}
                       primaryLabel={saga.primaryAction.label}
-                      primaryDisabled={
-                        saga.primaryAction.disabled ||
-                        !state.sourceAmount ||
-                        !walletRoles.destRecipientAddress ||
-                        readiness.loading
-                      }
+                      primaryDisabled={cctpPrimaryDisabled}
+                      ctaHint={ctaHint}
                       onPrimary={() => void saga.runPrimaryAction()}
                       onReset={handleAbandon}
                       resetLabel={

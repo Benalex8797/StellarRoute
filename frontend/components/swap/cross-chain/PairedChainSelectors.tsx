@@ -18,6 +18,7 @@ interface PairedChainSelectorsProps {
   destWalletBinding?: WalletChipBinding | null;
   mintSubmitterBinding?: WalletChipBinding | null;
   inputsLocked?: boolean;
+  destWalletHint?: string | null;
 }
 
 export function PairedChainSelectors({
@@ -31,6 +32,7 @@ export function PairedChainSelectors({
   destWalletBinding,
   mintSubmitterBinding,
   inputsLocked = false,
+  destWalletHint,
 }: PairedChainSelectorsProps) {
   return (
     <section
@@ -67,6 +69,7 @@ export function PairedChainSelectors({
           walletStoryState={destWalletState}
           walletBinding={destWalletBinding}
           inputsLocked={inputsLocked}
+          walletHint={destWalletHint}
         />
       </div>
       {mintSubmitterBinding && (
@@ -95,6 +98,7 @@ function ChainLegColumn({
   walletStoryState,
   walletBinding,
   inputsLocked,
+  walletHint,
 }: {
   role: 'source' | 'destination';
   chainId: ChainDisplayId;
@@ -102,6 +106,7 @@ function ChainLegColumn({
   walletStoryState?: CrossChainWalletStoryState;
   walletBinding?: WalletChipBinding | null;
   inputsLocked?: boolean;
+  walletHint?: string | null;
 }) {
   const chain = CHAIN_DEFINITIONS[chainId];
   const legLabel = role === 'source' ? 'You send from' : 'You receive on';
@@ -120,6 +125,15 @@ function ChainLegColumn({
           storyState={walletStoryState}
         />
       </div>
+      {role === 'destination' && walletHint && (
+        <p
+          className="text-xs text-muted-foreground"
+          role="status"
+          data-testid="dest-wallet-setup-hint"
+        >
+          {walletHint}
+        </p>
+      )}
       <ChainSelector
         value={chainId}
         onChange={onChange}

@@ -5,6 +5,9 @@ import { CrossChainSwapDeck } from './CrossChainSwapDeck';
 import { SettingsProvider } from '@/components/providers/settings-provider';
 import { WalletProvider } from '@/components/providers/wallet-provider';
 import { EXECUTING_TIMELINE_STORY_FIXTURE } from './crossChainStoryPresentation';
+import { useApiV2Readiness } from '@/hooks/useApiV2Readiness';
+import { useCrossChainWalletRoles } from '@/hooks/useCrossChainWalletRoles';
+import type { UseCrossChainWalletRolesInput } from '@/hooks/useCrossChainWalletRoles';
 
 vi.mock('next/dynamic', () => ({
   default: () => {
@@ -33,16 +36,19 @@ vi.mock('@/hooks/useApiV2Readiness', () => ({
 }));
 
 vi.mock('@/hooks/useCrossChainWalletRoles', () => ({
-  useCrossChainWalletRoles: vi.fn(() => ({
-    direction: null,
-    destRecipientAddress: '',
-    isMuxedRecipient: false,
-    showMintSubmitterChip: false,
-    sourceChipBinding: null,
-    destChipBinding: null,
-    mintSubmitterChipBinding: null,
-    sagaWallets: { recipient: '' },
-  })),
+  useCrossChainWalletRoles: vi.fn(
+    (input: UseCrossChainWalletRolesInput) => ({
+      direction: null,
+      destRecipientAddress: '',
+      isMuxedRecipient: false,
+      showMintSubmitterChip: false,
+      sourceChipBinding: null,
+      destChipBinding: null,
+      mintSubmitterChipBinding: null,
+      sagaWallets: { recipient: '' },
+      _input: input,
+    }),
+  ),
 }));
 
 vi.mock('@/hooks/useCctpSaga', () => ({
@@ -77,6 +83,28 @@ vi.mock('@/hooks/useChainWallet', () => ({
 }));
 
 import type { CrossChainDeckStoryPresentation } from './crossChainStoryPresentation';
+
+const mockUseApiV2Readiness = vi.mocked(useApiV2Readiness);
+const mockUseCrossChainWalletRoles = vi.mocked(useCrossChainWalletRoles);
+
+function mockStellarToSepoliaWalletRoles(
+  input: UseCrossChainWalletRolesInput,
+) {
+  const destRecipientAddress =
+    input.useRecipientOverride && input.recipientOverride?.trim()
+      ? input.recipientOverride.trim()
+      : '';
+  return {
+    direction: 'stellar_to_evm' as const,
+    destRecipientAddress,
+    isMuxedRecipient: false,
+    showMintSubmitterChip: false,
+    sourceChipBinding: null,
+    destChipBinding: null,
+    mintSubmitterChipBinding: null,
+    sagaWallets: { recipient: destRecipientAddress },
+  };
+}
 
 function renderDeck(presentation?: CrossChainDeckStoryPresentation) {
   return render(
@@ -194,5 +222,65 @@ describe('CrossChainSwapDeck recipient validation', () => {
     expect(
       alerts.some((el) => /Stellar account/i.test(el.textContent ?? ''))
     ).toBe(true);
+  });
+});
+
+describe('CrossChainSwapDeck CCTP CTA hints', () => {
+  beforeEach(() => {
+    mockUseApiV2Readiness.mockReturnValue({
+      loaded: true,
+      corridors: [],
+      cctpGloballyReady: true,
+      providerKilled: false,
+      error: null,
+      fetchedAt: Date.now(),
+      loading: false,
+      refresh: vi.fn(),
+    });
+    mockUseCrossChainWalletRoles.mockImplementation(mockStellarToSepoliaWalletRoles);
+  });
+
+  it('shows missing-destination hint when ETH disconnected and override is off', () => {
+    renderDeck();
+
+    expect(screen.getByTestId('cross-chain-review-cta')).toBeDisabled();
+    expect(screen.getByTestId('cctp-cta-hint')).toHaveTextContent(
+      /Connect ETH Sepolia or enable Destination recipient/i,
+    );
+    expect(screen.getByTestId('dest-wallet-setup-hint')).toHaveTextContent(
+      /Connect ETH Sepolia/i,
+    );
+    expect(screen.getByTestId('destination-recipient-setup-hint')).toHaveTextContent(
+      /paste a 0x address/i,
+    );
+  });
+
+  it('clears destination hint and enables CTA when override provides valid 0x', async () => {
+    const user = userEvent.setup();
+    renderDeck();
+
+    await user.click(screen.getByLabelText('Use custom destination recipient'));
+    const recipientInput = screen.getByTestId('destination-recipient-input');
+    await user.type(
+      recipientInput,
+      '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
+    );
+    await user.type(screen.getByTestId('cctp-source-amount'), '10');
+
+    expect(screen.queryByTestId('cctp-cta-hint')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dest-wallet-setup-hint')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('destination-recipient-setup-hint'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('cross-chain-review-cta')).toBeEnabled();
+  });
+
+  it('surfaces USDC-only guidance with swap link on CCTP corridor', () => {
+    renderDeck();
+
+    expect(screen.getByTestId('cctp-usdc-only-note')).toHaveTextContent(
+      /CCTP bridges native USDC only/i,
+    );
+    expect(screen.getByTestId('swap-to-usdc-on-stellar-link')).toBeInTheDocument();
   });
 });
