@@ -25,11 +25,24 @@ ALTER TABLE cctp_quote_idempotency
     ADD CONSTRAINT cctp_quote_idempotency_key_len
     CHECK (char_length(idempotency_key) BETWEEN 1 AND 128);
 
-ALTER TABLE cctp_quote_idempotency
-    DROP CONSTRAINT IF EXISTS cctp_quote_idempotency_response_len;
-ALTER TABLE cctp_quote_idempotency
-    ADD CONSTRAINT cctp_quote_idempotency_response_len
-    CHECK (char_length(response_json) BETWEEN 1 AND 16384);
+-- response_json is removed by 20260802. Only constrain it when still present
+-- (CREATE TABLE IF NOT EXISTS skips on hosts that already hardened the table).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'cctp_quote_idempotency'
+          AND column_name = 'response_json'
+    ) THEN
+        ALTER TABLE cctp_quote_idempotency
+            DROP CONSTRAINT IF EXISTS cctp_quote_idempotency_response_len;
+        ALTER TABLE cctp_quote_idempotency
+            ADD CONSTRAINT cctp_quote_idempotency_response_len
+            CHECK (char_length(response_json) BETWEEN 1 AND 16384);
+    END IF;
+END $$;
 
 COMMENT ON COLUMN cctp_transfers.access_token_hash IS
     'SHA-256 hex of one-time transfer access token; required for mutations/status.';
