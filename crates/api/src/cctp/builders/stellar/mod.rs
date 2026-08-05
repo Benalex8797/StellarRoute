@@ -242,11 +242,12 @@ impl ProductionStellarCctpBuilder {
         transfer: &CctpTransfer,
     ) -> Result<String, BuilderError> {
         Self::ensure_testnet_config(config)?;
-        let sequence = self
+        let current = self
             .sequences
             .current_sequence(source)
             .await
             .map_err(|e| BuilderError::AccountLookup(e.to_string()))?;
+        let sequence = current.saturating_add(1);
         let latest = self.latest_ledger().await?;
         let quote_exp = transfer.quote_expires_at.timestamp();
         let params = InvokeTxParams {
@@ -641,6 +642,79 @@ mod tests {
     #[test]
     fn offline_encoder_is_not_production_ready() {
         assert!(!OfflineStellarXdrEncoder.is_ready());
+    }
+
+    #[tokio::test]
+    async fn prepared_burn_envelope_uses_next_tx_sequence() {
+        use crate::models::v2_cctp::PreparedWalletPayload;
+        use serde_json::json;
+        use stellar_xdr::curr::{
+            LedgerFootprint, Limits, SorobanResources, SorobanTransactionData,
+            SorobanTransactionDataExt, WriteXdr,
+        };
+        use wiremock::matchers::{body_string_contains, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let transaction_data = SorobanTransactionData {
+            ext: SorobanTransactionDataExt::V0,
+            resources: SorobanResources {
+                footprint: LedgerFootprint {
+                    read_only: Default::default(),
+                    read_write: Default::default(),
+                },
+                instructions: 0,
+                disk_read_bytes: 0,
+                write_bytes: 0,
+            },
+            resource_fee: 0,
+        }
+        .to_xdr_base64(Limits::none())
+        .expect("soroban tx data xdr");
+
+        let server = MockServer::start().await;
+        let mut cfg = CctpConfig::default_testnet();
+        cfg.stellar_rpc_url = server.uri();
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("getLatestLedger"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": { "sequence": 50_000 }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("simulateTransaction"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "transactionData": transaction_data,
+                    "minResourceFee": "100",
+                    "results": [{ "xdr": "AAAAAA==" }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let rpc = Arc::new(StellarRpcClient::new(&cfg).unwrap());
+        let builder = ProductionStellarCctpBuilder {
+            sequences: Arc::new(FixedAccountSequences::new(100)),
+            rpc,
+            allowance: Arc::new(FixedAllowanceChecker { sufficient: true }),
+            probe_ok: true,
+            base_fee: DEFAULT_BASE_FEE,
+        };
+        let bundle = builder
+            .prepare_burn(&sample_stellar_burn_transfer(None), &cfg)
+            .await
+            .expect("prepare_burn");
+        let PreparedWalletPayload::StellarXdr { xdr_envelope, .. } = bundle.primary else {
+            panic!("expected stellar xdr payload");
+        };
+        assert_eq!(envelope_sequence(&xdr_envelope).unwrap(), 101);
     }
 
     #[tokio::test]

@@ -289,10 +289,11 @@ pub async fn probe_strict_simulation_assembly_with_evidence(
         .await
         .map_err(|e| format!("latest_ledger: {e}"))?;
     let sequences = RpcAccountSequenceSource::new(config, Arc::new(rpc.clone()));
-    let sequence = sequences
+    let current = sequences
         .current_sequence(&source)
         .await
         .map_err(|e| format!("sequence: {e}"))?;
+    let sequence = current.saturating_add(1);
     let quote_exp = chrono::Utc::now().timestamp() + 600;
     let contract = config.contracts.stellar_usdc.clone();
     let params = InvokeTxParams {

@@ -117,7 +117,7 @@ impl StellarRpcClient {
         Ok(result.sequence)
     }
 
-    /// Current account sequence for the next transaction (Horizon-compatible value).
+    /// Current on-ledger account sequence (Horizon/RPC value; next tx uses +1).
     pub async fn get_account_sequence(&self, account_id: &str) -> Result<i64, VerifierError> {
         use stellar_xdr::curr::{
             AccountId, LedgerEntry, LedgerEntryData, LedgerKey, LedgerKeyAccount, Limits,
