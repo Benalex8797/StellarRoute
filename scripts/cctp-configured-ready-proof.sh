@@ -11,7 +11,7 @@ API_PORT="${CCTP_PROOF_API_PORT:-31888}"
 FRONTEND_ORIGIN="${CCTP_PROOF_FRONTEND_ORIGIN:-http://127.0.0.1:31999}"
 EVIDENCE_PATH="$ROOT/docs/readiness/evidence/cctp-configured-ready-proof.json"
 STELLAR_RPC="${CCTP_STELLAR_RPC_URL:-https://soroban-testnet.stellar.org}"
-SEPOLIA_RPC="${CCTP_SEPOLIA_RPC_URL:-${SEPOLIA_RPC_URL:-https://sepolia.drpc.org}}"
+SEPOLIA_RPC="${CCTP_SEPOLIA_RPC_URL:-${SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}}"
 # Pinned live Testnet burn fixture operation source (exists on-chain with USDC).
 STELLAR_G="GAN3SJKZ7GNHVYCFX7Y3XTDIPZJW6PHMRUL7UDAUHMQ7FIUPDKBFARBC"
 EVM_SENDER="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0"

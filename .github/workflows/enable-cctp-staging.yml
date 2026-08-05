@@ -6,7 +6,7 @@ on:
       sepolia_rpc_url:
         description: "Explicit Sepolia JSON-RPC URL (required)"
         required: true
-        default: "https://sepolia.drpc.org"
+        default: "https://ethereum-sepolia-rpc.publicnode.com"
       stellar_rpc_url:
         description: "Optional CCTP_STELLAR_RPC_URL override (else host SOROBAN_RPC_URL)"
         required: false

@@ -2,7 +2,7 @@
 # Enable CCTP on EC2 staging by upserting .env.prod and recreating the API container.
 #
 # Usage (on the staging host, from repo root):
-#   CCTP_SEPOLIA_RPC_URL=https://sepolia.drpc.org bash deploy/aws/scripts/enable-cctp-staging.sh
+#   CCTP_SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com bash deploy/aws/scripts/enable-cctp-staging.sh
 #
 # Defaults:
 #   CCTP_ENABLED=true
@@ -70,6 +70,21 @@ fi
 if [[ -n "${CCTP_IRIS_BASE_URL:-}" ]]; then
   upsert_env "CCTP_IRIS_BASE_URL" "${CCTP_IRIS_BASE_URL}"
 fi
+
+# Compose prefers the process environment over --env-file. Re-export after
+# upsert so a previously `source`d stale Sepolia URL cannot win.
+export CCTP_ENABLED=true
+export CCTP_ACCESS_TOKEN_HMAC_KEY="${HMAC_KEY}"
+export CCTP_SEPOLIA_RPC_URL="${SEPOLIA_RPC}"
+# Drop empty optional overrides that would wipe container defaults.
+if [[ -z "${CCTP_STELLAR_RPC_URL:-}" ]]; then
+  unset CCTP_STELLAR_RPC_URL || true
+fi
+if [[ -z "${CCTP_IRIS_BASE_URL:-}" ]]; then
+  unset CCTP_IRIS_BASE_URL || true
+fi
+# Prefer CCTP_SEPOLIA_RPC_URL; clear alias so it cannot shadow.
+unset SEPOLIA_RPC_URL || true
 
 echo "Host .env.prod CCTP flags (no secrets):"
 grep -E '^(CCTP_ENABLED|CCTP_SEPOLIA_RPC_URL|CCTP_STELLAR_RPC_URL|CCTP_IRIS_BASE_URL)=' "${ENV_FILE}" \
