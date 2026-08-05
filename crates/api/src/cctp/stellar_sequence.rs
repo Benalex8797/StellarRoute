@@ -66,9 +66,13 @@ impl RpcAccountSequenceSource {
 #[async_trait]
 impl AccountSequenceSource for RpcAccountSequenceSource {
     async fn current_sequence(&self, account_id: &str) -> Result<i64, TxBuildError> {
-        match self.rpc.get_account_sequence(account_id).await {
-            Ok(seq) => Ok(seq),
-            Err(_) => self.horizon.current_sequence(account_id).await,
+        let rpc_result = self.rpc.get_account_sequence(account_id).await;
+        let horizon_result = self.horizon.current_sequence(account_id).await;
+        match (rpc_result, horizon_result) {
+            (Ok(rpc), Ok(horizon)) => Ok(rpc.max(horizon)),
+            (Ok(rpc), Err(_)) => Ok(rpc),
+            (Err(_), Ok(horizon)) => Ok(horizon),
+            (Err(_), Err(e)) => Err(e),
         }
     }
 }

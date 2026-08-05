@@ -161,7 +161,7 @@ pub fn build_unsigned_invoke_tx(params: &InvokeTxParams) -> Result<Transaction, 
     })
 }
 
-/// Encode unsigned invoke envelope at explicit account sequence (Horizon/RPC value).
+/// Encode unsigned invoke envelope at explicit next-transaction sequence number.
 pub fn encode_invoke_at_sequence(
     source: &str,
     contract: &str,
