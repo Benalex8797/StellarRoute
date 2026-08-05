@@ -51,7 +51,7 @@ Protocol caps: `MAX_IRIS_PUBLIC_KEYS=256`, `MAX_ENABLED_ATTESTERS=256`, `MAX_SIG
 
 ## Public safety (current phase)
 
-- HTTP handlers remain **503**; capabilities **false**.
+- When `CCTP_ENABLED=false` (default), `/api/v2/bridge/cctp/*` handlers return **503** `cctp_not_enabled`.
 - `CircleAttestationVerifier` may become **ready** when Iris + EVM + Stellar RPC readers bootstrap, but **corridor is not live** until Stellar burn/approval/mint verifiers ship.
 - `is_public_executable()` stays **false** until all runtime components ready.
 

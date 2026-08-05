@@ -48,8 +48,36 @@ docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-fil
   < "${ROOT}/crates/indexer/migrations/0015_swap_prepared_quotes.sql"
 echo " - swap_prepared_quotes ready"
 
+CCTP_MIGRATIONS=(
+  "${ROOT}/crates/api/migrations/0015_cctp_transfers.sql"
+  "${ROOT}/crates/api/migrations/0016_cctp_transfers_hardening.sql"
+  "${ROOT}/crates/api/migrations/0017_cctp_mint_metadata.sql"
+  "${ROOT}/crates/api/migrations/0018_cctp_approval_tx_hash.sql"
+  "${ROOT}/crates/api/migrations/0019_cctp_approval_verified_at.sql"
+  "${ROOT}/crates/api/migrations/20260730_cctp_review_fixes.sql"
+  "${ROOT}/crates/api/migrations/20260731_cctp_prepare_lock_hardening.sql"
+  "${ROOT}/crates/api/migrations/20260801_cctp_http_gate.sql"
+  "${ROOT}/crates/api/migrations/20260802_cctp_http_hardening.sql"
+  "${ROOT}/crates/api/migrations/20260803_cctp_reattest_lease.sql"
+)
+echo "Applying CCTP DDL (idempotent)..."
+for mig in "${CCTP_MIGRATIONS[@]}"; do
+  docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod exec -T postgres \
+    psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+    < "${mig}"
+  echo " - $(basename "${mig}") ready"
+done
+
 echo "Local health checks:"
 # API may still be booting; do not fail the whole deploy on a racing curl here.
 # Post-deploy smoke waits for readiness separately.
-curl -sf http://127.0.0.1:${API_HOST_PORT:-8080}/health && echo " - /health OK" || echo " - /health not ready yet"
-curl -sf http://127.0.0.1:${API_HOST_PORT:-8080}/health/deps && echo " - /health/deps OK" || echo " - /health/deps not ready yet"
+API_PORT="${API_HOST_PORT:-8080}"
+curl -sf "http://127.0.0.1:${API_PORT}/health" && echo " - /health OK" || echo " - /health not ready yet"
+curl -sf "http://127.0.0.1:${API_PORT}/health/deps" && echo " - /health/deps OK" || echo " - /health/deps not ready yet"
+
+if v2_json="$(curl -sf "http://127.0.0.1:${API_PORT}/api/v2" 2>/dev/null)"; then
+  printf '%s' "${v2_json}" | python3 -c 'import json,sys; d=json.load(sys.stdin).get("data",{}); print(" - /api/v2 OK bridge_settlement_executable={} corridors={}".format(d.get("bridge_settlement_executable"), len(d.get("supported_corridors") or [])))' \
+    || echo " - /api/v2 response shape unexpected"
+else
+  echo " - /api/v2 not ready yet (warn-only)"
+fi
