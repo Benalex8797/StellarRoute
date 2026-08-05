@@ -20,6 +20,7 @@ export interface HorizonSubmitResult {
 
 export type HorizonSubmitErrorCode =
   | 'tx_bad_auth'
+  | 'tx_bad_seq'
   | 'op_underfunded'
   | 'timeout'
   | 'horizon_error';
@@ -71,6 +72,7 @@ function classifyHorizonError(
   opCodes: string[] = [],
 ): HorizonSubmitErrorCode {
   if (txCode === 'tx_bad_auth') return 'tx_bad_auth';
+  if (txCode === 'tx_bad_seq') return 'tx_bad_seq';
   if (opCodes.includes('op_underfunded')) return 'op_underfunded';
   return 'horizon_error';
 }

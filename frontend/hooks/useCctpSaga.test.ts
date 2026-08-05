@@ -259,6 +259,57 @@ describe('useCctpSaga server-driven burn staging', () => {
     expect(fp1).not.toBe(fp2);
   });
 
+  it('Stellar burn tx_bad_seq returns to re-prepare without failed stage', async () => {
+    const input = {
+      sourceChainId: 'stellar' as const,
+      destChainId: 'ethereum-sepolia' as const,
+      amount: '10',
+      recipient: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
+      wallets: {
+        recipient: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
+        sourceStellarAdapterId: 'freighter',
+        sourceAddress: STELLAR_G,
+        evmDestinationAdapterId: 'evm:dest',
+      },
+      bridgeReady: true,
+      quoteInputsKey: 'k-seq',
+      sender: STELLAR_G,
+    };
+    prepareBurn.mockResolvedValue({
+      approval_required: false,
+      payload: stellarBurnPayload,
+      expires_at: 9999999999,
+    });
+    const { HorizonSubmitError } = await import('@/lib/wallet/submit');
+    executePreparedPayload.mockRejectedValue(
+      new HorizonSubmitError('Transaction failed: tx_bad_seq', {
+        code: 'tx_bad_seq',
+        transactionCode: 'tx_bad_seq',
+        status: 400,
+      }),
+    );
+
+    const { result } = renderHook(() => useCctpSaga(input));
+    await act(async () => {
+      await result.current.requestQuote();
+    });
+    await act(async () => {
+      await result.current.prepareSourceBurn();
+    });
+    expect(result.current.burnPrepareStep).toBe('burn_ready');
+
+    await act(async () => {
+      await result.current.signBurnStep();
+    });
+
+    expect(result.current.stage).toBe('quoted');
+    expect(result.current.burnPrepareStep).toBe('reprepare_required');
+    expect(result.current.primaryAction.label).toBe('Re-prepare transaction');
+    expect(result.current.primaryAction.action).toBe('prepare');
+    expect(result.current.error?.kind).toBe('sequence_stale');
+    expect(submitBurn).not.toHaveBeenCalled();
+  });
+
   it('does not submit burn when EVM receipt is pending', async () => {
     prepareBurn.mockResolvedValue({
       approval_required: false,
