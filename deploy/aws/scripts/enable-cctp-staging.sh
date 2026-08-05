@@ -71,8 +71,17 @@ if [[ -n "${CCTP_IRIS_BASE_URL:-}" ]]; then
   upsert_env "CCTP_IRIS_BASE_URL" "${CCTP_IRIS_BASE_URL}"
 fi
 
+echo "Host .env.prod CCTP flags (no secrets):"
+grep -E '^(CCTP_ENABLED|CCTP_SEPOLIA_RPC_URL|CCTP_STELLAR_RPC_URL|CCTP_IRIS_BASE_URL)=' "${ENV_FILE}" \
+  | sed -E 's/(CCTP_ACCESS_TOKEN_HMAC_KEY=).*/\1<redacted>/' || true
+if grep -qE '^CCTP_ACCESS_TOKEN_HMAC_KEY=.+' "${ENV_FILE}"; then
+  echo "CCTP_ACCESS_TOKEN_HMAC_KEY=<set>"
+else
+  echo "CCTP_ACCESS_TOKEN_HMAC_KEY=<missing>" >&2
+fi
+
 echo "Recreating API with CCTP enabled..."
-docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --no-deps api
+docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --force-recreate --no-deps api
 
 API_PORT="${API_HOST_PORT:-8080}"
 echo "Waiting for API health..."
@@ -85,14 +94,25 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 
+echo "Container CCTP env (no secrets):"
+docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod exec -T api \
+  sh -c 'printf "CCTP_ENABLED=%s\nCCTP_SEPOLIA_RPC_URL=%s\nCCTP_STELLAR_RPC_URL=%s\nHMAC_SET=%s\n" \
+    "${CCTP_ENABLED:-}" "${CCTP_SEPOLIA_RPC_URL:-}" "${CCTP_STELLAR_RPC_URL:-}" \
+    "$([ -n "${CCTP_ACCESS_TOKEN_HMAC_KEY:-}" ] && echo yes || echo no)"' || true
+
 if v2_json="$(curl -sf "http://127.0.0.1:${API_PORT}/api/v2" 2>/dev/null)"; then
   printf '%s' "${v2_json}" | python3 -c '
 import json,sys
 d=json.load(sys.stdin).get("data",{})
 print("bridge_settlement_executable={}".format(d.get("bridge_settlement_executable")))
+print("corridors={}".format(len(d.get("supported_corridors") or [])))
 for c in d.get("supported_corridors") or []:
     print(" corridor direction={} executable={}".format(c.get("direction"), c.get("executable")))
 '
 else
   echo "WARN: /api/v2 not ready yet" >&2
 fi
+
+echo "Recent API CCTP logs:"
+docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file .env.prod logs --tail=80 api 2>/dev/null \
+  | grep -E 'CCTP|cctp|attestation|Iris|Sepolia' || echo "(no CCTP log lines)"
