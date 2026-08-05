@@ -1,8 +1,8 @@
 //! Per-Stellar-source active unsigned prepare reservation (multi-instance safe).
 //!
 //! Mirrors swap `ActivePrepareExists` semantics: at most one live unsigned prepare
-//! per source account across API replicas. Same-transfer retries return the cached
-//! payload without regenerating sequence.
+//! per source account across API replicas. Same-transfer re-prepare with a new
+//! payload hash replaces the cached payload (e.g. fresh Stellar sequence).
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -99,7 +99,8 @@ fn map_active_row_conflict(
         if active.payload_hash == reservation.payload_hash {
             return Ok(PrepareAcquireResult::Idempotent(active));
         }
-        return Err(CctpPrepareLockError::PayloadHashMismatch);
+        // Same transfer, new payload (e.g. refreshed sequence) — caller updates the row.
+        return Ok(PrepareAcquireResult::Acquired);
     }
     Ok(PrepareAcquireResult::ConflictOtherTransfer {
         holder_transfer_id: active.transfer_id,
@@ -179,7 +180,14 @@ impl CctpPrepareLockStore for InMemoryCctpPrepareLockStore {
                     if existing.payload_hash == reservation.payload_hash {
                         return Ok(PrepareAcquireResult::Idempotent(existing.clone()));
                     }
-                    return Err(CctpPrepareLockError::PayloadHashMismatch);
+                    guard.insert(
+                        reservation.source_account.clone(),
+                        CctpActivePrepare {
+                            updated_at: Utc::now(),
+                            ..reservation.clone()
+                        },
+                    );
+                    return Ok(PrepareAcquireResult::Acquired);
                 }
                 return Ok(PrepareAcquireResult::ConflictOtherTransfer {
                     holder_transfer_id: existing.transfer_id,
@@ -327,6 +335,37 @@ impl CctpPrepareLockStore for PgCctpPrepareLockStore {
 
         if let Some(row) = existing {
             let active = Self::map_row(row.0, row.1, row.2, row.3, row.4, row.5, row.6);
+            if active.transfer_id == reservation.transfer_id {
+                if active.payload_hash == reservation.payload_hash {
+                    tx.rollback()
+                        .await
+                        .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                    return Ok(PrepareAcquireResult::Idempotent(active));
+                }
+                let now = Utc::now();
+                sqlx::query(
+                    r#"
+                    UPDATE cctp_active_prepares
+                    SET prepare_kind = $2, payload_hash = $3, prepared_payload = $4,
+                        expires_at = $5, updated_at = $6
+                    WHERE source_account = $1 AND transfer_id = $7
+                    "#,
+                )
+                .bind(&reservation.source_account)
+                .bind(reservation.kind.as_str())
+                .bind(&reservation.payload_hash)
+                .bind(&reservation.prepared_payload)
+                .bind(reservation.expires_at)
+                .bind(now)
+                .bind(reservation.transfer_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                tx.commit()
+                    .await
+                    .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                return Ok(PrepareAcquireResult::Acquired);
+            }
             tx.rollback()
                 .await
                 .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
@@ -387,6 +426,37 @@ impl CctpPrepareLockStore for PgCctpPrepareLockStore {
 
                 if let Some(row) = row {
                     let active = Self::map_row(row.0, row.1, row.2, row.3, row.4, row.5, row.6);
+                    if active.transfer_id == reservation.transfer_id {
+                        if active.payload_hash == reservation.payload_hash {
+                            tx.rollback()
+                                .await
+                                .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                            return Ok(PrepareAcquireResult::Idempotent(active));
+                        }
+                        let now = Utc::now();
+                        sqlx::query(
+                            r#"
+                            UPDATE cctp_active_prepares
+                            SET prepare_kind = $2, payload_hash = $3, prepared_payload = $4,
+                                expires_at = $5, updated_at = $6
+                            WHERE source_account = $1 AND transfer_id = $7
+                            "#,
+                        )
+                        .bind(&reservation.source_account)
+                        .bind(reservation.kind.as_str())
+                        .bind(&reservation.payload_hash)
+                        .bind(&reservation.prepared_payload)
+                        .bind(reservation.expires_at)
+                        .bind(now)
+                        .bind(reservation.transfer_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                        tx.commit()
+                            .await
+                            .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
+                        return Ok(PrepareAcquireResult::Acquired);
+                    }
                     tx.rollback()
                         .await
                         .map_err(|e| CctpPrepareLockError::Database(e.to_string()))?;
@@ -538,6 +608,26 @@ mod tests {
             store.try_acquire(&r2).await.unwrap(),
             PrepareAcquireResult::Idempotent(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn same_transfer_new_hash_replaces_payload() {
+        let store = InMemoryCctpPrepareLockStore::default();
+        let source = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+        let tid = Uuid::new_v4();
+        let r1 = reservation(source, tid, CctpPrepareKind::Burn, "hash-a", Some("payload-a"));
+        assert!(matches!(
+            store.try_acquire(&r1).await.unwrap(),
+            PrepareAcquireResult::Acquired
+        ));
+        let r2 = reservation(source, tid, CctpPrepareKind::Burn, "hash-b", Some("payload-b"));
+        assert!(matches!(
+            store.try_acquire(&r2).await.unwrap(),
+            PrepareAcquireResult::Acquired
+        ));
+        let active = store.get_active(source).await.unwrap().unwrap();
+        assert_eq!(active.payload_hash, "hash-b");
+        assert_eq!(active.prepared_payload.as_deref(), Some("payload-b"));
     }
 
     #[tokio::test]

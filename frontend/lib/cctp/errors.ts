@@ -1,5 +1,6 @@
 import { StellarRouteApiError } from '@/lib/api/client';
 import { isUserRejection, WalletAdapterError } from '@/lib/wallet/adapters';
+import { HorizonSubmitError } from '@/lib/wallet/submit';
 
 export type CctpErrorKind =
   | 'retryable'
@@ -8,6 +9,7 @@ export type CctpErrorKind =
   | 'wrong_network'
   | 'quote_expired'
   | 'payload_expired'
+  | 'sequence_stale'
   | 'provider_killed'
   | 'dependency_unavailable'
   | 'authorization_lost'
@@ -45,6 +47,16 @@ export function mapCctpError(err: unknown): CctpTraderError {
         action: 'Switch network in wallet',
       };
     }
+  }
+
+  if (isStaleSequenceError(err)) {
+    return {
+      kind: 'sequence_stale',
+      title: 'Account sequence out of date',
+      message:
+        'Your Stellar account changed while this burn was being prepared. Re-prepare the burn using the same quote if it is still valid.',
+      action: 'Re-prepare transaction',
+    };
   }
 
   if (err instanceof StellarRouteApiError) {
@@ -194,6 +206,25 @@ function isWalletRejection(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as Error & { code?: string }).code;
   return code === 'user_rejected' || /reject|denied|cancel/i.test(err.message);
+}
+
+export function isStaleSequenceError(err: unknown): boolean {
+  if (err instanceof HorizonSubmitError) {
+    return (
+      err.code === 'tx_bad_seq' ||
+      err.transactionCode === 'tx_bad_seq' ||
+      err.transactionCode === 'bad_sequence'
+    );
+  }
+  if (err instanceof Error) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === 'tx_bad_seq' || code === 'bad_sequence') return true;
+    const status = (err as Error & { status?: string }).status;
+    if (status === 'bad_sequence') return true;
+    const message = err.message.toLowerCase();
+    return message.includes('tx_bad_seq') || message.includes('bad_sequence');
+  }
+  return false;
 }
 
 function extractRequestId(details: unknown): string | undefined {

@@ -78,6 +78,21 @@ describe('submitToHorizon', () => {
     });
   });
 
+  it('classifies tx_bad_seq as typed submit errors', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        extras: { result_codes: { transaction: 'tx_bad_seq' } },
+      }),
+    } as Response);
+
+    await expect(submitToHorizon('bad_xdr', 'testnet')).rejects.toMatchObject({
+      code: 'tx_bad_seq',
+      transactionCode: 'tx_bad_seq',
+    });
+  });
+
   it('classifies op_underfunded operation failures', async () => {
     global.fetch = vi.fn().mockResolvedValueOnce({
       ok: false,

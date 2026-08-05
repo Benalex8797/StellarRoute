@@ -220,30 +220,6 @@ impl CctpService {
             .map_err(Self::map_prepare_lock_error)
     }
 
-    async fn active_burn_bundle_for_transfer(
-        &self,
-        transfer_id: Uuid,
-        source: &str,
-    ) -> Result<Option<PreparedBurnBundle>, CctpServiceError> {
-        let active = self
-            .prepare_lock
-            .get_for_transfer(transfer_id)
-            .await
-            .map_err(Self::map_prepare_lock_error)?;
-        let Some(active) = active else {
-            return Ok(None);
-        };
-        if active.source_account != source || active.expires_at <= Utc::now() {
-            return Ok(None);
-        }
-        let Some(payload) = active.prepared_payload else {
-            return Ok(None);
-        };
-        Ok(Some(
-            deserialize_burn_bundle(&payload).map_err(Self::map_payload_cache_error)?,
-        ))
-    }
-
     async fn active_mint_bundle_for_transfer(
         &self,
         transfer_id: Uuid,
@@ -953,12 +929,6 @@ impl CctpService {
         }
 
         let source = burn_prepare_source(&transfer)?;
-        if let Some(cached) = self
-            .active_burn_bundle_for_transfer(transfer_id, source)
-            .await?
-        {
-            return Ok(cached);
-        }
 
         let bundle = match transfer.direction {
             CctpDirection::StellarToEvm => self

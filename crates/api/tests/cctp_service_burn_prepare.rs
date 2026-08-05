@@ -42,6 +42,38 @@ impl IrisClient for MockIris {
     }
 }
 
+struct SequenceRefreshBurnBuilder {
+    sequence: AtomicUsize,
+}
+
+#[async_trait]
+impl StellarCctpBurnBuilder for SequenceRefreshBurnBuilder {
+    fn is_ready(&self) -> bool {
+        true
+    }
+
+    async fn prepare_burn(
+        &self,
+        transfer: &CctpTransfer,
+        _: &CctpConfig,
+    ) -> Result<PreparedBurnBundle, BuilderError> {
+        let seq = self.sequence.fetch_add(1, Ordering::SeqCst) + 100;
+        let expires = transfer.quote_expires_at.timestamp();
+        Ok(PreparedBurnBundle {
+            step: BurnPrepareStep::Burn,
+            approval_required: false,
+            primary: PreparedWalletPayload::StellarXdr {
+                network_passphrase: "Test SDF Network ; September 2015".into(),
+                xdr_envelope: format!("AAAA-burn-seq-{seq}"),
+            },
+            required_approvals: vec![],
+            required_prior_payloads: vec![],
+            expires_at: expires,
+            approval_expiration_ledger: None,
+        })
+    }
+}
+
 struct SteppedBurnBuilder {
     calls: AtomicUsize,
 }
@@ -167,6 +199,7 @@ impl stellarroute_api::cctp::verifiers::StellarBurnVerifier for ReadyBurnVerifie
 fn test_service(builder: Arc<dyn StellarCctpBurnBuilder>) -> CctpService {
     let mut cfg = CctpConfig::default_testnet();
     cfg.enabled = true;
+    cfg.sepolia_rpc_url = "https://ethereum-sepolia-rpc.publicnode.com".into();
     let mut runtime = CctpRuntime::for_tests(
         Arc::new(NotReadyStellarBurnVerifier),
         Arc::new(NotReadyEvmBurnVerifier),
@@ -182,6 +215,33 @@ fn test_service(builder: Arc<dyn StellarCctpBurnBuilder>) -> CctpService {
         kill_switch: Arc::new(KillSwitchManager::new(None)),
         runtime,
     }
+}
+
+#[tokio::test]
+async fn re_prepare_same_transfer_refreshes_sequence() {
+    let builder: Arc<dyn StellarCctpBurnBuilder> = Arc::new(SequenceRefreshBurnBuilder {
+        sequence: AtomicUsize::new(0),
+    });
+    let svc = test_service(builder);
+    let t = sample_transfer();
+    let id = t.transfer_id;
+    svc.store.insert(&t).await.unwrap();
+
+    let first = svc.prepare_burn_wallet(id).await.unwrap();
+    assert_eq!(first.step, BurnPrepareStep::Burn);
+    let first_xdr = match &first.primary {
+        PreparedWalletPayload::StellarXdr { xdr_envelope, .. } => xdr_envelope.clone(),
+        _ => panic!("expected stellar xdr"),
+    };
+    assert!(first_xdr.contains("seq-100"));
+
+    let second = svc.prepare_burn_wallet(id).await.unwrap();
+    let second_xdr = match &second.primary {
+        PreparedWalletPayload::StellarXdr { xdr_envelope, .. } => xdr_envelope.clone(),
+        _ => panic!("expected stellar xdr"),
+    };
+    assert!(second_xdr.contains("seq-101"));
+    assert_ne!(first_xdr, second_xdr);
 }
 
 #[tokio::test]

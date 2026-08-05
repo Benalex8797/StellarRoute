@@ -6,7 +6,7 @@ import { StellarRouteApiError } from '@/lib/api/client';
 import { buildCctpQuoteRequest } from '@/lib/cctp/corridor-bridge';
 import { classifyStellarRecipient } from '@/lib/cctp/wallet-role-binding';
 import { getCctpApiClient } from '@/lib/cctp/client';
-import { mapCctpError, type CctpTraderError } from '@/lib/cctp/errors';
+import { mapCctpError, isStaleSequenceError, type CctpTraderError } from '@/lib/cctp/errors';
 import { fingerprintPreparedPayload } from '@/lib/cctp/payload-fingerprint';
 import {
   buildCctpSessionRecord,
@@ -367,6 +367,20 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     },
     [],
   );
+
+  const requireReprepareAfterSequenceError = useCallback((err: unknown) => {
+    if (!isStaleSequenceError(err)) return false;
+    setPreparedPayload(null);
+    setPreparedFingerprint(null);
+    setBurnPrepareStep('reprepare_required');
+    patchCctpSessionRecovery({
+      burnPrepareStep: 'reprepare_required',
+      lastPreparedFingerprint: undefined,
+    });
+    setError(mapCctpError(err));
+    setStage('quoted');
+    return true;
+  }, []);
 
   const requestQuote = useCallback(async () => {
     if (!input.bridgeReady) {
@@ -760,6 +774,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       patchCctpSessionRecovery({ burnPrepareStep: 'unknown' });
       setStage('quoted');
     } catch (err) {
+      if (requireReprepareAfterSequenceError(err)) return;
       setError(mapCctpError(err));
       setStage('failed');
     } finally {
@@ -773,6 +788,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     input.wallets,
     preparedFingerprint,
     preparedPayload,
+    requireReprepareAfterSequenceError,
     resolveEvmAdapterForPayload,
     session,
     syncSession,
@@ -830,6 +846,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       setStage('awaiting_attestation');
       startPoll(session.transferId, session.accessToken);
     } catch (err) {
+      if (requireReprepareAfterSequenceError(err)) return;
       setError(mapCctpError(err));
       setStage('failed');
     } finally {
@@ -843,6 +860,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     input.wallets,
     preparedFingerprint,
     preparedPayload,
+    requireReprepareAfterSequenceError,
     resolveEvmAdapterForPayload,
     session,
     startPoll,
