@@ -2,6 +2,7 @@
 
 This section collects the architecture and operational design documents for StellarRoute.
 
+- `scf-technical-architecture.md` — SCF-oriented architecture: human summary + agent-detailed Stellar integration (current vs funded deltas).
 - `diagrams.md` — system, data flow, and deployment diagrams with component interactions.
 - `database-schema.md` — normalized liquidity schema, data model, and ERD details.
 - `PERFORMANCE_NOTES.md` — performance observations and optimization guidance.
