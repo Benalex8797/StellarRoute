@@ -387,6 +387,141 @@
   border-color: color-mix(in srgb, var(--primary), transparent 80%) !important;
 }
 
+/* Swap confirmation waiting beacon — navigation-chart fix acquiring signal */
+@keyframes tcm-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes tcm-signal-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.tcm-orbit-spin {
+  animation: tcm-orbit 2.6s linear infinite;
+}
+
+.tcm-signal-pulse {
+  animation: tcm-signal-pulse 1.8s ease-in-out infinite;
+}
+
+.tcm-wait-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  pointer-events: none;
+}
+
+.tcm-wait-ring-outer {
+  inset: 0;
+  opacity: 0.55;
+}
+
+.tcm-wait-ring-mid {
+  inset: 12px;
+  opacity: 0.7;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+}
+
+.tcm-wait-wallet .tcm-wait-ring-mid {
+  border-color: color-mix(in srgb, var(--signal) 40%, var(--border));
+}
+
+.tcm-wait-sweep {
+  position: absolute;
+  inset: 4px;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 210deg,
+    transparent 0deg,
+    transparent 280deg,
+    color-mix(in srgb, var(--primary) 55%, transparent) 320deg,
+    color-mix(in srgb, var(--primary) 85%, transparent) 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+}
+
+.tcm-wait-wallet .tcm-wait-sweep {
+  background: conic-gradient(
+    from 210deg,
+    transparent 0deg,
+    transparent 280deg,
+    color-mix(in srgb, var(--signal) 50%, transparent) 320deg,
+    color-mix(in srgb, var(--signal) 90%, transparent) 360deg
+  );
+}
+
+/* CCTP corridor journey — packet in transit */
+@keyframes cctp-journey-ring {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.92);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+}
+
+@keyframes cctp-journey-shimmer {
+  0% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.25);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+.cctp-journey-grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border) 35%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 35%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 20%, transparent 75%);
+}
+
+.cctp-journey-ring {
+  border: 1px solid color-mix(in srgb, var(--signal) 70%, transparent);
+  animation: cctp-journey-ring 1.8s ease-out infinite;
+}
+
+.cctp-journey-progress {
+  animation: cctp-journey-shimmer 2.2s ease-in-out infinite;
+}
+
+.cctp-journey-packet {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 9999px;
+  background: var(--signal);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--signal) 25%, transparent),
+    0 0 12px color-mix(in srgb, var(--signal) 55%, transparent);
+  transition: left 600ms ease;
+}
+
 /**
  * Reduced-motion: disable all decorative animations and transitions.
  * Opacity-only transitions are preserved as they convey state without movement.
@@ -420,5 +555,20 @@
 
   .animate-spin {
     animation: none !important;
+  }
+
+  .tcm-orbit-spin,
+  .tcm-signal-pulse,
+  .cctp-journey-ring,
+  .cctp-journey-progress {
+    animation: none !important;
+  }
+
+  .tcm-wait-sweep {
+    opacity: 0.55;
+  }
+
+  .cctp-journey-packet {
+    transition: none !important;
   }
 }

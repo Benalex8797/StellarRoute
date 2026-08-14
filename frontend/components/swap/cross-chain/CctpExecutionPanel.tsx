@@ -9,6 +9,8 @@ import type { CctpSessionRecoveryMeta } from '@/lib/cctp/session-vault';
 import type { WalletRoleMismatch } from '@/lib/cctp/wallet-role-binding';
 import { formatCctpTraderStatus } from '@/lib/cctp/status-copy';
 import { cn } from '@/lib/utils';
+import { CctpJourneyVisual } from './CctpJourneyVisual';
+import { CctpTransferReceipt } from './CctpTransferReceipt';
 
 interface CctpExecutionPanelProps {
   stage: CctpSagaStage;
@@ -19,6 +21,11 @@ interface CctpExecutionPanelProps {
   primaryDisabled: boolean;
   onPrimary: () => void;
   onReset?: () => void;
+  /** Immediate reset after successful transfer (skips abandon confirm). */
+  onCompleteDone?: () => void;
+  /** Re-open the completion receipt dialog. */
+  onViewReceipt?: () => void;
+  recipient?: string | null;
   resetLabel?: string;
   bridgeUnavailable?: boolean;
   resumeMismatch?: boolean;
@@ -32,6 +39,15 @@ interface CctpExecutionPanelProps {
   className?: string;
 }
 
+const JOURNEY_STAGES = new Set<CctpSagaStage>([
+  'sign_approval',
+  'sign_burn',
+  'awaiting_attestation',
+  'sign_mint',
+  'pending_reconcile',
+  'completed',
+]);
+
 export function CctpExecutionPanel({
   stage,
   quote,
@@ -41,6 +57,9 @@ export function CctpExecutionPanel({
   primaryDisabled,
   onPrimary,
   onReset,
+  onCompleteDone,
+  onViewReceipt,
+  recipient,
   resetLabel = 'Start new quote',
   bridgeUnavailable,
   resumeMismatch,
@@ -51,6 +70,10 @@ export function CctpExecutionPanel({
   className,
 }: CctpExecutionPanelProps) {
   const [cooldownSec, setCooldownSec] = useState(0);
+  const isComplete =
+    stage === 'completed' || transferStatus?.status === 'completed';
+  const showJourney =
+    Boolean(transferStatus) || JOURNEY_STAGES.has(stage) || isComplete;
 
   useEffect(() => {
     if (!reattestCooldownUntil) {
@@ -151,6 +174,20 @@ export function CctpExecutionPanel({
         </dl>
       )}
 
+      {showJourney && (
+        <CctpJourneyVisual
+          status={transferStatus?.status ?? (isComplete ? 'completed' : null)}
+        />
+      )}
+
+      {isComplete && (
+        <CctpTransferReceipt
+          quote={quote}
+          transferStatus={transferStatus}
+          recipient={recipient}
+        />
+      )}
+
       {transferStatus && (
         <p className="text-sm" role="status" data-testid="cctp-saga-status">
           Status:{' '}
@@ -184,7 +221,7 @@ export function CctpExecutionPanel({
       )}
 
       <div className="space-y-2">
-        {ctaHint && primaryDisabled && (
+        {ctaHint && primaryDisabled && !isComplete && (
           <p
             className="text-xs text-muted-foreground"
             role="status"
@@ -194,32 +231,58 @@ export function CctpExecutionPanel({
           </p>
         )}
         <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            className="min-h-11"
-            disabled={primaryDisabled}
-            onClick={onPrimary}
-            data-testid="cross-chain-review-cta"
-          >
-            {primaryLabel}
-          </Button>
-        {onReset &&
-          (stage === 'failed' ||
-            stage === 'completed' ||
-            stage === 'awaiting_attestation' ||
-            stage === 'sign_mint' ||
-            stage === 'resume_pending' ||
-            Boolean(transferStatus)) && (
+          {isComplete ? (
+            <div className="flex w-full flex-col gap-2 sm:flex-row">
+              {(onCompleteDone || onReset) && (
+                <Button
+                  type="button"
+                  className="min-h-11 flex-1"
+                  onClick={onCompleteDone ?? onReset}
+                  data-testid="cross-chain-review-cta"
+                >
+                  Done — start new transfer
+                </Button>
+              )}
+              {onViewReceipt && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11 flex-1"
+                  onClick={onViewReceipt}
+                  data-testid="cctp-view-receipt"
+                >
+                  View receipt
+                </Button>
+              )}
+            </div>
+          ) : (
             <Button
               type="button"
-              variant="outline"
               className="min-h-11"
-              onClick={onReset}
-              data-testid="cctp-abandon-cta"
+              disabled={primaryDisabled}
+              onClick={onPrimary}
+              data-testid="cross-chain-review-cta"
             >
-              {resetLabel}
+              {primaryLabel}
             </Button>
           )}
+          {onReset &&
+            !isComplete &&
+            (stage === 'failed' ||
+              stage === 'awaiting_attestation' ||
+              stage === 'sign_mint' ||
+              stage === 'resume_pending' ||
+              Boolean(transferStatus)) && (
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                onClick={onReset}
+                data-testid="cctp-abandon-cta"
+              >
+                {resetLabel}
+              </Button>
+            )}
         </div>
       </div>
     </section>

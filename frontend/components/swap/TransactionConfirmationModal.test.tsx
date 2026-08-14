@@ -55,18 +55,18 @@ describe('TransactionConfirmationModal — reduced-motion', () => {
     expect(screen.getByTestId('tcm-spinner')).toBeInTheDocument();
   });
 
-  it('spinner does NOT have animate-spin when status=pending and reduced motion is active', () => {
+  it('spinner does NOT have tcm-orbit-spin when status=pending and reduced motion is active', () => {
     setReducedMotion(true);
     render(<TransactionConfirmationModal {...BASE_PROPS} status="pending" />);
     const spinner = screen.getByTestId('tcm-spinner');
-    expect(spinner.classList.contains('animate-spin')).toBe(false);
+    expect(spinner.classList.contains('tcm-orbit-spin')).toBe(false);
   });
 
-  it('spinner HAS animate-spin when status=pending and motion is allowed', () => {
+  it('spinner HAS tcm-orbit-spin when status=pending and motion is allowed', () => {
     setReducedMotion(false);
     render(<TransactionConfirmationModal {...BASE_PROPS} status="pending" />);
     const spinner = screen.getByTestId('tcm-spinner');
-    expect(spinner.classList.contains('animate-spin')).toBe(true);
+    expect(spinner.classList.contains('tcm-orbit-spin')).toBe(true);
   });
 
   it('spinner is present in the DOM when status=submitted and reduced motion is active', () => {
@@ -75,18 +75,18 @@ describe('TransactionConfirmationModal — reduced-motion', () => {
     expect(screen.getByTestId('tcm-spinner')).toBeInTheDocument();
   });
 
-  it('spinner does NOT have animate-spin when status=submitted and reduced motion is active', () => {
+  it('spinner does NOT have tcm-orbit-spin when status=submitted and reduced motion is active', () => {
     setReducedMotion(true);
     render(<TransactionConfirmationModal {...BASE_PROPS} status="submitted" />);
     const spinner = screen.getByTestId('tcm-spinner');
-    expect(spinner.classList.contains('animate-spin')).toBe(false);
+    expect(spinner.classList.contains('tcm-orbit-spin')).toBe(false);
   });
 
-  it('spinner HAS animate-spin when status=submitted and motion is allowed', () => {
+  it('spinner HAS tcm-orbit-spin when status=submitted and motion is allowed', () => {
     setReducedMotion(false);
     render(<TransactionConfirmationModal {...BASE_PROPS} status="submitted" />);
     const spinner = screen.getByTestId('tcm-spinner');
-    expect(spinner.classList.contains('animate-spin')).toBe(true);
+    expect(spinner.classList.contains('tcm-orbit-spin')).toBe(true);
   });
 });
 
@@ -121,7 +121,7 @@ describe('TransactionConfirmationModal — property tests', () => {
 
   it(
     // Feature: reduced-motion-swap-animations, Property 9 & 10
-    'Property 9 & 10: animate-spin absent iff prefersReducedMotion is true; spinner always present',
+    'Property 9 & 10: tcm-orbit-spin absent iff prefersReducedMotion is true; spinner always present',
     () => {
       fc.assert(
         fc.property(
@@ -135,7 +135,7 @@ describe('TransactionConfirmationModal — property tests', () => {
             );
             const spinner = screen.getByTestId('tcm-spinner');
             const isPresent = !!spinner;
-            const hasSpin = spinner.classList.contains('animate-spin');
+            const hasSpin = spinner.classList.contains('tcm-orbit-spin');
             unmount();
 
             if (prefersReduced) {
@@ -149,6 +149,41 @@ describe('TransactionConfirmationModal — property tests', () => {
       );
     }
   );
+});
+
+describe('TransactionConfirmationModal — waiting UX', () => {
+  it('shows progress steps and tip while pending', () => {
+    render(<TransactionConfirmationModal {...BASE_PROPS} status="pending" />);
+    expect(screen.getByTestId('swap-waiting-state')).toHaveAttribute(
+      'data-phase',
+      'pending'
+    );
+    expect(screen.getByTestId('swap-waiting-tip')).toBeInTheDocument();
+    expect(screen.getByLabelText('[swap.confirm.wait.stepsLabel]')).toBeInTheDocument();
+  });
+
+  it('keeps trade amounts visible while waiting for wallet', () => {
+    render(
+      <TransactionConfirmationModal
+        {...BASE_PROPS}
+        status="pending"
+        tradeParams={{
+          fromAmount: '10',
+          fromAsset: 'XLM',
+          toAmount: '5',
+          toAsset: 'USDC',
+          exchangeRate: '0.5',
+          priceImpact: '0.1',
+          minReceived: '4.975 USDC',
+          networkFee: '0.00001 XLM',
+          routePath: [],
+          walletAddress: 'GTEST',
+        }}
+      />
+    );
+    expect(screen.getByText(/10.*XLM/)).toBeInTheDocument();
+    expect(screen.getByText(/5.*USDC/)).toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------------------

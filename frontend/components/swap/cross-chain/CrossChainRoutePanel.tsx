@@ -1,6 +1,6 @@
 'use client';
 
-import { CctpStepRail, cctpActiveStepFromSaga } from './CctpStepRail';
+import { CctpStepRail, cctpActiveStepFromSaga, cctpCompletedStepsFromSaga } from './CctpStepRail';
 import { formatChainPairLabel } from '@/lib/cross-chain/format';
 import type { ChainDisplayId, CrossChainProtocol } from '@/lib/cross-chain/types';
 import type { CctpQuoteResponse } from '@/lib/cctp/types';
@@ -119,6 +119,9 @@ export function CrossChainRoutePanel({
           <CctpStepRail
             previewOnly={!executable}
             activeStep={executable ? cctpActiveStepFromSaga(sagaStatus) : null}
+            completedSteps={
+              executable ? cctpCompletedStepsFromSaga(sagaStatus) : []
+            }
           />
           <dl className="grid gap-2 text-xs sm:grid-cols-2">
             <div className="rounded-lg border border-border/30 bg-muted/20 p-2">

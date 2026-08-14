@@ -11,4 +11,15 @@ describe('CctpStepRail', () => {
     expect(screen.getByText('Attest')).toBeInTheDocument();
     expect(screen.getByText('Mint')).toBeInTheDocument();
   });
+
+  it('marks completed hops when live status is completed', () => {
+    render(
+      <CctpStepRail
+        previewOnly={false}
+        activeStep={null}
+        completedSteps={['burn', 'attest', 'mint']}
+      />,
+    );
+    expect(screen.getAllByText(/complete/i).length).toBeGreaterThanOrEqual(3);
+  });
 });

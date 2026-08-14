@@ -16,6 +16,7 @@ import type { ChainDisplayId } from '@/lib/cross-chain/types';
 import { corridorStatusCopy } from '@/lib/cross-chain/format';
 import { cn } from '@/lib/utils';
 import { CctpExecutionPanel } from './CctpExecutionPanel';
+import { CctpCompleteDialog } from './CctpCompleteDialog';
 import { CorridorTabs } from './CorridorTabs';
 import { CrossChainExecutionTimeline } from './CrossChainExecutionTimeline';
 import { CrossChainRoutePanel } from './CrossChainRoutePanel';
@@ -29,6 +30,7 @@ import {
   resolveCctpCtaHint,
   resolveDestinationRecipientSetupHint,
 } from './cctpCtaHint';
+import { buildCctpTimelineFromTransfer } from '@/lib/cross-chain/cctp-timeline';
 
 const SwapCard = dynamic(
   () => import('@/components/swap/SwapCard').then((m) => m.SwapCard),
@@ -60,6 +62,8 @@ export function CrossChainSwapDeck({
   const { enabled: routesBeta } = useFeatureFlag('routes_beta');
   const readiness = useApiV2Readiness({ refreshMs: 60_000 });
   const [confirmAbandon, setConfirmAbandon] = useState(false);
+  const [completeOpen, setCompleteOpen] = useState(false);
+  const completedTransferIdRef = useRef<string | null>(null);
 
   const walletRoles = useCrossChainWalletRoles({
     sourceChainId: state.sourceChainId,
@@ -158,7 +162,40 @@ export function CrossChainSwapDeck({
     }
     saga.resetSaga();
     setConfirmAbandon(false);
+    setCompleteOpen(false);
+    completedTransferIdRef.current = null;
   };
+
+  const handleCompleteDone = () => {
+    saga.resetSaga();
+    setConfirmAbandon(false);
+    setCompleteOpen(false);
+    completedTransferIdRef.current = null;
+  };
+
+  useEffect(() => {
+    const transferId = saga.transferStatus?.transfer_id;
+    const isComplete =
+      saga.stage === 'completed' || saga.transferStatus?.status === 'completed';
+    if (!isComplete || !transferId) return;
+    if (completedTransferIdRef.current === transferId) return;
+    completedTransferIdRef.current = transferId;
+    setCompleteOpen(true);
+  }, [saga.stage, saga.transferStatus?.status, saga.transferStatus?.transfer_id]);
+
+  const timelineSteps = useMemo(() => {
+    if (storyPresentation?.timelineSteps) {
+      return storyPresentation.timelineSteps;
+    }
+    if (saga.transferStatus) {
+      return buildCctpTimelineFromTransfer(saga.transferStatus);
+    }
+    return state.timelineSteps;
+  }, [
+    saga.transferStatus,
+    state.timelineSteps,
+    storyPresentation?.timelineSteps,
+  ]);
 
   const bridgeReady = readiness.cctpGloballyReady;
   const cctpBlockInput = useMemo(
@@ -337,6 +374,12 @@ export function CrossChainSwapDeck({
                       ctaHint={ctaHint}
                       onPrimary={() => void saga.runPrimaryAction()}
                       onReset={handleAbandon}
+                      onCompleteDone={handleCompleteDone}
+                      onViewReceipt={() => setCompleteOpen(true)}
+                      recipient={
+                        saga.sessionPublic?.recovery.recipient ??
+                        walletRoles.destRecipientAddress
+                      }
                       resetLabel={
                         confirmAbandon
                           ? 'Confirm abandon transfer'
@@ -376,9 +419,21 @@ export function CrossChainSwapDeck({
             sagaStatus={saga.transferStatus?.status}
           />
           <RouteDisclosurePanel />
-          <CrossChainExecutionTimeline steps={state.timelineSteps} />
+          <CrossChainExecutionTimeline steps={timelineSteps} />
         </aside>
       </div>
+
+      <CctpCompleteDialog
+        open={completeOpen}
+        onOpenChange={setCompleteOpen}
+        quote={saga.quote}
+        transferStatus={saga.transferStatus}
+        recipient={
+          saga.sessionPublic?.recovery.recipient ??
+          walletRoles.destRecipientAddress
+        }
+        onDone={handleCompleteDone}
+      />
     </div>
   );
 }

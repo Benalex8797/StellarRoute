@@ -1093,6 +1093,13 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         action: 'resume' as const,
       };
     }
+    if (stage === 'completed' || transferStatus?.status === 'completed') {
+      return {
+        label: 'Transfer complete',
+        disabled: true,
+        action: 'none' as const,
+      };
+    }
     if (stage === 'idle' || stage === 'failed') {
       return { label: 'Get CCTP quote', disabled: busy, action: 'quote' as const };
     }
@@ -1149,6 +1156,24 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         label: cooldownActive ? 'Retry attestation (cooldown)' : 'Retry attestation',
         disabled: busy || cooldownActive,
         action: 'reattest' as const,
+      };
+    }
+    if (
+      stage === 'awaiting_attestation' ||
+      transferStatus?.status === 'awaiting_attestation' ||
+      transferStatus?.status === 'burn_submitted'
+    ) {
+      return {
+        label: 'Waiting for Circle attestation…',
+        disabled: true,
+        action: 'none' as const,
+      };
+    }
+    if (transferStatus?.status === 'mint_submitted') {
+      return {
+        label: 'Confirming destination mint…',
+        disabled: true,
+        action: 'none' as const,
       };
     }
     return { label: 'Waiting…', disabled: true, action: 'none' as const };

@@ -15,13 +15,13 @@ import {
   ArrowRightLeft,
   CheckCircle2,
   Clock,
-  Loader2,
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TransactionStatus } from '@/types/transaction';
 import type { TradeParams } from '@/hooks/useTransactionLifecycle';
 import { PostSwapSuccessScreen } from './PostSwapSuccessScreen';
+import { SwapWaitingState } from './SwapWaitingState';
 import { useSwapI18n } from '@/lib/swap-i18n';
 import { getTraderErrorCopy } from '@/lib/api/trader-error-copy';
 import { isLifecycleError } from '@/lib/swap/lifecycle-error';
@@ -53,16 +53,16 @@ const STATUS_ICON_CONFIG = {
     bgClass: 'bg-muted/10',
   },
   pending: {
-    icon: Loader2,
-    iconClass: 'text-amber-500',
-    iconMotionClass: 'animate-spin',
-    bgClass: 'bg-amber-500/10',
+    icon: ArrowRightLeft,
+    iconClass: 'text-signal',
+    iconMotionClass: '',
+    bgClass: 'bg-signal/10',
   },
   submitted: {
-    icon: Loader2,
-    iconClass: 'text-amber-500',
-    iconMotionClass: 'animate-spin',
-    bgClass: 'bg-amber-500/10',
+    icon: ArrowRightLeft,
+    iconClass: 'text-primary',
+    iconMotionClass: '',
+    bgClass: 'bg-primary/10',
   },
   confirmed: {
     icon: CheckCircle2,
@@ -198,79 +198,97 @@ export function TransactionConfirmationModal({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-8 space-y-6">
-          <DialogHeader>
-            <div
-              className={cn(
-                'mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4',
-                config.bgClass
-              )}
-            >
-              <Icon
-                data-testid="tcm-spinner"
-                className={cn(
-                  'h-8 w-8',
-                  config.iconClass,
-                  !prefersReducedMotion && config.iconMotionClass
-                )}
-              />
-            </div>
-            <DialogTitle className="text-2xl font-bold text-center tracking-tight">
-              {config.heading}
-            </DialogTitle>
-            <DialogDescription className="text-center text-muted-foreground pt-2 break-words">
-              {status === 'failed' && failedCopy ? (
-                <span className="space-y-1 block">
-                  <span className="block font-medium text-foreground">
-                    {failedCopy.headline}
-                  </span>
-                  <span className="block">{failedCopy.recoveryAction}</span>
-                  {errorMessage &&
-                    errorMessage !== failedCopy.headline &&
-                    !errorMessage.includes(failedCopy.headline) && (
-                      <span className="block text-xs opacity-80">{errorMessage}</span>
-                    )}
-                </span>
-              ) : status === 'dropped' && droppedCopy ? (
-                <span className="space-y-1 block">
-                  <span className="block">{droppedCopy.explanation}</span>
-                  <span className="block">{droppedCopy.recoveryAction}</span>
-                </span>
-              ) : (
-                config.description
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          {/* Trade summary (shown in review and confirmed states) */}
-          {tradeParams && (status === 'review' || status === 'confirmed') && (
-            <div className="bg-muted/30 rounded-2xl p-4 border border-border/20 space-y-2 text-sm">
-              <div className="flex justify-between gap-3 min-w-0">
-                <span className="text-muted-foreground shrink-0">{t('swap.confirm.summary.youPay')}</span>
-                <span className="font-medium text-right break-words min-w-0">
-                  {tradeParams.fromAmount} {tradeParams.fromAsset}
-                </span>
-              </div>
-              <div className="flex justify-between gap-3 min-w-0">
-                <span className="text-muted-foreground shrink-0">{t('swap.confirm.summary.youReceive')}</span>
-                <span className="font-medium text-right break-words min-w-0">
-                  {tradeParams.toAmount} {tradeParams.toAsset}
-                </span>
-              </div>
-              <div className="flex justify-between gap-3 min-w-0">
-                <span className="text-muted-foreground shrink-0">{t('swap.confirm.summary.minReceived')}</span>
-                <span className="font-medium text-right break-words min-w-0">{tradeParams.minReceived}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Confirmed: dedicated post-swap success content */}
-          {status === 'confirmed' && txHash && (
-            <PostSwapSuccessScreen
-              txHash={txHash}
+          {isInFlight ? (
+            <SwapWaitingState
+              phase={status === 'pending' ? 'pending' : 'submitted'}
               tradeParams={tradeParams}
-              onDone={onDone}
-              onSwapAgain={onSwapAgain}
             />
+          ) : (
+            <>
+              <DialogHeader>
+                <div
+                  className={cn(
+                    'mx-auto w-16 h-16 rounded-full flex items-center justify-center mb-4',
+                    config.bgClass
+                  )}
+                >
+                  <Icon
+                    className={cn(
+                      'h-8 w-8',
+                      config.iconClass,
+                      !prefersReducedMotion && config.iconMotionClass
+                    )}
+                  />
+                </div>
+                <DialogTitle className="font-display text-2xl font-bold text-center tracking-tight">
+                  {config.heading}
+                </DialogTitle>
+                <DialogDescription className="text-center text-muted-foreground pt-2 break-words">
+                  {status === 'failed' && failedCopy ? (
+                    <span className="space-y-1 block">
+                      <span className="block font-medium text-foreground">
+                        {failedCopy.headline}
+                      </span>
+                      <span className="block">{failedCopy.recoveryAction}</span>
+                      {errorMessage &&
+                        errorMessage !== failedCopy.headline &&
+                        !errorMessage.includes(failedCopy.headline) && (
+                          <span className="block text-xs opacity-80">
+                            {errorMessage}
+                          </span>
+                        )}
+                    </span>
+                  ) : status === 'dropped' && droppedCopy ? (
+                    <span className="space-y-1 block">
+                      <span className="block">{droppedCopy.explanation}</span>
+                      <span className="block">{droppedCopy.recoveryAction}</span>
+                    </span>
+                  ) : (
+                    config.description
+                  )}
+                </DialogDescription>
+              </DialogHeader>
+
+              {/* Trade summary (shown in review and confirmed states) */}
+              {tradeParams && (status === 'review' || status === 'confirmed') && (
+                <div className="bg-muted/30 rounded-2xl p-4 border border-border/20 space-y-2 text-sm">
+                  <div className="flex justify-between gap-3 min-w-0">
+                    <span className="text-muted-foreground shrink-0">
+                      {t('swap.confirm.summary.youPay')}
+                    </span>
+                    <span className="font-medium text-right break-words min-w-0">
+                      {tradeParams.fromAmount} {tradeParams.fromAsset}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3 min-w-0">
+                    <span className="text-muted-foreground shrink-0">
+                      {t('swap.confirm.summary.youReceive')}
+                    </span>
+                    <span className="font-medium text-right break-words min-w-0">
+                      {tradeParams.toAmount} {tradeParams.toAsset}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3 min-w-0">
+                    <span className="text-muted-foreground shrink-0">
+                      {t('swap.confirm.summary.minReceived')}
+                    </span>
+                    <span className="font-medium text-right break-words min-w-0">
+                      {tradeParams.minReceived}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Confirmed: dedicated post-swap success content */}
+              {status === 'confirmed' && txHash && (
+                <PostSwapSuccessScreen
+                  txHash={txHash}
+                  tradeParams={tradeParams}
+                  onDone={onDone}
+                  onSwapAgain={onSwapAgain}
+                />
+              )}
+            </>
           )}
         </div>
 
