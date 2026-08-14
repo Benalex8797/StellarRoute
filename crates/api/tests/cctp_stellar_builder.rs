@@ -114,6 +114,7 @@ fn approval_and_burn_use_distinct_sequences_offline() {
         [1u8; 32],
         &cfg.contracts.stellar_usdc,
         1,
+        stellarroute_api::cctp::config::FINALITY_STANDARD,
         101,
     )
     .unwrap();
@@ -131,6 +132,7 @@ fn deposit_for_burn_args_count_and_finality() {
         [2u8; 32],
         &cfg.contracts.stellar_usdc,
         1,
+        stellarroute_api::cctp::config::FINALITY_STANDARD,
     )
     .unwrap();
     assert_eq!(args.len(), 8);
@@ -200,6 +202,7 @@ fn payload_hash_matches_verifier_helper() {
         [0u8; 32],
         &cfg.contracts.stellar_usdc,
         1,
+        stellarroute_api::cctp::config::FINALITY_STANDARD,
         1,
     )
     .unwrap();

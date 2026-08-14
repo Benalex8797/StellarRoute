@@ -158,7 +158,8 @@ impl CctpConfig {
             quote_ttl_secs: 300,
             mint_payload_ttl_secs: 600,
             poll_interval_secs: 5,
-            poll_timeout_secs: 600,
+            // Circle Standard on Ethereum/Sepolia is ~15–19m (~65 blocks); keep margin.
+            poll_timeout_secs: 1_800,
             iris_timeout_secs: 10,
             iris_max_retries: 2,
             iris_keys_ttl_secs: 900,

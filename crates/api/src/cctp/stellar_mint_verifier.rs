@@ -175,9 +175,11 @@ impl StellarRpcMintVerifier {
             return Err(VerifierError::Failed("finality below minimum".into()));
         }
 
-        let expected_local = canonical_to_stellar_local_amount(expected_amount_cctp as i128)
+        // Forwarder delivers burn amount minus fee_executed (Iris Fast fees are non-zero).
+        let net_cctp = expected_amount_cctp.saturating_sub(parsed.body.fee_executed);
+        let expected_forward = canonical_to_stellar_local_amount(net_cctp as i128)
             .map_err(|e| VerifierError::Failed(e.to_string()))?;
-        if events.forward.amount != expected_local {
+        if events.forward.amount != expected_forward {
             return Err(VerifierError::Failed("forward amount mismatch".into()));
         }
 
@@ -717,5 +719,29 @@ mod tests {
             ),
             Err(VerifierError::Failed(ref m)) if m.contains("finality")
         ));
+    }
+
+    #[test]
+    fn forward_amount_nets_out_fee_executed() {
+        let (cfg, mut message, nonce, recipient, amount, mut events) = mint_binding_context();
+        // fee_executed u256 at body offset 164 → absolute 148+164 = 312
+        let fee: u128 = 500;
+        message[312..344].fill(0);
+        message[344 - 16..344].copy_from_slice(&fee.to_be_bytes());
+        // Keep received.message_body in sync with patched message.
+        events.received.message_body = message[MESSAGE_HEADER_LEN..].to_vec();
+        let net_local = canonical_to_stellar_local_amount((amount - fee) as i128).unwrap();
+        events.forward.amount = net_local;
+        let verifier = StellarRpcMintVerifier::for_binding_tests(&cfg);
+        verifier
+            .bind_completion_evidence(
+                &message,
+                &nonce,
+                &recipient,
+                amount,
+                CctpFinality::Standard,
+                &events,
+            )
+            .unwrap();
     }
 }

@@ -155,9 +155,22 @@ describe('CrossChainSwapDeck', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows unsupported alert for catalogued coming-soon corridor', () => {
+  it('treats Sepolia to Stellar as a catalog-executable CCTP corridor', () => {
     renderDeck({
       initialSourceChainId: 'ethereum-sepolia',
+      initialDestChainId: 'stellar',
+    });
+    expect(screen.queryByTestId('unsupported-corridor-alert')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('swap-card')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cctp-route-rail')).toBeInTheDocument();
+    expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
+      /executable corridor/i
+    );
+  });
+
+  it('shows unsupported alert for catalogued coming-soon corridor', () => {
+    renderDeck({
+      initialSourceChainId: 'solana',
       initialDestChainId: 'stellar',
     });
     expect(screen.getByTestId('unsupported-corridor-alert')).toBeInTheDocument();

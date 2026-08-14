@@ -71,11 +71,11 @@ export const CORRIDOR_CATALOG: CorridorDefinition[] = [
   {
     id: 'evm-to-stellar',
     label: 'ETH Sepolia → Stellar',
-    description: 'CCTP corridor preview — burn on Ethereum, mint on Stellar.',
+    description: 'CCTP testnet corridor — burn USDC on Sepolia, mint on Stellar.',
     sourceChainId: 'ethereum-sepolia',
     destChainId: 'stellar',
     protocol: 'cctp-preview',
-    catalogAvailability: 'coming_soon',
+    catalogAvailability: 'executable',
   },
   {
     id: 'stellar-to-evm',

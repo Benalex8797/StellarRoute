@@ -66,6 +66,7 @@ export function buildCctpQuoteRequest(input: {
     sender: input.sender,
     mint_submitter:
       direction === 'evm_to_stellar' ? input.mintSubmitter : undefined,
-    finality: 'standard',
+    // Both directions: Fast (~seconds when Iris attests). Standard remains available via API.
+    finality: 'fast',
   };
 }

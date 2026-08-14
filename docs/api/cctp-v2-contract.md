@@ -48,26 +48,28 @@ hardcoding the default contract addresses below.
 
 - **Outbound Stellar**: burn via Soroban `TokenMessengerMinter`.
 - **Inbound Stellar**: mint via `CctpForwarder.mint_and_forward`.
+- **Inbound Stellar trustline**: `prepare-mint` for `evm_to_stellar` may first return a classic USDC `ChangeTrust` payload with `trustline_required: true` (signer = recipient underlying G). The wallet submits that to Horizon, then calls `prepare-mint` again for `mint_and_forward`. Do **not** pass a ChangeTrust hash to `submit-mint`.
 - **EVM**: `TokenMessengerV2` / `MessageTransmitterV2`.
 - **Burn is not idempotent**; **mint is idempotent**.
 - Attestation polling is durable and must **never** trigger automatic re-burn.
-- **Finality**: `standard` | `fast`; Stellar **source** burns must reject `fast`.
+- **Finality**: `standard` | `fast`; both corridor directions may request `fast` (Iris-priced).
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v2/bridge/cctp/quote` | Fee quote + `transfer_id` (disabled) |
-| `POST` | `/api/v2/bridge/cctp/{transfer_id}/prepare-burn` | Wallet burn payload |
+| `POST` | `/api/v2/bridge/cctp/{transfer_id}/prepare-burn` | Wallet burn payload (`approval_required` when ERC-20/Soroban allowance missing) |
 | `POST` | `/api/v2/bridge/cctp/{transfer_id}/submit-burn` | Record source `tx_hash` only |
 | `GET` | `/api/v2/bridge/cctp/{transfer_id}` | Saga status |
-| `POST` | `/api/v2/bridge/cctp/{transfer_id}/prepare-mint` | Wallet mint payload |
+| `POST` | `/api/v2/bridge/cctp/{transfer_id}/prepare-mint` | Wallet mint payload (`trustline_required` when Stellar recipient lacks USDC trustline) |
 | `POST` | `/api/v2/bridge/cctp/{transfer_id}/submit-mint` | Record destination `tx_hash` only |
 | `POST` | `/api/v2/bridge/cctp/{transfer_id}/reattest` | Re-poll attestation |
 
 ### Recipient and sender constraints
 
-- **Stellar `recipient` / optional `sender`**: Stellar account **G-address only** (ed25519 public key strkey). Muxed **M-addresses** and contract **C-addresses** are **not** accepted on quote validation.
+- **Stellar `recipient`**: Stellar account **G** or muxed **M** strkey for `evm_to_stellar` (contract **C** rejected). Trustline ChangeTrust is always for the underlying **G**.
+- **Stellar optional `sender` / `mint_submitter`**: **G-address only** (ed25519 public key strkey).
 - **EVM `recipient` / optional `sender`**: `0x`-prefixed 20-byte hex address (42 characters).
 - Invalid optional `sender` returns generic `validation_error` (HTTP 400) before any fail-closed `cctp_not_enabled` response.
 

@@ -10,7 +10,6 @@ use stellar_xdr::curr::{
 };
 
 use crate::cctp::builders::BuilderError;
-use crate::cctp::config::FINALITY_STANDARD;
 use crate::cctp::expectations::ANY_DESTINATION_CALLER;
 use crate::swap::tx::{DEFAULT_BASE_FEE, DEFAULT_TIMEOUT_SECS};
 
@@ -77,6 +76,7 @@ pub fn deposit_for_burn_args(
     mint_recipient: [u8; 32],
     burn_token: &str,
     max_fee_stellar: i128,
+    min_finality: u32,
 ) -> Result<Vec<ScVal>, BuilderError> {
     Ok(vec![
         ScVal::Address(account_address(caller)?),
@@ -86,7 +86,7 @@ pub fn deposit_for_burn_args(
         ScVal::Address(contract_address(burn_token)?),
         bytes32_scval(ANY_DESTINATION_CALLER),
         i128_scval(max_fee_stellar),
-        u32_scval(FINALITY_STANDARD),
+        u32_scval(min_finality),
     ])
 }
 
@@ -208,6 +208,7 @@ pub fn envelope_sequence(xdr: &str) -> Result<i64, BuilderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cctp::config::{FINALITY_FAST, FINALITY_STANDARD};
 
     #[test]
     fn approve_args_sep41_tuple() {
@@ -230,9 +231,26 @@ mod tests {
             [1u8; 32],
             "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
             1,
+            FINALITY_STANDARD,
         )
         .unwrap();
         assert_eq!(args.len(), 8);
+        assert_eq!(args[7], u32_scval(FINALITY_STANDARD));
+    }
+
+    #[test]
+    fn deposit_for_burn_encodes_fast_finality() {
+        let args = deposit_for_burn_args(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            1_000_000,
+            0,
+            [1u8; 32],
+            "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+            0,
+            FINALITY_FAST,
+        )
+        .unwrap();
+        assert_eq!(args[7], u32_scval(FINALITY_FAST));
     }
 
     #[test]
@@ -258,6 +276,7 @@ mod tests {
                 [1u8; 32],
                 "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
                 1,
+                FINALITY_STANDARD,
             )
             .unwrap(),
             101,

@@ -76,7 +76,8 @@ pub enum CctpDirection {
     EvmToStellar,
 }
 
-/// CCTP finality mode. Stellar outbound burns must use `standard` only.
+/// CCTP finality mode (`standard` = 2000, `fast` = 1000). Both corridor directions
+/// may request Fast; Iris prices the fee tier per domain pair.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CctpFinality {
@@ -138,6 +139,9 @@ pub enum PreparedWalletPayload {
     StellarXdr {
         network_passphrase: String,
         xdr_envelope: String,
+        /// Optional signing account (G) — set for trustline ChangeTrust payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
     },
     EvmTransaction {
         chain_id: String,
@@ -260,9 +264,7 @@ impl CctpQuoteRequest {
                 if !is_valid_stellar_account(sender) {
                     return Err(CctpValidationError::InvalidSender);
                 }
-                if self.finality == CctpFinality::Fast {
-                    return Err(CctpValidationError::InvalidFinality);
-                }
+                // Fast allowed for Stellar→EVM (Iris prices threshold 1000 for 27→0).
             }
             CctpDirection::EvmToStellar => {
                 if !is_valid_stellar_recipient(&self.recipient) {
@@ -282,9 +284,7 @@ impl CctpQuoteRequest {
                 if !is_valid_stellar_account(submitter) {
                     return Err(CctpValidationError::InvalidMintSubmitter);
                 }
-                if self.finality == CctpFinality::Fast {
-                    return Err(CctpValidationError::InvalidFinality);
-                }
+                // Fast is allowed for EVM→Stellar (Sepolia Iris prices threshold 1000).
             }
         }
 
@@ -454,6 +454,9 @@ pub struct CctpPrepareMintResponse {
     pub status: CctpTransferStatus,
     pub payload: PreparedWalletPayload,
     pub expires_at: i64,
+    /// True when the wallet must submit a USDC ChangeTrust before `mint_and_forward`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trustline_required: bool,
 }
 
 /// Mint submit accepts only an on-chain tx hash acknowledgement.
@@ -531,15 +534,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_stellar_source_fast_finality() {
-        let req = base_quote(CctpDirection::StellarToEvm, CctpFinality::Fast);
-        assert_eq!(req.validate(), Err(CctpValidationError::InvalidFinality));
+    fn accepts_stellar_source_fast_finality() {
+        let mut req = base_quote(CctpDirection::StellarToEvm, CctpFinality::Fast);
+        req.sender = Some(VALID_STELLAR.to_string());
+        assert_eq!(req.validate(), Ok(()));
     }
 
     #[test]
-    fn rejects_evm_source_fast_finality() {
-        let req = base_quote(CctpDirection::EvmToStellar, CctpFinality::Fast);
-        assert_eq!(req.validate(), Err(CctpValidationError::InvalidFinality));
+    fn accepts_evm_source_fast_finality() {
+        let mut req = base_quote(CctpDirection::EvmToStellar, CctpFinality::Fast);
+        req.sender = Some(VALID_EVM.to_string());
+        assert_eq!(req.validate(), Ok(()));
     }
 
     #[test]

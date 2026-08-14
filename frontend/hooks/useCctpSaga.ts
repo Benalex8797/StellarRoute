@@ -50,6 +50,7 @@ export type CctpSagaStage =
   | 'quoted'
   | 'sign_approval'
   | 'sign_burn'
+  | 'sign_trustline'
   | 'sign_mint'
   | 'awaiting_attestation'
   | 'completed'
@@ -348,6 +349,9 @@ export function useCctpSaga(input: UseCctpSagaInput) {
 
   const handleStatus = useCallback(
     (status: CctpTransferStatusResponse) => {
+      // Successful polls clear transient Iris/network banners so attestation wait
+      // does not look frozen after a single 503/blip.
+      setError(null);
       setTransferStatus(status);
       applyReattestCooldown(status);
       mapStageFromStatus(status.status, setStage);
@@ -371,8 +375,12 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         accessToken: token,
         callbacks: {
           onUpdate: handleStatus,
-          onError: (err) => setError(mapCctpError(err)),
+          onError: (err) => {
+            // Keep polling; only surface soft/transient copy while awaiting Circle.
+            setError(mapCctpError(err));
+          },
         },
+        maxMs: 45 * 60 * 1000,
       });
     },
     [client, handleStatus, stopPoll],
@@ -926,7 +934,53 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     setBusy(true);
     setError(null);
     try {
-      const prepared = await client.prepareMint(session.transferId, accessOptions());
+      let prepared = await client.prepareMint(session.transferId, accessOptions());
+
+      // Auto-open USDC trustline when prepare-mint returns trustline_required.
+      if (prepared.trustline_required && prepared.payload.type === 'stellar_xdr') {
+        if (
+          !requireWalletRoles(
+            signingIntentForMintPayload(prepared.payload, true),
+            prepared.payload,
+          )
+        ) {
+          return;
+        }
+        setStage('sign_trustline');
+        walletRequestCount.current += 1;
+        const trustlineAdapterId =
+          input.wallets.mintSubmitterStellarAdapterId ??
+          input.wallets.sourceStellarAdapterId;
+        const trustlineExec = await executePreparedPayload({
+          payload: prepared.payload,
+          stellarAdapterId: trustlineAdapterId,
+          expiresAtSec: prepared.expires_at,
+          walletNetwork: 'testnet',
+        });
+        if (!trustlineExec.submissionReady) {
+          setError({
+            kind: 'nonretryable',
+            title: 'Trustline not confirmed',
+            message:
+              'USDC trustline submission did not confirm. Retry mint after the trustline is open.',
+          });
+          setStage('failed');
+          return;
+        }
+        // Re-prepare mint after trustline; do not call submitMint with ChangeTrust hash.
+        prepared = await client.prepareMint(session.transferId, accessOptions());
+        if (prepared.trustline_required) {
+          setError({
+            kind: 'nonretryable',
+            title: 'Trustline still required',
+            message:
+              'Horizon still reports no USDC trustline. Confirm Freighter signed for the recipient G-account, then retry.',
+          });
+          setStage('failed');
+          return;
+        }
+      }
+
       if (!requireWalletRoles(signingIntentForMintPayload(prepared.payload), prepared.payload)) {
         return;
       }
@@ -1100,6 +1154,19 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         action: 'none' as const,
       };
     }
+    // Prefer transfer status over local `failed` so a submit-mint error does not
+    // demote a recoverable mint_prepared transfer back to "Get CCTP quote".
+    if (
+      transferStatus?.status === 'attestation_ready' ||
+      transferStatus?.status === 'mint_prepared' ||
+      transferStatus?.status === 'mint_failed_retryable'
+    ) {
+      return {
+        label: 'Sign mint on destination',
+        disabled: busy || Boolean(walletRoleMismatch),
+        action: 'mint' as const,
+      };
+    }
     if (stage === 'idle' || stage === 'failed') {
       return { label: 'Get CCTP quote', disabled: busy, action: 'quote' as const };
     }
@@ -1138,17 +1205,6 @@ export function useCctpSaga(input: UseCctpSagaInput) {
         action: 'prepare' as const,
       };
     }
-    if (
-      transferStatus?.status === 'attestation_ready' ||
-      transferStatus?.status === 'mint_prepared' ||
-      transferStatus?.status === 'mint_failed_retryable'
-    ) {
-      return {
-        label: 'Sign mint on destination',
-        disabled: busy || Boolean(walletRoleMismatch),
-        action: 'mint' as const,
-      };
-    }
     if (transferStatus?.status === 'attestation_failed') {
       const cooldownActive =
         reattestCooldownUntil !== null && Date.now() < reattestCooldownUntil;
@@ -1163,8 +1219,14 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       transferStatus?.status === 'awaiting_attestation' ||
       transferStatus?.status === 'burn_submitted'
     ) {
+      const evmSource = session?.recovery.direction === 'evm_to_stellar';
+      const fast = quote?.finality === 'fast';
       return {
-        label: 'Waiting for Circle attestation…',
+        label: evmSource
+          ? fast
+            ? 'Waiting for Circle Fast attestation…'
+            : 'Waiting for Circle finality (~15–19 min on Sepolia)…'
+          : 'Waiting for Circle attestation…',
         disabled: true,
         action: 'none' as const,
       };
@@ -1182,7 +1244,9 @@ export function useCctpSaga(input: UseCctpSagaInput) {
     effectiveBurnStep,
     input.bridgeReady,
     pendingEvmTx,
+    quote?.finality,
     reattestCooldownUntil,
+    session?.recovery.direction,
     stage,
     transferStatus?.status,
     walletRoleMismatch,

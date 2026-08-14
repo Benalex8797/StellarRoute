@@ -6,6 +6,7 @@ import {
   classifyStellarRecipient,
   normalizeEvmAddress,
   normalizeStellarGAddress,
+  stellarRecipientTrustlineAccount,
 } from './wallet-role-binding';
 
 const STELLAR_G = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
@@ -28,6 +29,13 @@ describe('wallet-role-binding normalization', () => {
     expect(normalizeStellarGAddress(STELLAR_G.toLowerCase())).toBeNull();
     expect(classifyStellarRecipient(STELLAR_G)).toBe('stellar_g');
     expect(classifyStellarRecipient(STELLAR_M)).toBe('stellar_m');
+  });
+
+  it('demuxes muxed recipient to underlying G for trustline', () => {
+    expect(stellarRecipientTrustlineAccount(STELLAR_G)).toBe(STELLAR_G);
+    const underlying = stellarRecipientTrustlineAccount(STELLAR_M);
+    expect(underlying).toBeTruthy();
+    expect(StrKey.isValidEd25519PublicKey(underlying!)).toBe(true);
   });
 });
 

@@ -202,9 +202,12 @@ impl CctpRuntime {
                 config: &CctpConfig,
             ) -> Result<PreparedMintBundle, BuilderError> {
                 Ok(PreparedMintBundle {
+                    step: crate::cctp::builders::MintPrepareStep::Mint,
+                    trustline_required: false,
                     primary: crate::models::v2_cctp::PreparedWalletPayload::StellarXdr {
                         network_passphrase: config.stellar_network_passphrase.clone(),
                         xdr_envelope: "AAAA".into(),
+                        source: None,
                     },
                     expires_at: transfer.quote_expires_at.timestamp(),
                     payload_hash: self.0.clone(),

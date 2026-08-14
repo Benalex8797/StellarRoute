@@ -9,9 +9,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::cctp::builders::{
-    BuilderError, EvmCctpBurnBuilder, EvmCctpMintBuilder, PreparedBurnBundle, PreparedMintBundle,
+    BuilderError, EvmCctpBurnBuilder, EvmCctpMintBuilder, MintPrepareStep, PreparedBurnBundle,
+    PreparedMintBundle,
 };
-use crate::cctp::config::{CctpConfig, FINALITY_STANDARD};
+use crate::cctp::config::{corridor_min_finality, CctpConfig};
 use crate::cctp::encoding::{
     build_forwarder_hook_data_recipient, decimal_to_cctp_subunits, stellar_contract_to_bytes32,
 };
@@ -351,7 +352,7 @@ impl EvmCctpBurnBuilder for ProductionEvmCctpBuilder {
             &config.contracts.sepolia_usdc,
             forwarder,
             max_fee,
-            FINALITY_STANDARD,
+            corridor_min_finality(transfer.finality),
             hook,
         )?;
 
@@ -398,6 +399,8 @@ impl EvmCctpMintBuilder for ProductionEvmCctpBuilder {
         let expires_at = (Utc::now() + chrono::Duration::minutes(10)).timestamp();
 
         Ok(PreparedMintBundle {
+            step: MintPrepareStep::Mint,
+            trustline_required: false,
             primary: payload,
             expires_at,
             payload_hash,

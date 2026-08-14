@@ -133,6 +133,8 @@ export interface CctpPrepareMintResponse {
   status: CctpTransferStatus;
   payload: PreparedWalletPayload;
   expires_at: number;
+  /** True when wallet must submit USDC ChangeTrust before mint_and_forward. */
+  trustline_required?: boolean;
 }
 
 export interface CctpSubmitMintRequest {

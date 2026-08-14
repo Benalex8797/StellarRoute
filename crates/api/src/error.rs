@@ -277,8 +277,7 @@ impl IntoResponse for ApiError {
             ApiError::InvalidFinality => (
                 StatusCode::BAD_REQUEST,
                 ApiErrorCode::InvalidFinality,
-                "Stellar outbound CCTP burns require standard finality; fast is not supported"
-                    .to_string(),
+                "Unsupported CCTP finality for this corridor".to_string(),
             ),
             ApiError::InvalidRecipient => (
                 StatusCode::BAD_REQUEST,

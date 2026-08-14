@@ -13,6 +13,7 @@ use crate::cctp::bounds::{
 };
 use crate::cctp::config::{
     corridor_min_finality, parse_service_url, redact_url, CctpConfig, IRIS_SANDBOX_HOST,
+    STELLAR_TESTNET_DOMAIN,
 };
 use crate::models::v2_cctp::CctpFinality;
 
@@ -186,7 +187,9 @@ struct MessagesResponse {
 
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct MessageV2 {
-    message: String,
+    /// Iris returns `null` while status is `pending_confirmations`.
+    #[serde(default)]
+    message: Option<String>,
     attestation: Option<String>,
     #[serde(rename = "cctpVersion")]
     cctp_version: Option<u32>,
@@ -245,6 +248,19 @@ pub fn normalize_tx_hash(hash: &str) -> String {
     hex.to_ascii_lowercase()
 }
 
+/// Iris `transactionHash` query form is domain-specific.
+///
+/// - EVM domains: lowercase `0x…` (sandbox rejects mixed-case / bare hex).
+/// - Stellar domain 27: bare lowercase hex — `0x…` returns "Message not found".
+pub fn iris_query_tx_hash(source_domain: u32, tx_hash: &str) -> String {
+    let hex = normalize_tx_hash(tx_hash);
+    if source_domain == STELLAR_TESTNET_DOMAIN {
+        hex
+    } else {
+        format!("0x{hex}")
+    }
+}
+
 pub(crate) fn select_complete_v2_message(
     messages: &[MessageV2],
     expected_tx_hash: &str,
@@ -268,10 +284,13 @@ pub(crate) fn select_complete_v2_message(
         if status != Some("complete") {
             continue;
         }
-        if msg.message.is_empty() || msg.message == "0x" {
+        let Some(message_hex) = msg.message.as_deref() else {
+            continue;
+        };
+        if message_hex.is_empty() || message_hex == "0x" {
             continue;
         }
-        if msg.message.len() > MAX_RAW_MESSAGE_BYTES * 2 + 2 {
+        if message_hex.len() > MAX_RAW_MESSAGE_BYTES * 2 + 2 {
             return Err(IrisError::Malformed("message hex too large".into()));
         }
         if let Some(att) = &msg.attestation {
@@ -316,11 +335,13 @@ impl IrisClient for ReqwestIrisClient {
         source_domain: u32,
         tx_hash: &str,
     ) -> Result<IrisPollOutcome, IrisError> {
+        // Iris hex lookups are domain-specific (EVM wants 0x…, Stellar rejects it).
+        let query_hash = iris_query_tx_hash(source_domain, tx_hash);
         let url = format!(
             "{}/v2/messages/{}?transactionHash={}",
             self.base_url,
             source_domain,
-            urlencoding::encode(tx_hash)
+            urlencoding::encode(&query_hash)
         );
         let resp = self.get_with_retries(&url).await?;
 
@@ -350,7 +371,7 @@ impl IrisClient for ReqwestIrisClient {
 
         let selected = match select_complete_v2_message(
             &body.messages,
-            tx_hash,
+            &query_hash,
             body.source_tx_hash.as_deref(),
         ) {
             Ok(msg) => msg,
@@ -360,17 +381,24 @@ impl IrisClient for ReqwestIrisClient {
             Err(e) => return Err(e),
         };
 
+        let message_hex = selected
+            .message
+            .filter(|m| !m.is_empty() && m != "0x")
+            .ok_or_else(|| IrisError::Malformed("complete message missing body".into()))?;
+
         let attestation = selected
             .attestation
             .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("PENDING"));
 
         Ok(IrisPollOutcome::Complete(IrisMessage {
-            message_hex: selected.message,
+            message_hex,
             attestation_hex: attestation,
             cctp_version: 2,
             status: IrisMessageStatus::Complete,
             event_nonce: selected.event_nonce.unwrap_or_default(),
-            source_tx_hash: body.source_tx_hash,
+            // Prefer Iris echo; fall back to the hash we queried so validation
+            // does not hard-fail when sandbox omits top-level sourceTxHash.
+            source_tx_hash: body.source_tx_hash.or(Some(query_hash)),
         }))
     }
 
@@ -483,6 +511,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn poll_pending_null_message_is_pending() {
+        // Live Iris sandbox shape while awaiting finality (evm burns).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"/v2/messages/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "messages": [{
+                    "attestation": "PENDING",
+                    "message": null,
+                    "eventNonce": "0x0754eb13210be9e7bae55a1448b2933d7c122aa79a533f6b35c3e47da91cf1a1",
+                    "cctpVersion": 2,
+                    "status": "pending_confirmations",
+                    "decodedMessage": null,
+                    "delayReason": null
+                }],
+                "sourceTxHash": "0x67fd76a2b5d463c119eb7a5fc26a0e4071f28e7cf612595bcf22241505c6bf5c"
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = CctpConfig {
+            iris_base_url: server.uri(),
+            ..CctpConfig::default_testnet()
+        };
+        let client = ReqwestIrisClient::from_config(&cfg).unwrap();
+        let outcome = client
+            .poll_messages_by_tx(
+                0,
+                "0x67fd76a2b5d463c119eb7a5fc26a0e4071f28e7cf612595bcf22241505c6bf5c",
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, IrisPollOutcome::Pending);
+    }
+
+    #[tokio::test]
     async fn poll_pending_then_complete() {
         let server = MockServer::start().await;
         let base = server.uri();
@@ -578,14 +642,14 @@ mod tests {
     fn select_rejects_ambiguous_messages() {
         let messages = vec![
             MessageV2 {
-                message: "0x01".into(),
+                message: Some("0x01".into()),
                 attestation: Some("0x02".into()),
                 cctp_version: Some(2),
                 status: Some("complete".into()),
                 event_nonce: Some("1".into()),
             },
             MessageV2 {
-                message: "0x03".into(),
+                message: Some("0x03".into()),
                 attestation: Some("0x04".into()),
                 cctp_version: Some(2),
                 status: Some("complete".into()),
@@ -599,7 +663,7 @@ mod tests {
     #[test]
     fn select_rejects_response_tx_hash_mismatch() {
         let messages = vec![MessageV2 {
-            message: "0x01".into(),
+            message: Some("0x01".into()),
             attestation: Some("0x02".into()),
             cctp_version: Some(2),
             status: Some("complete".into()),
@@ -607,6 +671,21 @@ mod tests {
         }];
         let err = select_complete_v2_message(&messages, "0xabc", Some("0xdef")).unwrap_err();
         assert!(matches!(err, IrisError::Malformed(_)));
+    }
+
+    #[test]
+    fn iris_query_tx_hash_is_domain_specific() {
+        let bare = "306b69605885205338acdcfa72c16fb1e34335033355c275965358842783bfcf";
+        assert_eq!(iris_query_tx_hash(STELLAR_TESTNET_DOMAIN, bare), bare);
+        assert_eq!(
+            iris_query_tx_hash(STELLAR_TESTNET_DOMAIN, &format!("0x{bare}")),
+            bare
+        );
+        assert_eq!(
+            iris_query_tx_hash(0, &format!("0x{bare}")),
+            format!("0x{bare}")
+        );
+        assert_eq!(iris_query_tx_hash(0, bare), format!("0x{bare}"));
     }
 
     #[test]
