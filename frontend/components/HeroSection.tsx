@@ -59,7 +59,7 @@ const capabilities = [
     eyebrow: '03 / BRIDGE',
     title: 'Cross-chain USDC',
     description:
-      'A Circle CCTP corridor now carries native USDC from Stellar Testnet to Ethereum Sepolia.',
+      'Circle CCTP now carries native USDC both ways between Stellar Testnet and Ethereum Sepolia.',
     icon: Compass,
   },
 ];
@@ -114,7 +114,7 @@ export function HeroSection() {
                 TESTNET CORRIDOR
               </span>
               <span className="font-mono text-[0.68rem] uppercase tracking-[0.16em] text-muted-foreground">
-                Stellar → Ethereum Sepolia
+                Stellar ↔ Ethereum Sepolia
               </span>
             </div>
 
@@ -216,7 +216,7 @@ export function HeroSection() {
                     Route constellation / 001
                   </p>
                   <p className="mt-1 font-display text-lg font-semibold text-foreground">
-                    USDC outbound rail
+                    USDC corridor / both ways
                   </p>
                 </div>
                 <span className="rounded-md border border-signal/60 bg-signal/10 px-2 py-1 font-mono text-[0.6rem] font-semibold tracking-[0.16em] text-foreground">
@@ -226,7 +226,7 @@ export function HeroSection() {
 
               <div
                 role="img"
-                aria-label="Testnet execution route from a Stellar wallet through SDEX and Soroban routing, Circle CCTP, and into Ethereum Sepolia"
+                aria-label="Testnet Circle CCTP corridor between Stellar and Ethereum Sepolia, with Stellar wallet, SDEX and Soroban routing, and destination mint"
                 className="relative mt-8 grid gap-7 md:grid-cols-4 md:gap-3"
               >
                 <div
@@ -360,11 +360,12 @@ export function HeroSection() {
               The corridor completed, not just compiled.
             </h2>
             <p className="mt-5 max-w-xl text-lg leading-relaxed text-muted-foreground">
-              A wallet-signed run burned USDC on Stellar Testnet, received
-              Circle&apos;s attestation, and minted USDC on Ethereum Sepolia.
+              Wallet-signed runs now prove both directions: Stellar Testnet →
+              Sepolia and Sepolia → Stellar Testnet, each with Circle
+              attestation and a destination mint.
             </p>
             <p className="mt-4 font-mono text-xs leading-relaxed text-muted-foreground break-all">
-              Latest public mint:{' '}
+              Stellar → Sepolia mint:{' '}
               <a
                 href="https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6"
                 className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
@@ -374,14 +375,25 @@ export function HeroSection() {
                 0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6
               </a>
             </p>
+            <p className="mt-2 font-mono text-xs leading-relaxed text-muted-foreground break-all">
+              Sepolia → Stellar mint:{' '}
+              <a
+                href="https://stellar.expert/explorer/testnet/tx/13d2025db39b461756954e1266864ea39c126cada55ddf24db9ec364138d16f2"
+                className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                13d2025db39b461756954e1266864ea39c126cada55ddf24db9ec364138d16f2
+              </a>
+            </p>
             <div className="mt-8 flex items-start gap-3 border-l-2 border-signal pl-4">
               <Activity
                 className="mt-0.5 h-4 w-4 shrink-0 text-signal"
                 aria-hidden="true"
               />
               <p className="text-sm leading-relaxed text-muted-foreground">
-                Evidence scope is one-way and testnet only. This does not claim
-                mainnet availability or a signed-live reverse corridor.
+                Both directions are signed-live on testnet. This does not claim
+                mainnet availability; public CCTP remains operator-gated.
               </p>
             </div>
           </div>

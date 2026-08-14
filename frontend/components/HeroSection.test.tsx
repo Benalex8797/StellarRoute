@@ -92,12 +92,15 @@ describe('HeroSection — product positioning', () => {
   it('labels the live corridor as testnet and states its limits', () => {
     render(<HeroSection />);
     expect(screen.getAllByText('TESTNET CORRIDOR')).not.toHaveLength(0);
-    expect(screen.getAllByText(/Stellar → Ethereum Sepolia/i)).not.toHaveLength(0);
+    expect(screen.getAllByText(/Stellar ↔ Ethereum Sepolia/i)).not.toHaveLength(0);
     expect(
       screen.getByText(/CCTP is disabled by default at the API layer/i)
     ).toBeInTheDocument();
     expect(
       screen.getByText(/does not claim mainnet availability/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Both directions are signed-live on testnet/i)
     ).toBeInTheDocument();
   });
 
@@ -115,6 +118,14 @@ describe('HeroSection — product positioning', () => {
     ).toHaveAttribute(
       'href',
       'https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6'
+    );
+    expect(
+      screen.getByRole('link', {
+        name: /13d2025db39b461756954e1266864ea39c126cada55ddf24db9ec364138d16f2/i,
+      })
+    ).toHaveAttribute(
+      'href',
+      'https://stellar.expert/explorer/testnet/tx/13d2025db39b461756954e1266864ea39c126cada55ddf24db9ec364138d16f2'
     );
   });
 });

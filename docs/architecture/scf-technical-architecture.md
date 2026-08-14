@@ -317,4 +317,4 @@ npm --prefix sdk-js run test
 
 ---
 
-*Last aligned to codebase capability model used for SCF Open Track (testnet classic execution live; CCTP Stellar→Sepolia signed-live proven on testnet; Soroban/public CCTP enablement/mainnet gated). Update this file when execution_mode scope expands.*
+*Last aligned to codebase capability model used for SCF Open Track (testnet classic execution live; CCTP Stellar↔Sepolia signed-live proven both ways on testnet; Soroban/public CCTP enablement/mainnet gated). Update this file when execution_mode scope expands.*

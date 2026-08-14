@@ -2,7 +2,7 @@
 
 **Status:** Achieved (testnet)  
 **Date:** 2026-08-14  
-**Scope:** One-way USDC corridor via Circle CCTP v2 — not mainnet, not the reverse corridor, and not public `CCTP_ENABLED` by default.
+**Scope:** Forward USDC corridor via Circle CCTP v2 — testnet only; not mainnet; not public `CCTP_ENABLED` by default. Reverse is separately proven in [`signed-live-sepolia-to-stellar.md`](./signed-live-sepolia-to-stellar.md).
 
 This is StellarRoute’s first publicly cited **destination mint** proof for the Stellar → Sepolia USDC rail: a wallet-authorized burn on Stellar Testnet, Circle attestation, and a successful `receiveMessage` mint on Sepolia.
 

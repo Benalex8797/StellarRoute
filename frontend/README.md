@@ -16,8 +16,9 @@ npm run dev
 
 See [`docs/deployment/vercel-frontend.md`](../docs/deployment/vercel-frontend.md).
 
-Cross-chain CCTP (Stellar → Sepolia) is signed-live proven on testnet; see
-[`docs/cctp/signed-live-stellar-to-sepolia.md`](../docs/cctp/signed-live-stellar-to-sepolia.md).
+Cross-chain CCTP (Stellar ↔ Sepolia) is signed-live proven both ways on testnet;
+see [`docs/cctp/signed-live-stellar-to-sepolia.md`](../docs/cctp/signed-live-stellar-to-sepolia.md)
+and [`docs/cctp/signed-live-sepolia-to-stellar.md`](../docs/cctp/signed-live-sepolia-to-stellar.md).
 Public API enablement remains fail-closed until operators set `CCTP_ENABLED`.
 
 Production builds enforce a public API URL via `lib/env-guard.ts` when
