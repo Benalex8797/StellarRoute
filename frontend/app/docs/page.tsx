@@ -1,6 +1,7 @@
 import { ExternalLink } from "lucide-react";
-import type { Metadata } from "next";
 import Link from "next/link";
+
+import { buildPageMetadata } from "@/lib/seo";
 
 const docsLinks = [
   {
@@ -35,10 +36,12 @@ const docsLinks = [
   },
 ] as const;
 
-export const metadata: Metadata = {
-  title: "Docs | StellarRoute",
-  description: "StellarRoute documentation links for API, development, and contract guides",
-};
+export const metadata = buildPageMetadata({
+  title: "Docs",
+  description:
+    "StellarRoute docs for the Stellar DEX aggregator API, cross-chain CCTP, development, and contracts.",
+  path: "/docs",
+});
 
 export default function DocsPage() {
   return (

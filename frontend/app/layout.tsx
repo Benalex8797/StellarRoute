@@ -5,6 +5,16 @@ import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 import { AppShell } from "@/components/layout/app-shell";
 import ErrorBoundary from "../components/ErrorBoundary";
+import { JsonLd } from "@/components/seo/JsonLd";
+import {
+  DEFAULT_DESCRIPTION,
+  DEFAULT_TITLE,
+  absoluteUrl,
+  getSiteUrl,
+  organizationJsonLd,
+  softwareApplicationJsonLd,
+  websiteJsonLd,
+} from "@/lib/seo";
 
 const display = Bricolage_Grotesque({
   variable: "--font-bricolage",
@@ -25,8 +35,15 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "StellarRoute - DEX Aggregator for Stellar",
-  description: "Best-price routing across Stellar DEX and Soroban AMM pools",
+  metadataBase: new URL(getSiteUrl()),
+  title: {
+    default: DEFAULT_TITLE,
+    template: "%s | StellarRoute",
+  },
+  description: DEFAULT_DESCRIPTION,
+  alternates: {
+    canonical: absoluteUrl("/"),
+  },
 
   manifest: "/manifest.json",
   themeColor: "#060b11",
@@ -47,9 +64,10 @@ export const metadata: Metadata = {
   },
 
   openGraph: {
-    title: "StellarRoute - DEX Aggregator for Stellar",
-    description: "Best-price routing across Stellar DEX and Soroban AMM pools",
-    url: "https://stellarroute.app",
+    title: DEFAULT_TITLE,
+    description: DEFAULT_DESCRIPTION,
+    url: absoluteUrl("/"),
+    siteName: "StellarRoute",
     type: "website",
     images: [
       {
@@ -63,8 +81,8 @@ export const metadata: Metadata = {
 
   twitter: {
     card: "summary_large_image",
-    title: "StellarRoute - DEX Aggregator for Stellar",
-    description: "Best-price routing across Stellar DEX and Soroban AMM pools",
+    title: DEFAULT_TITLE,
+    description: DEFAULT_DESCRIPTION,
     images: ["/icons/icon-512.svg"],
   },
 };
@@ -79,6 +97,9 @@ export default function RootLayout({
       <body
         className={`${display.variable} ${sans.variable} ${mono.variable} antialiased min-h-screen flex flex-col`}
       >
+        <JsonLd data={organizationJsonLd()} />
+        <JsonLd data={websiteJsonLd()} />
+        <JsonLd data={softwareApplicationJsonLd()} />
         <ErrorBoundary>
           <Providers>
             <AppShell>{children}</AppShell>

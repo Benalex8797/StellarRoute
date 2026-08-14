@@ -1,12 +1,14 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 
-export const metadata: Metadata = {
-  title: "First Live Swap Guide | StellarRoute",
+import { buildPageMetadata } from "@/lib/seo";
+
+export const metadata = buildPageMetadata({
+  title: "First Stellar DEX Swap Guide",
   description:
-    "Step-by-step guide for your first StellarRoute swap: wallet, trustline, slippage, and confirm.",
-};
+    "Step-by-step guide for your first Stellar DEX swap on StellarRoute: wallet, trustline, slippage, and confirm.",
+  path: "/guide",
+});
 
 const steps = [
   {

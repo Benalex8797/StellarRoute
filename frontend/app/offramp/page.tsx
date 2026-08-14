@@ -1,33 +1,12 @@
-import { Metadata } from 'next';
 import { OfframpPageClient } from './OfframpPageClient';
+import { buildPageMetadata } from '@/lib/seo';
 
-export const metadata: Metadata = {
-  title: 'Offramp to Naira | StellarRoute',
+export const metadata = buildPageMetadata({
+  title: 'Offramp to Naira',
   description:
-    'Cash out Stellar USDC — or bridge any supported stablecoin — to Nigerian Naira.',
-  openGraph: {
-    title: 'Offramp to Naira | StellarRoute',
-    description:
-      'Stablecoin to local fiat: direct Stellar USDC or bridge-then-offramp to ₦ Naira.',
-    type: 'website',
-    url: 'https://stellarroute.app/offramp',
-    images: [
-      {
-        url: '/icons/icon-512.svg',
-        width: 512,
-        height: 512,
-        alt: 'StellarRoute offramp',
-      },
-    ],
-  },
-  twitter: {
-    card: 'summary_large_image',
-    title: 'Offramp to Naira | StellarRoute',
-    description:
-      'Cash out Stellar USDC or bridge another coin into Naira via Stellar.',
-    images: ['/icons/icon-512.svg'],
-  },
-};
+    'Cash out Stellar USDC — or bridge then offramp stablecoins — to Nigerian Naira (NGN). Non-custodial Stellar path into local fiat.',
+  path: '/offramp',
+});
 
 export default function OfframpPage() {
   return (

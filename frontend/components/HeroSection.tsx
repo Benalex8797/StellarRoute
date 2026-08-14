@@ -124,7 +124,7 @@ export function HeroSection() {
                 reveal('delay-100')
               )}
             >
-              Non-custodial execution layer
+              Non-custodial Stellar DEX aggregator
             </p>
             <h1
               id="landing-title"
@@ -133,8 +133,10 @@ export function HeroSection() {
                 reveal('delay-150')
               )}
             >
-              Stellar-native execution.{' '}
-              <span className="text-muted-foreground">A proven route beyond it.</span>
+              Stellar DEX aggregator.{' '}
+              <span className="text-muted-foreground">
+                Cross-chain swaps beyond it.
+              </span>
             </h1>
             <p
               className={cn(
@@ -142,8 +144,8 @@ export function HeroSection() {
                 reveal('delay-300')
               )}
             >
-              Compare and execute across the Stellar SDEX and Soroban AMMs,
-              then move native USDC through Circle CCTP — without giving up
+              Best-price routing across the Stellar DEX (SDEX) and Soroban AMMs,
+              plus cross-chain USDC swaps via Circle CCTP — without giving up
               custody.
             </p>
 
@@ -170,6 +172,27 @@ export function HeroSection() {
                 Inspect signed-live proof
               </a>
             </div>
+            <p
+              className={cn(
+                'mt-5 text-sm text-muted-foreground',
+                reveal('delay-500')
+              )}
+            >
+              Learn more:{' '}
+              <Link
+                href="/stellar-dex-aggregator"
+                className="font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+              >
+                Stellar DEX aggregator
+              </Link>
+              {' · '}
+              <Link
+                href="/cross-chain-swap"
+                className="font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+              >
+                Cross-chain swap
+              </Link>
+            </p>
 
             <div
               className={cn(

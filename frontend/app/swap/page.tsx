@@ -1,30 +1,12 @@
 import { SwapPageClient } from "./SwapPageClient";
-import { Metadata } from "next";
+import { buildPageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
-  title: "Swap Tokens | StellarRoute",
-  description: "Swap assets on Stellar with the best rates and lowest slippage across all DEXs and AMMs.",
-  openGraph: {
-    title: "Swap Tokens | StellarRoute",
-    description: "Best-price routing across Stellar DEX and Soroban AMM pools.",
-    type: "website",
-    url: "https://stellarroute.app/swap",
-    images: [
-      {
-        url: "/icons/icon-512.svg",
-        width: 512,
-        height: 512,
-        alt: "StellarRoute swap interface preview",
-      },
-    ],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Swap Tokens | StellarRoute",
-    description: "Swap assets on Stellar with the best rates and lowest slippage across all DEXs and AMMs.",
-    images: ["/icons/icon-512.svg"],
-  },
-};
+export const metadata = buildPageMetadata({
+  title: "Swap on Stellar DEX & Cross-Chain",
+  description:
+    "Swap on the Stellar DEX and Soroban AMMs with best-price routing, or run a cross-chain USDC swap via Circle CCTP — non-custodial.",
+  path: "/swap",
+});
 
 export default function SwapPage() {
   return (

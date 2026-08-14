@@ -66,18 +66,26 @@ describe('HeroSection — reduced-motion', () => {
 describe('HeroSection — product positioning', () => {
   afterEach(() => setReducedMotion(false));
 
-  it('positions StellarRoute as a non-custodial Stellar execution layer', () => {
+  it('positions StellarRoute as a non-custodial Stellar DEX aggregator', () => {
     render(<HeroSection />);
     expect(
       screen.getByRole('heading', {
         level: 1,
-        name: /Stellar-native execution\. A proven route beyond it\./i,
+        name: /Stellar DEX aggregator\. Cross-chain swaps beyond it\./i,
       })
     ).toBeInTheDocument();
-    expect(screen.getByText(/Non-custodial execution layer/i)).toBeInTheDocument();
     expect(
-      screen.getAllByText(/Stellar SDEX and Soroban AMMs/i)
+      screen.getByText(/Non-custodial Stellar DEX aggregator/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Stellar DEX \(SDEX\) and Soroban AMMs/i)
     ).not.toHaveLength(0);
+    expect(
+      screen.getByRole('link', { name: /Stellar DEX aggregator/i })
+    ).toHaveAttribute('href', '/stellar-dex-aggregator');
+    expect(
+      screen.getByRole('link', { name: /Cross-chain swap/i })
+    ).toHaveAttribute('href', '/cross-chain-swap');
   });
 
   it('links both primary calls to action directly to the swap deck', () => {
