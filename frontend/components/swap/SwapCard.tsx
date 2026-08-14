@@ -538,6 +538,27 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
         });
       }
 
+      // 3b. Degraded / stale orderbook — notify, do not block swap
+      const freshness = quote.data?.data_freshness;
+      const degradedOrderbook =
+        quote.data?.degraded === true ||
+        (freshness != null &&
+          freshness.fresh_count === 0 &&
+          freshness.stale_count > 0);
+      if (degradedOrderbook && quote.data) {
+        const id = 'degraded_orderbook';
+        if (!dismissedWarningIds.has(id)) {
+          list.push({
+            id,
+            type: 'warning',
+            title: 'Orderbook outdated',
+            message: t('swap.card.degradedOrderbook'),
+            timestamp: Date.now(),
+            dismissible: true,
+          });
+        }
+      }
+
       // 4. Quote error response from API
       if (quote.error) {
         const copy = getTraderErrorCopy(quote.error);
@@ -565,7 +586,7 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
     checkWarnings();
     const interval = setInterval(checkWarnings, 1000);
     return () => clearInterval(interval);
-  }, [slippage, quote.lastQuotedAtMs, quote.error, dismissedWarningIds]);
+  }, [slippage, quote.lastQuotedAtMs, quote.error, quote.data, dismissedWarningIds, t]);
 
   // Connection status indicator
   const { isOnline } = useOnlineStatus();
@@ -737,8 +758,9 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
       quote.error instanceof StellarRouteApiError &&
       (quote.error.code === 'stale_market_data' ||
         quote.error.code === 'quote_expired');
-    // Stale / refreshable expiry → clickable refresh, never "Error fetching quote".
-    if (quote.isStale || refreshableQuoteError) return 'stale_quote';
+    // Client-expired quote → refresh CTA. Successful degraded orderbook quotes
+    // keep `quote.data` and must remain swappable (warning is shown separately).
+    if (quote.isStale || (refreshableQuoteError && !quote.data)) return 'stale_quote';
     // Hard quote errors only when there is nothing usable on screen.
     if (quote.error && !quote.data) return 'error';
     if (
@@ -1410,6 +1432,17 @@ export function SwapCard({ storyFixture, showRoutePicker = false }: SwapCardProp
               className="text-xs text-amber-500 font-medium"
             >
               {t('swap.card.outdated')}
+            </span>
+          )}
+          {(quote.data?.degraded === true ||
+            (quote.data?.data_freshness != null &&
+              quote.data.data_freshness.fresh_count === 0 &&
+              quote.data.data_freshness.stale_count > 0)) && (
+            <span
+              data-testid="degraded-orderbook-indicator"
+              className="text-xs text-amber-500 font-medium"
+            >
+              {t('swap.card.degradedOrderbook')}
             </span>
           )}
           {quote.isRecovering && (

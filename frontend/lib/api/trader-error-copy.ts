@@ -38,9 +38,10 @@ const API_ERROR_COPY: Record<ApiErrorCode, TraderErrorCopy> = {
   },
   stale_market_data: {
     headline: 'Market data is still updating',
-    explanation: 'Fresh pricing is not available yet for this route.',
-    recoveryAction: 'Wait a moment and refresh to fetch a current quote.',
-    ctaLabel: 'Refresh in a few seconds',
+    explanation:
+      'The latest orderbook snapshot is delayed. You can usually still trade once a quote returns.',
+    recoveryAction: 'Refresh for a current quote, or wait a moment if pricing has not loaded yet.',
+    ctaLabel: 'Refresh quote',
   },
   rate_limit_exceeded: {
     headline: 'Quote refresh is temporarily limited',

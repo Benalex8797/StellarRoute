@@ -94,6 +94,7 @@ export type SwapTranslationKey =
   | "swap.card.refreshQuote"
   | "swap.card.diagnostics"
   | "swap.card.outdated"
+  | "swap.card.degradedOrderbook"
   | "swap.card.recoveringQuote"
   | "swap.card.recoveringQuoteCountdown"
   | "swap.card.cancelRetry"
@@ -337,6 +338,8 @@ const SWAP_TRANSLATIONS_BASE: Record<
     "swap.card.refreshQuote": "Refresh quote",
     "swap.card.diagnostics": "View quote diagnostics",
     "swap.card.outdated": "Quote outdated — refresh for latest price",
+    "swap.card.degradedOrderbook":
+      "Orderbook data is outdated — you can still swap, but the fill price may differ.",
     "swap.card.recoveringQuote": "Retrying quote...",
     "swap.card.recoveringQuoteCountdown": "Retrying quote in {seconds}s...",
     "swap.card.cancelRetry": "Cancel retry",
@@ -575,6 +578,8 @@ const SWAP_TRANSLATIONS_BASE: Record<
     "swap.card.refreshQuote": "Actualizar cotización",
     "swap.card.diagnostics": "View quote diagnostics",
     "swap.card.outdated": "Cotización desactualizada — actualiza para obtener el precio más reciente",
+    "swap.card.degradedOrderbook":
+      "El libro de órdenes está desactualizado — aún puedes intercambiar, pero el precio de ejecución puede diferir.",
     "swap.card.recoveringQuote": "Reintentando cotización...",
     "swap.card.recoveringQuoteCountdown": "Reintentando cotización en {seconds}s...",
     "swap.card.cancelRetry": "Cancelar reintento",
@@ -816,6 +821,8 @@ const SWAP_TRANSLATIONS_BASE: Record<
     "swap.card.refreshQuote": "刷新报价",
     "swap.card.diagnostics": "查看报价诊断信息",
     "swap.card.outdated": "报价已过期——请刷新获取最新价格",
+    "swap.card.degradedOrderbook":
+      "订单簿数据已过时——仍可兑换，但成交价可能有偏差。",
     "swap.card.recoveringQuote": "正在重试报价...",
     "swap.card.recoveringQuoteCountdown": "{seconds} 秒后重试报价...",
     "swap.card.cancelRetry": "取消重试",

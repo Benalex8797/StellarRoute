@@ -151,7 +151,8 @@ impl GraphManager {
 
         let rows = sqlx::query(
             r#"
-            SELECT nl.selling_asset_id, nl.buying_asset_id, nl.venue_type, nl.venue_ref, nl.price, nl.available_amount,
+            SELECT nl.selling_asset_id, nl.buying_asset_id, nl.venue_type, nl.venue_ref,
+                   nl.price::text as price, nl.available_amount::text as available_amount,
                    amm.fee_bps as fee_bps
             FROM normalized_liquidity nl
             LEFT JOIN amm_pool_reserves amm ON nl.venue_type = 'amm' AND nl.venue_ref = amm.pool_address

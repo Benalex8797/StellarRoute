@@ -148,9 +148,9 @@ Focus here first when debugging behavior across crates.
 - If icon imports break frontend tests, check `frontend/__mocks__/lucide-react.tsx`.
 
 ## Learned User Preferences
-- Primary goal is a live DEX with real users: prioritize production deployability over docs-only or filler work.
+- Primary goal is a live non-custodial DEX with real users, expanding toward cross-chain bridge/aggregation and offramp; prioritize production deployability over docs-only or filler work.
 - GitHub issues should be grounded in real codebase gaps (not placeholders), with hard/high-quality acceptance criteria and Wave-friendly labels.
-- Frontend contributor issues should require downloading relevant frontend skills, and should cover a premium UI plus Vercel and testnet deployment work.
+- Stale or unfresh orderbook/market data must not hard-block swaps; return a degraded quote and notify the user instead of failing the swap.
 - Frontend UI should feel unique and spacious; reject dense/jammed header and swap chrome, and polish wallet/error messaging rather than stacking warnings.
 - When processing contributor/fork PRs, fix conflicts and CI and merge rather than closing; keep going until the open queue is empty unless a PR is explicitly unmergeable.
 - For fork PRs far behind `main`, cherry-pick feature commits onto current `main` instead of merging the stale branch wholesale.
@@ -159,13 +159,17 @@ Focus here first when debugging behavior across crates.
 - When closing multiple related issues, prefer one PR that closes them together.
 - Do not edit attached plan files during implementation.
 - Prefer free always-on Wave 0 staging (Oracle Always Free + Cloudflare Tunnel) over paid Render when cost matters; a public HTTPS API is required for Freighter/Vercel (localhost alone is not enough).
+- SCF application has advanced past the Interest Form to next-stage Q&A; materials should prefer Open Track and lead with non-custodial Stellar SDEX+AMM aggregation, with cross-chain bridge/swap/offramp as the longer-term vision.
 
 ## Learned Workspace Facts
 - Canonical GitHub repo is `StellarRoute/StellarRoute`; local path is `/Users/daniel/Desktop/2026/StellarRoute`.
 - Project participates in the Drips/Stellar Wave contributor program; issues commonly use Wave/`help wanted`/complexity labels.
 - Frontend production is on Vercel (`stellarroute.app` and `www.stellarroute.app`); GitHub-linked auto-deploy from `main` with root directory `frontend`; API CORS and env allowlists should include both hosts; wiring to a public testnet API/indexer is an explicit product goal.
 - Browser wallet support is Freighter, xBull, Albedo, and LOBSTR; Freighter detection should use `isConnected()`, not `isAllowed`.
-- Wave 0 public testnet API path is Oracle Always Free ARM VM + `deploy/docker-compose.prod.yml` + Cloudflare Tunnel; runbook is `docs/deployment/oracle-always-free.md` (paid Render blueprint remains optional later).
+- Wave 0 public testnet API path is Oracle Always Free ARM VM + `deploy/docker-compose.prod.yml` + Cloudflare Tunnel; staging API hostname is `https://34.224.110.144.sslip.io` (sslip.io); staging deploys via GitHub Actions `deploy-ec2-staging.yml` on `push` to `main` for `crates/**` (not gated on CI green; manual `gh workflow run` is the fallback); runbook is `docs/deployment/oracle-always-free.md` (paid Render blueprint remains optional later).
+- Stellar CCTP source burn is two-step: USDC `approve`, then `deposit_for_burn`; `submit-burn` must classify on-chain function (never verify approval txs as burns). CCTP v2 API is under `/api/v2/bridge/cctp/`; quote TTL defaults to 5 minutes. Key paths: `crates/api/src/cctp/*`, `frontend/hooks/useCctpSaga.ts`, `frontend/lib/cctp/*`.
+- Cross-chain CCTP swap is fail-closed behind `CCTP_ENABLED` (defaults false); enabling `/cross-chain` in an environment also requires `CCTP_ACCESS_TOKEN_HMAC_KEY` and a Sepolia RPC URL.
+- Live swap execution today is classic one-hop SDEX `PathPaymentStrictSend`; multi-hop/AMM Soroban settlement and public CCTP remain gated milestones. SCF reviewer architecture SoT: `docs/architecture/scf-technical-architecture.md`.
 - Related sibling work under `~/Desktop/2026/` (separate from this repo) includes StellarHydra, WaveFlow, route-visualizer, and swap-agrregrator — do not commit StellarRoute changes into those trees by mistake.
 - Frontend Vitest in CI is split by path (app/components/hooks/lib); flaky or heavy suites have been a recurring main-branch blocker.
 - `gh` is the expected interface for GitHub issues, PRs, labels, and CI log inspection on this repo.
