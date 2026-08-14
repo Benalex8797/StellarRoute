@@ -7,7 +7,10 @@ import type { CctpQuoteResponse, CctpTransferStatusResponse } from '@/lib/cctp/t
 import type { CctpSagaStage } from '@/hooks/useCctpSaga';
 import type { CctpSessionRecoveryMeta } from '@/lib/cctp/session-vault';
 import type { WalletRoleMismatch } from '@/lib/cctp/wallet-role-binding';
-import { formatCctpTraderStatus } from '@/lib/cctp/status-copy';
+import {
+  formatCctpFinalityLabel,
+  formatCctpTraderStatus,
+} from '@/lib/cctp/status-copy';
 import { cn } from '@/lib/utils';
 import { CctpJourneyVisual } from './CctpJourneyVisual';
 import { CctpTransferReceipt } from './CctpTransferReceipt';
@@ -19,6 +22,8 @@ interface CctpExecutionPanelProps {
   error: CctpTraderError | null;
   primaryLabel: string;
   primaryDisabled: boolean;
+  needsUserAction?: boolean;
+  nextActionNotice?: string | null;
   onPrimary: () => void;
   onReset?: () => void;
   /** Immediate reset after successful transfer (skips abandon confirm). */
@@ -55,6 +60,8 @@ export function CctpExecutionPanel({
   error,
   primaryLabel,
   primaryDisabled,
+  needsUserAction = false,
+  nextActionNotice = null,
   onPrimary,
   onReset,
   onCompleteDone,
@@ -98,13 +105,13 @@ export function CctpExecutionPanel({
         'space-y-3 rounded-2xl border border-border/40 bg-card/40 p-4',
         className,
       )}
-      aria-label="CCTP transfer execution"
+      aria-label="Transfer progress"
       data-testid="cctp-execution-panel"
     >
       {bridgeUnavailable && (
         <p className="text-sm text-muted-foreground" role="status">
-          CCTP is not executable on this API right now. Check status and retry
-          when the corridor shows live.
+          Bridge is not available on this API right now. Check status and retry
+          when the route shows live.
         </p>
       )}
 
@@ -162,8 +169,10 @@ export function CctpExecutionPanel({
             <dd className="font-medium">{quote.destination_amount} USDC</dd>
           </div>
           <div className="rounded-lg border border-border/30 bg-muted/20 p-2">
-            <dt className="text-muted-foreground">Finality</dt>
-            <dd className="font-medium capitalize">{quote.finality}</dd>
+            <dt className="text-muted-foreground">Speed</dt>
+            <dd className="font-medium">
+              {formatCctpFinalityLabel(quote.finality)}
+            </dd>
           </div>
           <div className="rounded-lg border border-border/30 bg-muted/20 p-2">
             <dt className="text-muted-foreground">Quote expires</dt>
@@ -205,7 +214,7 @@ export function CctpExecutionPanel({
 
       {cooldownSec > 0 && (
         <p className="text-xs text-muted-foreground" role="status">
-          Re-attestation available in {cooldownSec}s
+          Retry available in {cooldownSec}s
         </p>
       )}
 
@@ -221,6 +230,15 @@ export function CctpExecutionPanel({
       )}
 
       <div className="space-y-2">
+        {needsUserAction && nextActionNotice && !isComplete && (
+          <div
+            className="rounded-xl border border-primary/40 bg-primary/10 px-3 py-2.5 text-sm"
+            role="status"
+            data-testid="cctp-next-action-banner"
+          >
+            <p className="font-medium text-foreground">{nextActionNotice}</p>
+          </div>
+        )}
         {ctaHint && primaryDisabled && !isComplete && (
           <p
             className="text-xs text-muted-foreground"
@@ -258,7 +276,12 @@ export function CctpExecutionPanel({
           ) : (
             <Button
               type="button"
-              className="min-h-11"
+              className={cn(
+                'min-h-11',
+                needsUserAction &&
+                  !primaryDisabled &&
+                  'ring-2 ring-primary/50 ring-offset-2 ring-offset-background animate-pulse',
+              )}
               disabled={primaryDisabled}
               onClick={onPrimary}
               data-testid="cross-chain-review-cta"

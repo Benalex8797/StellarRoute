@@ -4,10 +4,7 @@ import { CrossChainSwapDeck } from './CrossChainSwapDeck';
 import { SettingsProvider } from '@/components/providers/settings-provider';
 import { WalletProvider } from '@/components/providers/wallet-provider';
 import { ThemeProvider } from 'next-themes';
-import {
-  EXECUTING_TIMELINE_STORY_FIXTURE,
-  type CrossChainDeckStoryPresentation,
-} from './crossChainStoryPresentation';
+import type { CrossChainDeckStoryPresentation } from './crossChainStoryPresentation';
 
 function DeckStory({ presentation }: { presentation?: CrossChainDeckStoryPresentation }) {
   return (
@@ -34,7 +31,7 @@ export const EvmToStellar: Story = () => (
     }}
   />
 );
-EvmToStellar.storyName = 'EVM Sepolia to Stellar CCTP';
+EvmToStellar.storyName = 'EVM Sepolia to Stellar';
 
 export const WalletsPartial: Story = () => (
   <DeckStory
@@ -58,7 +55,7 @@ export const NetworkMismatch: Story = () => (
 );
 NetworkMismatch.storyName = 'Network mismatch';
 
-export const RoutePreview: Story = () => (
+export const SimplifiedBridge: Story = () => (
   <DeckStory
     presentation={{
       initialSourceChainId: 'ethereum-sepolia',
@@ -66,12 +63,7 @@ export const RoutePreview: Story = () => (
     }}
   />
 );
-RoutePreview.storyName = 'Route preview CCTP rail';
-
-export const ExecutingTimeline: Story = () => (
-  <DeckStory presentation={{ timelineSteps: EXECUTING_TIMELINE_STORY_FIXTURE }} />
-);
-ExecutingTimeline.storyName = 'Executing timeline fixture';
+SimplifiedBridge.storyName = 'Simplified single-column bridge';
 
 export const UnsupportedCorridor: Story = () => (
   <DeckStory

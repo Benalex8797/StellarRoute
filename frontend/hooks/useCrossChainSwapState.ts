@@ -86,8 +86,9 @@ export function useCrossChainSwapState(options?: {
     setSourceChainId(recovery.sourceChainId as ChainDisplayId);
     setDestChainId(recovery.destChainId as ChainDisplayId);
     setSourceAmount(recovery.amount);
-    setRecipientOverride(recovery.recipient);
-    setUseRecipientOverride(true);
+    // Recipient comes from the connected destination wallet — no paste override.
+    setRecipientOverride('');
+    setUseRecipientOverride(false);
   }, []);
 
   const isCctpCorridor =

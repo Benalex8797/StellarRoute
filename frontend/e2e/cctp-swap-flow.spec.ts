@@ -280,11 +280,12 @@ async function setupEvmCorridor(page: Page) {
   await tab.waitFor({ state: 'visible' });
   await tab.click();
   await page.waitForSelector('[data-testid="cctp-source-amount"]', { timeout: 20_000 });
-  await page.getByLabel('Use custom destination recipient').click();
-  await page.getByTestId('destination-recipient-input').fill(STELLAR_G);
   await page.getByTestId('cctp-source-amount').fill('10');
   await page.getByTestId('wallet-chip-ethereum-sepolia').click();
   await page.getByRole('button', { name: /EVM Wallet/i }).click();
+  await dismissWalletOverlay(page);
+  await page.getByTestId('wallet-chip-stellar-mint-submitter').click();
+  await page.getByRole('button', { name: /Freighter/i }).click();
   await dismissWalletOverlay(page);
 }
 
@@ -292,8 +293,6 @@ async function setupStellarCorridor(page: Page) {
   await page.evaluate(() => sessionStorage.removeItem('stellarroute:cctp:v1'));
   await page.getByTestId('corridor-tab-stellar-to-evm').click();
   await page.waitForSelector('[data-testid="cctp-source-amount"]', { timeout: 20_000 });
-  await page.getByLabel('Use custom destination recipient').click();
-  await page.getByTestId('destination-recipient-input').fill(EVM_ORIGINAL);
   await page.getByTestId('cctp-source-amount').fill('10');
   await page.getByTestId('wallet-chip-stellar').click();
   await page.getByRole('button', { name: /Freighter/i }).click();

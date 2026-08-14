@@ -7,9 +7,9 @@ import type { CctpStepId } from './CctpStepRail';
 import { cctpActiveStepFromSaga, cctpCompletedStepsFromSaga } from './CctpStepRail';
 
 const HOPS: Array<{ id: CctpStepId; label: string; hint: string }> = [
-  { id: 'burn', label: 'Burn', hint: 'Source lock' },
-  { id: 'attest', label: 'Attest', hint: 'Circle relay' },
-  { id: 'mint', label: 'Mint', hint: 'Destination' },
+  { id: 'burn', label: 'Lock', hint: 'Source' },
+  { id: 'attest', label: 'Confirm', hint: 'Waiting' },
+  { id: 'mint', label: 'Receive', hint: 'Destination' },
 ];
 
 export interface CctpJourneyVisualProps {
@@ -43,7 +43,7 @@ export function CctpJourneyVisual({
       )}
       data-testid="cctp-journey-visual"
       data-status={status ?? 'idle'}
-      aria-label="CCTP transfer journey"
+      aria-label="Transfer progress"
     >
       <div
         className="cctp-journey-grid pointer-events-none absolute inset-0 opacity-40"
@@ -116,14 +116,14 @@ export function CctpJourneyVisual({
 
       <p className="relative z-[1] mt-4 text-center text-xs text-muted-foreground">
         {isComplete
-          ? 'Corridor complete — USDC arrived on destination.'
+          ? 'Transfer complete — USDC arrived on destination.'
           : active === 'burn'
-            ? 'Packet leaving source — sign the burn when prompted.'
+            ? 'Locking on source — confirm when your wallet prompts.'
             : active === 'attest'
-              ? 'In transit — Circle is attesting the burn message.'
+              ? 'In transit — waiting for confirmation.'
               : active === 'mint'
-                ? 'Final hop — sign the destination mint.'
-                : 'Preparing corridor…'}
+                ? 'Almost there — confirm receive on destination.'
+                : 'Getting ready…'}
       </p>
     </div>
   );

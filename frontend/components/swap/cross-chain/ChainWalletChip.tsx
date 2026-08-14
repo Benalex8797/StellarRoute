@@ -60,6 +60,9 @@ function BoundWalletChip({
     (storyState === undefined && binding.networkMismatch);
   const unsupported = storyState === 'unsupported' || binding.unsupported;
 
+  const showConnectCta =
+    !binding.readOnly && !isConnected && !unsupported && !isConnecting;
+
   const statusLabel = unsupported
     ? 'Unsupported wallet'
     : binding.readOnly
@@ -72,51 +75,67 @@ function BoundWalletChip({
             ? 'Connected'
             : 'Disconnected';
 
+  const openPicker = () => {
+    if (!binding.readOnly) setPickerOpen(true);
+  };
+
   return (
     <>
-      <button
-        type="button"
-        disabled={disabled || binding.readOnly}
-        onClick={() => {
-          if (!binding.readOnly) setPickerOpen(true);
-        }}
-        className={cn(
-          'flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          networkMismatch
-            ? 'border-signal/40 bg-signal/10'
-            : isConnected
-              ? 'border-primary/35 bg-primary/10'
-              : 'border-border/50 bg-background/40',
-          (disabled || binding.readOnly) && 'opacity-70 cursor-default',
-          className,
-        )}
-        aria-label={`${binding.chainLabel} wallet: ${statusLabel}`}
-        data-testid={binding.testId}
-      >
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50">
-          {isConnecting ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          ) : (
-            <Wallet className="h-4 w-4" aria-hidden />
+      {showConnectCta ? (
+        <Button
+          type="button"
+          className={cn('min-h-11 w-full gap-2', className)}
+          disabled={disabled}
+          onClick={openPicker}
+          aria-label={`Connect ${binding.chainLabel} wallet`}
+          data-testid={binding.testId}
+        >
+          <Wallet className="h-4 w-4" aria-hidden />
+          Connect {binding.chainShortLabel} wallet
+        </Button>
+      ) : (
+        <button
+          type="button"
+          disabled={disabled || binding.readOnly}
+          onClick={openPicker}
+          className={cn(
+            'flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            networkMismatch
+              ? 'border-signal/40 bg-signal/10'
+              : isConnected
+                ? 'border-primary/35 bg-primary/10'
+                : 'border-border/50 bg-background/40',
+            (disabled || binding.readOnly) && 'opacity-70 cursor-default',
+            className,
           )}
-        </span>
-        <span className="min-w-0">
-          <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">
-            {statusLabel}
+          aria-label={`${binding.chainLabel} wallet: ${statusLabel}`}
+          data-testid={binding.testId}
+        >
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50">
+            {isConnecting ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <Wallet className="h-4 w-4" aria-hidden />
+            )}
           </span>
-          <span className="block truncate font-mono text-xs font-semibold">
-            {isConnected && binding.address
-              ? shortenAddress(binding.address)
-              : binding.chainShortLabel}
+          <span className="min-w-0">
+            <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">
+              {statusLabel}
+            </span>
+            <span className="block truncate font-mono text-xs font-semibold">
+              {isConnected && binding.address
+                ? shortenAddress(binding.address)
+                : binding.chainShortLabel}
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+      )}
 
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{binding.chainLabel} wallet</DialogTitle>
+            <DialogTitle>Connect {binding.chainLabel} wallet</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             {networkMismatch && (

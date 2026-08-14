@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { toast } from 'sonner';
 import { NetworkMismatchBanner } from '@/components/shared/NetworkMismatchBanner';
 import { Button } from '@/components/ui/button';
 import { useFeatureFlag } from '@/hooks/useFeatureFlag';
@@ -13,24 +14,22 @@ import { UNMATCHED_CORRIDOR_ID } from '@/lib/cross-chain/corridors';
 import { resolveCctpDirection } from '@/lib/cctp/corridor-bridge';
 import { loadCctpSession } from '@/lib/cctp/session-vault';
 import type { ChainDisplayId } from '@/lib/cross-chain/types';
-import { corridorStatusCopy } from '@/lib/cross-chain/format';
-import { cn } from '@/lib/utils';
 import { CctpExecutionPanel } from './CctpExecutionPanel';
 import { CctpCompleteDialog } from './CctpCompleteDialog';
 import { CorridorTabs } from './CorridorTabs';
-import { CrossChainExecutionTimeline } from './CrossChainExecutionTimeline';
-import { CrossChainRoutePanel } from './CrossChainRoutePanel';
-import { DestinationAddressField } from './DestinationAddressField';
 import { PairedChainSelectors } from './PairedChainSelectors';
-import { RouteDisclosurePanel } from './RouteDisclosurePanel';
 import { UnsupportedCorridorState } from './UnsupportedCorridorState';
 import type { CrossChainDeckStoryPresentation } from './crossChainStoryPresentation';
 import {
   isCctpPrimaryActionDisabled,
   resolveCctpCtaHint,
-  resolveDestinationRecipientSetupHint,
+  resolveDestinationWalletSetupHint,
 } from './cctpCtaHint';
-import { buildCctpTimelineFromTransfer } from '@/lib/cross-chain/cctp-timeline';
+import {
+  cctpNeedsUserAction,
+  resolveCctpNextActionNotice,
+  resolveCctpNextActionToast,
+} from './cctpNextActionNotice';
 
 const SwapCard = dynamic(
   () => import('@/components/swap/SwapCard').then((m) => m.SwapCard),
@@ -64,12 +63,11 @@ export function CrossChainSwapDeck({
   const [confirmAbandon, setConfirmAbandon] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
   const completedTransferIdRef = useRef<string | null>(null);
+  const prevUserActionRef = useRef<string | null>(null);
 
   const walletRoles = useCrossChainWalletRoles({
     sourceChainId: state.sourceChainId,
     destChainId: state.destChainId,
-    recipientOverride: state.recipientOverride,
-    useRecipientOverride: state.useRecipientOverride,
   });
 
   const quoteInputsKey = useMemo(
@@ -125,19 +123,15 @@ export function CrossChainSwapDeck({
     const formMatches =
       state.sourceChainId === recovery.sourceChainId &&
       state.destChainId === recovery.destChainId &&
-      state.sourceAmount === recovery.amount &&
-      state.useRecipientOverride &&
-      state.recipientOverride === recovery.recipient;
+      state.sourceAmount === recovery.amount;
     if (formMatches || restoredRecoveryKeyRef.current === key) return;
     restoredRecoveryKeyRef.current = key;
     state.restoreFromRecovery(recovery);
   }, [
     saga.sessionPublic?.recovery,
     state.destChainId,
-    state.recipientOverride,
     state.sourceAmount,
     state.sourceChainId,
-    state.useRecipientOverride,
     state.restoreFromRecovery,
   ]);
 
@@ -183,29 +177,12 @@ export function CrossChainSwapDeck({
     setCompleteOpen(true);
   }, [saga.stage, saga.transferStatus?.status, saga.transferStatus?.transfer_id]);
 
-  const timelineSteps = useMemo(() => {
-    if (storyPresentation?.timelineSteps) {
-      return storyPresentation.timelineSteps;
-    }
-    if (saga.transferStatus) {
-      return buildCctpTimelineFromTransfer(saga.transferStatus);
-    }
-    return state.timelineSteps;
-  }, [
-    saga.transferStatus,
-    state.timelineSteps,
-    storyPresentation?.timelineSteps,
-  ]);
-
   const bridgeReady = readiness.cctpGloballyReady;
   const cctpBlockInput = useMemo(
     () => ({
       direction: walletRoles.direction,
       sourceAmount: state.sourceAmount,
       destRecipientAddress: walletRoles.destRecipientAddress,
-      useRecipientOverride: state.useRecipientOverride,
-      recipientOverride: state.recipientOverride,
-      recipientValidation: state.recipientValidation,
       bridgeReady,
       readinessLoading: readiness.loading,
       sagaPrimaryDisabled: saga.primaryAction.disabled,
@@ -214,10 +191,7 @@ export function CrossChainSwapDeck({
       bridgeReady,
       readiness.loading,
       saga.primaryAction.disabled,
-      state.recipientOverride,
-      state.recipientValidation,
       state.sourceAmount,
-      state.useRecipientOverride,
       walletRoles.destRecipientAddress,
       walletRoles.direction,
     ],
@@ -230,19 +204,36 @@ export function CrossChainSwapDeck({
     () => isCctpPrimaryActionDisabled(cctpBlockInput),
     [cctpBlockInput],
   );
-  const destinationRecipientSetupHint = useMemo(
+  const destinationWalletSetupHint = useMemo(
     () =>
-      resolveDestinationRecipientSetupHint(
+      resolveDestinationWalletSetupHint(
         walletRoles.direction,
         walletRoles.destRecipientAddress,
-        state.useRecipientOverride,
       ),
-    [
-      state.useRecipientOverride,
-      walletRoles.destRecipientAddress,
-      walletRoles.direction,
-    ],
+    [walletRoles.destRecipientAddress, walletRoles.direction],
   );
+
+  const needsUserAction = cctpNeedsUserAction(
+    saga.primaryAction.action,
+    cctpPrimaryDisabled,
+  );
+  const nextActionNotice = needsUserAction
+    ? resolveCctpNextActionNotice(saga.primaryAction.action)
+    : null;
+
+  useEffect(() => {
+    const action = saga.primaryAction.action;
+    if (!needsUserAction) {
+      prevUserActionRef.current = action;
+      return;
+    }
+    if (prevUserActionRef.current === action) return;
+    prevUserActionRef.current = action;
+    const toastCopy = resolveCctpNextActionToast(action);
+    if (toastCopy) {
+      toast.message(toastCopy, { id: 'cctp-next-action' });
+    }
+  }, [needsUserAction, saga.primaryAction.action]);
 
   return (
     <div
@@ -250,26 +241,13 @@ export function CrossChainSwapDeck({
       data-testid="cross-chain-swap-deck"
     >
       <header className="space-y-1.5 px-1 sm:px-0">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div className="space-y-1">
-            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-primary">
-              Cross-chain
-            </p>
-            <h2 className="brand-wordmark text-2xl text-foreground sm:text-3xl">
-              Pick a route
-            </h2>
-          </div>
-          <span
-            className={cn(
-              'rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider',
-              state.executable && !state.isUncatalogued
-                ? 'border-primary/40 bg-primary/10 text-primary'
-                : 'border-border/50 text-muted-foreground',
-            )}
-            data-testid="corridor-status-badge"
-          >
-            {corridorStatusCopy(state.executable, state.isUncatalogued)}
-          </span>
+        <div className="space-y-1">
+          <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-primary">
+            Cross-chain
+          </p>
+          <h2 className="brand-wordmark text-2xl text-foreground sm:text-3xl">
+            Bridge USDC
+          </h2>
         </div>
       </header>
 
@@ -279,148 +257,113 @@ export function CrossChainSwapDeck({
         disabled={saga.inputsLocked}
       />
 
-      <PairedChainSelectors
-        sourceChainId={state.sourceChainId}
-        destChainId={state.destChainId}
-        onSourceChange={state.selectSourceChain}
-        onDestChange={state.selectDestChain}
-        sourceWalletState={storyPresentation?.sourceWalletState}
-        destWalletState={storyPresentation?.destWalletState}
-        sourceWalletBinding={walletRoles.sourceChipBinding}
-        destWalletBinding={walletRoles.destChipBinding}
-        mintSubmitterBinding={walletRoles.mintSubmitterChipBinding}
-        inputsLocked={saga.inputsLocked}
-        destWalletHint={destinationRecipientSetupHint}
-      />
+      {!state.isStellarNativeExecutable && (
+        <PairedChainSelectors
+          sourceChainId={state.sourceChainId}
+          destChainId={state.destChainId}
+          onSourceChange={state.selectSourceChain}
+          onDestChange={state.selectDestChain}
+          sourceWalletState={storyPresentation?.sourceWalletState}
+          destWalletState={storyPresentation?.destWalletState}
+          sourceWalletBinding={walletRoles.sourceChipBinding}
+          destWalletBinding={walletRoles.destChipBinding}
+          mintSubmitterBinding={walletRoles.mintSubmitterChipBinding}
+          inputsLocked={saga.inputsLocked}
+          destWalletHint={destinationWalletSetupHint}
+        />
+      )}
 
       <div
-        className="cross-chain-deck-grid gap-6 lg:gap-8"
+        className="cross-chain-deck-main space-y-4 min-w-0"
         id={panelId}
         role="tabpanel"
         aria-labelledby={panelLabelId}
       >
-        <div className="space-y-4 min-w-0">
-          {state.isStellarNativeExecutable ? (
-            <div className="space-y-3" data-testid="stellar-native-delegation">
-              <p className="text-xs text-muted-foreground">
-                Amounts, assets, and quotes are edited in the Stellar swap card
-                below — your single source for live execution.
-              </p>
-              <NetworkMismatchBanner />
-              <SwapCard showRoutePicker={routesBeta} />
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {showUnsupported && (
-                <UnsupportedCorridorState
-                  sourceChainId={state.sourceChainId}
-                  destChainId={state.destChainId}
-                  uncatalogued={state.isUncatalogued}
-                />
-              )}
-              {showCrossChainPreview && (
-                <>
-                  <DestinationAddressField
-                    chain={state.destChain}
-                    enabled={state.useRecipientOverride}
-                    onEnabledChange={state.setUseRecipientOverride}
-                    value={state.recipientOverride}
-                    onChange={state.setRecipientOverride}
-                    validation={state.recipientValidation}
-                    disabled={saga.inputsLocked}
-                    setupHint={destinationRecipientSetupHint}
-                  />
-                  {state.executable && walletRoles.direction && (
-                    <label className="block space-y-1">
-                      <span className="text-xs font-medium text-muted-foreground">
-                        USDC amount (CCTP)
-                      </span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        className="min-h-11 w-full rounded-xl border border-border/50 bg-background/60 px-3 font-mono text-sm disabled:opacity-60"
-                        value={state.sourceAmount}
-                        onChange={(e) => state.setSourceAmount(e.target.value)}
-                        placeholder="0.00"
-                        data-testid="cctp-source-amount"
-                        disabled={saga.inputsLocked}
-                      />
-                      <p
-                        className="text-xs text-muted-foreground"
-                        data-testid="cctp-usdc-only-note"
-                      >
-                        CCTP bridges native USDC only. To move XLM or USDy, swap
-                        to USDC on Stellar first, then bridge.{' '}
-                        <Button
-                          type="button"
-                          variant="link"
-                          className="h-auto p-0 text-xs font-normal"
-                          onClick={() => state.selectCorridor('stellar-native')}
-                          data-testid="swap-to-usdc-on-stellar-link"
-                        >
-                          Swap to USDC on Stellar
-                        </Button>
-                      </p>
-                    </label>
-                  )}
-                  {state.executable && walletRoles.direction && (
-                    <CctpExecutionPanel
-                      stage={saga.stage}
-                      quote={saga.quote}
-                      transferStatus={saga.transferStatus}
-                      error={saga.error}
-                      primaryLabel={saga.primaryAction.label}
-                      primaryDisabled={cctpPrimaryDisabled}
-                      ctaHint={ctaHint}
-                      onPrimary={() => void saga.runPrimaryAction()}
-                      onReset={handleAbandon}
-                      onCompleteDone={handleCompleteDone}
-                      onViewReceipt={() => setCompleteOpen(true)}
-                      recipient={
-                        saga.sessionPublic?.recovery.recipient ??
-                        walletRoles.destRecipientAddress
-                      }
-                      resetLabel={
-                        confirmAbandon
-                          ? 'Confirm abandon transfer'
-                          : 'Start new transfer'
-                      }
-                      bridgeUnavailable={
-                        readiness.loaded && !readiness.cctpGloballyReady
-                      }
-                      resumeMismatch={saga.resumeMismatch}
-                      walletRoleMismatch={saga.walletRoleMismatch}
-                      sessionPublic={saga.sessionPublic}
-                      reattestCooldownUntil={saga.reattestCooldownUntil}
+        {state.isStellarNativeExecutable ? (
+          <div className="space-y-3" data-testid="stellar-native-delegation">
+            <NetworkMismatchBanner />
+            <SwapCard showRoutePicker={routesBeta} />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {showUnsupported && (
+              <UnsupportedCorridorState
+                sourceChainId={state.sourceChainId}
+                destChainId={state.destChainId}
+                uncatalogued={state.isUncatalogued}
+              />
+            )}
+            {showCrossChainPreview && (
+              <>
+                {state.executable && walletRoles.direction && (
+                  <label className="block space-y-1">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Amount
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="min-h-11 w-full rounded-xl border border-border/50 bg-background/60 px-3 font-mono text-sm disabled:opacity-60"
+                      value={state.sourceAmount}
+                      onChange={(e) => state.setSourceAmount(e.target.value)}
+                      placeholder="0.00"
+                      data-testid="cctp-source-amount"
+                      disabled={saga.inputsLocked}
                     />
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-
-        <aside className="space-y-4 min-w-0" aria-label="Route and execution details">
-          <CrossChainRoutePanel
-            sourceChainId={state.sourceChainId}
-            destChainId={state.destChainId}
-            protocol={state.corridor?.protocol ?? null}
-            executable={
-              state.isStellarNativeExecutable ||
-              (state.executable && readiness.cctpGloballyReady)
-            }
-            uncatalogued={state.isUncatalogued}
-            quote={saga.quote}
-            bridgeUnavailable={
-              !state.isStellarNativeExecutable &&
-              readiness.loaded &&
-              !readiness.cctpGloballyReady
-            }
-            sagaStatus={saga.transferStatus?.status}
-          />
-          <RouteDisclosurePanel />
-          <CrossChainExecutionTimeline steps={timelineSteps} />
-        </aside>
+                    <p
+                      className="text-xs text-muted-foreground"
+                      data-testid="cctp-usdc-only-note"
+                    >
+                      Bridges USDC only.{' '}
+                      <Button
+                        type="button"
+                        variant="link"
+                        className="h-auto p-0 text-xs font-normal"
+                        onClick={() => state.selectCorridor('stellar-native')}
+                        data-testid="swap-to-usdc-on-stellar-link"
+                      >
+                        Swap to USDC on Stellar
+                      </Button>
+                    </p>
+                  </label>
+                )}
+                {state.executable && walletRoles.direction && (
+                  <CctpExecutionPanel
+                    stage={saga.stage}
+                    quote={saga.quote}
+                    transferStatus={saga.transferStatus}
+                    error={saga.error}
+                    primaryLabel={saga.primaryAction.label}
+                    primaryDisabled={cctpPrimaryDisabled}
+                    needsUserAction={needsUserAction}
+                    nextActionNotice={nextActionNotice}
+                    ctaHint={ctaHint}
+                    onPrimary={() => void saga.runPrimaryAction()}
+                    onReset={handleAbandon}
+                    onCompleteDone={handleCompleteDone}
+                    onViewReceipt={() => setCompleteOpen(true)}
+                    recipient={
+                      saga.sessionPublic?.recovery.recipient ??
+                      walletRoles.destRecipientAddress
+                    }
+                    resetLabel={
+                      confirmAbandon
+                        ? 'Confirm abandon transfer'
+                        : 'Start new transfer'
+                    }
+                    bridgeUnavailable={
+                      readiness.loaded && !readiness.cctpGloballyReady
+                    }
+                    resumeMismatch={saga.resumeMismatch}
+                    walletRoleMismatch={saga.walletRoleMismatch}
+                    sessionPublic={saga.sessionPublic}
+                    reattestCooldownUntil={saga.reattestCooldownUntil}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <CctpCompleteDialog

@@ -56,6 +56,8 @@ describe('CctpExecutionPanel', () => {
     expect(screen.getByText(/Destination \(EVM\)/i)).toBeInTheDocument();
     expect(screen.getByText(/Destination mint tx/i)).toBeInTheDocument();
     expect(screen.getByTestId('cctp-saga-status')).toHaveTextContent(/Complete/i);
+    expect(screen.getByText(/Speed/i)).toBeInTheDocument();
+    expect(screen.getByText(/Standard timing/i)).toBeInTheDocument();
     const cta = screen.getByTestId('cross-chain-review-cta');
     expect(cta).toHaveTextContent(/Done — start new transfer/i);
     expect(cta).not.toBeDisabled();
@@ -67,7 +69,7 @@ describe('CctpExecutionPanel', () => {
     expect(onViewReceipt).toHaveBeenCalledTimes(1);
   });
 
-  it('renders journey while awaiting attestation', () => {
+  it('renders journey while awaiting confirmation', () => {
     render(
       <CctpExecutionPanel
         stage="awaiting_attestation"
@@ -78,7 +80,7 @@ describe('CctpExecutionPanel', () => {
           destination_tx_hash: undefined,
         }}
         error={null}
-        primaryLabel="Waiting for Circle attestation…"
+        primaryLabel="Waiting for confirmation…"
         primaryDisabled
         onPrimary={vi.fn()}
       />,
@@ -89,5 +91,34 @@ describe('CctpExecutionPanel', () => {
       'awaiting_attestation',
     );
     expect(screen.getByText(/In transit/i)).toBeInTheDocument();
+    expect(screen.getByText('Lock')).toBeInTheDocument();
+    expect(screen.getByText('Receive')).toBeInTheDocument();
+  });
+
+  it('shows Your turn banner and emphasizes CTA when needsUserAction', () => {
+    render(
+      <CctpExecutionPanel
+        stage="sign_mint"
+        quote={null}
+        transferStatus={{
+          ...completedStatus,
+          status: 'mint_prepared',
+          destination_tx_hash: undefined,
+        }}
+        error={null}
+        primaryLabel="Confirm receive on destination"
+        primaryDisabled={false}
+        needsUserAction
+        nextActionNotice="Your turn — confirm receive on the destination chain."
+        onPrimary={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('cctp-next-action-banner')).toHaveTextContent(
+      /Your turn — confirm receive/i,
+    );
+    expect(screen.getByTestId('cross-chain-review-cta').className).toMatch(
+      /animate-pulse/,
+    );
   });
 });

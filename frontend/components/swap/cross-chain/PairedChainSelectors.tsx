@@ -105,11 +105,10 @@ export function PairedChainSelectors({
           data-testid="stellar-mint-submitter-control"
         >
           <p className="text-xs font-medium text-foreground">
-            Stellar mint fee payer
+            Stellar wallet for fees
           </p>
           <p className="text-xs text-muted-foreground">
-            Muxed recipients cannot sign — connect a Stellar G account to submit
-            the mint.
+            Connect a Stellar wallet to pay network fees when receiving USDC.
           </p>
           <ChainWalletChip binding={mintSubmitterBinding} />
         </div>
@@ -139,6 +138,16 @@ function ChainLeg({
 }) {
   const chain = CHAIN_DEFINITIONS[chainId];
   const legLabel = role === 'source' ? 'From' : 'To';
+  const isConnected =
+    walletStoryState === 'connected' ||
+    (walletStoryState === undefined && Boolean(walletBinding?.isConnected));
+  const showInlineChip =
+    Boolean(walletBinding) &&
+    (isConnected ||
+      walletStoryState === 'connecting' ||
+      walletStoryState === 'mismatch' ||
+      walletStoryState === 'unsupported' ||
+      Boolean(walletBinding?.readOnly));
 
   return (
     <div className="space-y-3" data-testid={`chain-leg-${role}`}>
@@ -151,11 +160,21 @@ function ChainLeg({
             {chain.shortLabel}
           </p>
         </div>
+        {showInlineChip && (
+          <ChainWalletChip
+            binding={walletBinding}
+            storyState={walletStoryState}
+            className="shrink-0"
+          />
+        )}
+      </div>
+
+      {walletBinding && !showInlineChip && (
         <ChainWalletChip
           binding={walletBinding}
           storyState={walletStoryState}
         />
-      </div>
+      )}
 
       {role === 'destination' && walletHint && (
         <p

@@ -4,10 +4,17 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { CrossChainSwapDeck } from './CrossChainSwapDeck';
 import { SettingsProvider } from '@/components/providers/settings-provider';
 import { WalletProvider } from '@/components/providers/wallet-provider';
-import { EXECUTING_TIMELINE_STORY_FIXTURE } from './crossChainStoryPresentation';
 import { useApiV2Readiness } from '@/hooks/useApiV2Readiness';
 import { useCrossChainWalletRoles } from '@/hooks/useCrossChainWalletRoles';
 import type { UseCrossChainWalletRolesInput } from '@/hooks/useCrossChainWalletRoles';
+
+vi.mock('sonner', () => ({
+  toast: {
+    message: vi.fn(),
+    success: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 vi.mock('next/dynamic', () => ({
   default: () => {
@@ -37,7 +44,7 @@ vi.mock('@/hooks/useApiV2Readiness', () => ({
 
 vi.mock('@/hooks/useCrossChainWalletRoles', () => ({
   useCrossChainWalletRoles: vi.fn(
-    (input: UseCrossChainWalletRolesInput) => ({
+    (_input: UseCrossChainWalletRolesInput) => ({
       direction: null,
       destRecipientAddress: '',
       isMuxedRecipient: false,
@@ -46,7 +53,6 @@ vi.mock('@/hooks/useCrossChainWalletRoles', () => ({
       destChipBinding: null,
       mintSubmitterChipBinding: null,
       sagaWallets: { recipient: '' },
-      _input: input,
     }),
   ),
 }));
@@ -61,7 +67,7 @@ vi.mock('@/hooks/useCctpSaga', () => ({
     inputsLocked: false,
     resumeMismatch: false,
     sessionPublic: null,
-    primaryAction: { label: 'Get CCTP quote', disabled: false, action: 'quote' },
+    primaryAction: { label: 'Get quote', disabled: false, action: 'quote' },
     runPrimaryAction: vi.fn(),
     requestQuote: vi.fn(),
     reconcileOnLoad: vi.fn(),
@@ -88,12 +94,9 @@ const mockUseApiV2Readiness = vi.mocked(useApiV2Readiness);
 const mockUseCrossChainWalletRoles = vi.mocked(useCrossChainWalletRoles);
 
 function mockStellarToSepoliaWalletRoles(
-  input: UseCrossChainWalletRolesInput,
+  _input: UseCrossChainWalletRolesInput,
+  destRecipientAddress = '',
 ) {
-  const destRecipientAddress =
-    input.useRecipientOverride && input.recipientOverride?.trim()
-      ? input.recipientOverride.trim()
-      : '';
   return {
     direction: 'stellar_to_evm' as const,
     destRecipientAddress,
@@ -121,22 +124,18 @@ describe('CrossChainSwapDeck', () => {
     vi.clearAllMocks();
   });
 
-  it('shows paired chain selectors and delegates SwapCard on stellar-native', () => {
+  it('hides From/To selectors and delegates SwapCard on stellar-native', () => {
     renderDeck({
       initialSourceChainId: 'stellar',
       initialDestChainId: 'stellar',
     });
-    expect(screen.getByTestId('paired-chain-selectors')).toBeInTheDocument();
-    expect(screen.getByTestId('chain-leg-source')).toBeInTheDocument();
-    expect(screen.getByTestId('chain-leg-destination')).toBeInTheDocument();
+    expect(screen.queryByTestId('paired-chain-selectors')).not.toBeInTheDocument();
     expect(screen.getByTestId('stellar-native-delegation')).toBeInTheDocument();
     expect(screen.getByTestId('swap-card')).toBeInTheDocument();
-    expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
-      /executable corridor/i
-    );
+    expect(screen.getByText(/Bridge USDC/i)).toBeInTheDocument();
   });
 
-  it('defaults to the proven Stellar to Sepolia corridor', () => {
+  it('defaults to the proven Stellar to Sepolia corridor without aside clutter', () => {
     renderDeck();
 
     expect(screen.getByTestId('chain-option-source-stellar')).toBeChecked();
@@ -145,14 +144,9 @@ describe('CrossChainSwapDeck', () => {
     ).toBeChecked();
     expect(screen.queryByTestId('swap-card')).not.toBeInTheDocument();
     expect(screen.queryByTestId('unsupported-corridor-alert')).not.toBeInTheDocument();
-    expect(screen.getByTestId('cctp-route-rail')).toBeInTheDocument();
-    expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
-      /executable corridor/i
-    );
-    // Settlement still waits on API readiness in this mock.
-    expect(
-      screen.getByText(/CCTP corridor is listed but not executable on this API yet/i)
-    ).toBeInTheDocument();
+    expect(screen.queryByTestId('cctp-route-rail')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('execution-timeline')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('destination-recipient-input')).not.toBeInTheDocument();
   });
 
   it('treats Sepolia to Stellar as a catalog-executable CCTP corridor', () => {
@@ -162,10 +156,7 @@ describe('CrossChainSwapDeck', () => {
     });
     expect(screen.queryByTestId('unsupported-corridor-alert')).not.toBeInTheDocument();
     expect(screen.queryByTestId('swap-card')).not.toBeInTheDocument();
-    expect(screen.getByTestId('cctp-route-rail')).toBeInTheDocument();
-    expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
-      /executable corridor/i
-    );
+    expect(screen.queryByTestId('cctp-route-rail')).not.toBeInTheDocument();
   });
 
   it('shows unsupported alert for catalogued coming-soon corridor', () => {
@@ -175,12 +166,9 @@ describe('CrossChainSwapDeck', () => {
     });
     expect(screen.getByTestId('unsupported-corridor-alert')).toBeInTheDocument();
     expect(screen.queryByTestId('swap-card')).not.toBeInTheDocument();
-    expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
-      /coming soon/i
-    );
   });
 
-  it('blocks uncatalogued Sepolia to Bitcoin with unsupported badge and no CTA', async () => {
+  it('blocks uncatalogued Sepolia to Bitcoin with unsupported alert and no CTA', async () => {
     const user = userEvent.setup();
     renderDeck();
 
@@ -188,53 +176,28 @@ describe('CrossChainSwapDeck', () => {
     await user.click(screen.getByTestId('chain-option-destination-bitcoin'));
 
     expect(screen.getByTestId('unsupported-corridor-alert')).toBeInTheDocument();
-    expect(screen.getByTestId('corridor-status-badge')).toHaveTextContent(
-      /unsupported pair/i
-    );
     expect(screen.queryByTestId('cross-chain-review-cta')).not.toBeInTheDocument();
     expect(screen.queryByTestId('cctp-route-rail')).not.toBeInTheDocument();
     expect(screen.queryByText(/99\./)).not.toBeInTheDocument();
   });
 
-  it('renders CCTP preview rail for catalogued cross-chain corridor only', () => {
+  it('does not render destination recipient override', () => {
     renderDeck({
       initialSourceChainId: 'ethereum-sepolia',
       initialDestChainId: 'stellar',
     });
-    expect(screen.getByTestId('cctp-route-rail')).toBeInTheDocument();
-    expect(screen.getAllByText(/preview — not live/i).length).toBeGreaterThan(0);
+    expect(
+      screen.queryByLabelText('Use custom destination recipient'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('destination-recipient-input')).not.toBeInTheDocument();
   });
 
-  it('does not render cross-chain review CTA without backend handler', () => {
+  it('does not render cross-chain review CTA without wallet direction', () => {
     renderDeck({
       initialSourceChainId: 'ethereum-sepolia',
       initialDestChainId: 'stellar',
     });
     expect(screen.queryByTestId('cross-chain-review-cta')).not.toBeInTheDocument();
-  });
-
-  it('exposes timeline list semantics with aria-current on active step', () => {
-    renderDeck({ timelineSteps: EXECUTING_TIMELINE_STORY_FIXTURE });
-    const timeline = screen.getByTestId('execution-timeline');
-    expect(timeline.querySelector('[aria-current="step"]')).toBeTruthy();
-    expect(screen.getByText(/Support ref: SR-FIXTURE-002/)).toBeInTheDocument();
-  });
-});
-
-describe('CrossChainSwapDeck recipient validation', () => {
-  it('shows validation error for invalid recipient override', async () => {
-    const user = userEvent.setup();
-    renderDeck({
-      initialSourceChainId: 'ethereum-sepolia',
-      initialDestChainId: 'stellar',
-    });
-    await user.click(screen.getByLabelText('Use custom destination recipient'));
-    const input = screen.getByTestId('destination-recipient-input');
-    await user.type(input, 'not-valid');
-    const alerts = screen.getAllByRole('alert');
-    expect(
-      alerts.some((el) => /Stellar account/i.test(el.textContent ?? ''))
-    ).toBe(true);
   });
 });
 
@@ -250,41 +213,37 @@ describe('CrossChainSwapDeck CCTP CTA hints', () => {
       loading: false,
       refresh: vi.fn(),
     });
-    mockUseCrossChainWalletRoles.mockImplementation(mockStellarToSepoliaWalletRoles);
+    mockUseCrossChainWalletRoles.mockImplementation((input) =>
+      mockStellarToSepoliaWalletRoles(input),
+    );
   });
 
-  it('shows missing-destination hint when ETH disconnected and override is off', () => {
+  it('shows connect-wallet hint when destination wallet is disconnected', () => {
     renderDeck();
 
     expect(screen.getByTestId('cross-chain-review-cta')).toBeDisabled();
     expect(screen.getByTestId('cctp-cta-hint')).toHaveTextContent(
-      /Connect ETH Sepolia or enable Destination recipient/i,
+      /Connect your ETH Sepolia wallet/i,
     );
     expect(screen.getByTestId('dest-wallet-setup-hint')).toHaveTextContent(
-      /Connect ETH Sepolia/i,
-    );
-    expect(screen.getByTestId('destination-recipient-setup-hint')).toHaveTextContent(
-      /paste a 0x address/i,
+      /Connect your ETH Sepolia wallet/i,
     );
   });
 
-  it('clears destination hint and enables CTA when override provides valid 0x', async () => {
+  it('enables CTA when destination wallet is connected and amount is set', async () => {
     const user = userEvent.setup();
+    mockUseCrossChainWalletRoles.mockImplementation((input) =>
+      mockStellarToSepoliaWalletRoles(
+        input,
+        '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
+      ),
+    );
     renderDeck();
 
-    await user.click(screen.getByLabelText('Use custom destination recipient'));
-    const recipientInput = screen.getByTestId('destination-recipient-input');
-    await user.type(
-      recipientInput,
-      '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0',
-    );
     await user.type(screen.getByTestId('cctp-source-amount'), '10');
 
     expect(screen.queryByTestId('cctp-cta-hint')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dest-wallet-setup-hint')).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('destination-recipient-setup-hint'),
-    ).not.toBeInTheDocument();
     expect(screen.getByTestId('cross-chain-review-cta')).toBeEnabled();
   });
 
@@ -292,7 +251,7 @@ describe('CrossChainSwapDeck CCTP CTA hints', () => {
     renderDeck();
 
     expect(screen.getByTestId('cctp-usdc-only-note')).toHaveTextContent(
-      /CCTP bridges native USDC only/i,
+      /Bridges USDC only/i,
     );
     expect(screen.getByTestId('swap-to-usdc-on-stellar-link')).toBeInTheDocument();
   });

@@ -1162,13 +1162,13 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       transferStatus?.status === 'mint_failed_retryable'
     ) {
       return {
-        label: 'Sign mint on destination',
+        label: 'Confirm receive on destination',
         disabled: busy || Boolean(walletRoleMismatch),
         action: 'mint' as const,
       };
     }
     if (stage === 'idle' || stage === 'failed') {
-      return { label: 'Get CCTP quote', disabled: busy, action: 'quote' as const };
+      return { label: 'Get quote', disabled: busy, action: 'quote' as const };
     }
     if (stage === 'quoted') {
       if (effectiveBurnStep === 'reprepare_required') {
@@ -1194,7 +1194,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       }
       if (effectiveBurnStep === 'burn_ready') {
         return {
-          label: 'Sign burn on source chain',
+          label: 'Confirm lock on source chain',
           disabled: busy || Boolean(walletRoleMismatch),
           action: 'burn' as const,
         };
@@ -1209,7 +1209,7 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       const cooldownActive =
         reattestCooldownUntil !== null && Date.now() < reattestCooldownUntil;
       return {
-        label: cooldownActive ? 'Retry attestation (cooldown)' : 'Retry attestation',
+        label: cooldownActive ? 'Retry confirmation (wait…)' : 'Retry confirmation',
         disabled: busy || cooldownActive,
         action: 'reattest' as const,
       };
@@ -1224,16 +1224,16 @@ export function useCctpSaga(input: UseCctpSagaInput) {
       return {
         label: evmSource
           ? fast
-            ? 'Waiting for Circle Fast attestation…'
-            : 'Waiting for Circle finality (~15–19 min on Sepolia)…'
-          : 'Waiting for Circle attestation…',
+            ? 'Waiting for confirmation…'
+            : 'Waiting for confirmation (~15–19 min)…'
+          : 'Waiting for confirmation…',
         disabled: true,
         action: 'none' as const,
       };
     }
     if (transferStatus?.status === 'mint_submitted') {
       return {
-        label: 'Confirming destination mint…',
+        label: 'Confirming receive…',
         disabled: true,
         action: 'none' as const,
       };
