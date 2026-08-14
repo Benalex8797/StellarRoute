@@ -9,3 +9,5 @@ This section collects the API reference and integration docs for StellarRoute.
 - `error_taxonomy.md` — standardized API error codes and response formats.
 - `v1-migration-guide.md` — migration guidance for API v1 compatibility and upgrades.
 - `openapi.yaml` — OpenAPI schema for the REST API.
+- `cctp-v2-contract.md` — Circle CCTP v2 bridge HTTP contract (`/api/v2/bridge/cctp/*`).
+- Signed-live proof: [`../cctp/signed-live-stellar-to-sepolia.md`](../cctp/signed-live-stellar-to-sepolia.md).

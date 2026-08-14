@@ -227,6 +227,17 @@ Writes `docs/readiness/evidence/cctp-configured-ready-proof.json` on success (no
 3. Commit **only** the evidence JSON as commit **B**. The evidence commit hash may differ; reviewers
    reproduce behavior at `tested_git_head` (parent tested code), not at the evidence commit.
 
+### Signed-live Stellar → Sepolia (testnet)
+
+Public destination mint evidence (not a substitute for the configured-ready script):
+
+- Narrative: [`docs/cctp/signed-live-stellar-to-sepolia.md`](../cctp/signed-live-stellar-to-sepolia.md)
+- Mint tx: [`0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6`](https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6)
+- Evidence JSON: `docs/readiness/evidence/cctp-signed-live-stellar-to-sepolia-2026-08-14.json`
+- Instrumented harness evidence (timings): `docs/readiness/evidence/cctp-signed-live-stellar-to-sepolia.json`
+
+Default API posture remains fail-closed (`CCTP_ENABLED=false`) until an operator explicitly enables the corridor.
+
 ## Verification
 
 ```bash

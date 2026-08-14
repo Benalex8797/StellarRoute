@@ -108,6 +108,14 @@ describe('HeroSection — product positioning', () => {
     expect(screen.getByText('Burn → attestation')).toBeInTheDocument();
     expect(screen.getByText('63')).toBeInTheDocument();
     expect(screen.getByText('33')).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', {
+        name: /0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6/i,
+      })
+    ).toHaveAttribute(
+      'href',
+      'https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6'
+    );
   });
 });
 

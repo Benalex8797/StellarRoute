@@ -52,6 +52,9 @@ Protocol caps: `MAX_IRIS_PUBLIC_KEYS=256`, `MAX_ENABLED_ATTESTERS=256`, `MAX_SIG
 ## Public safety (current phase)
 
 - When `CCTP_ENABLED=false` (default), `/api/v2/bridge/cctp/*` handlers return **503** `cctp_not_enabled`.
+- Signed-live Stellar → Sepolia destination mint is proven on public testnets
+  ([`signed-live-stellar-to-sepolia.md`](./signed-live-stellar-to-sepolia.md)); that does **not**
+  by itself make the corridor public-executable.
 - `CircleAttestationVerifier` may become **ready** when Iris + EVM + Stellar RPC readers bootstrap, but **corridor is not live** until Stellar burn/approval/mint verifiers ship.
 - `is_public_executable()` stays **false** until all runtime components ready.
 
@@ -60,6 +63,17 @@ Protocol caps: `MAX_IRIS_PUBLIC_KEYS=256`, `MAX_ENABLED_ATTESTERS=256`, `MAX_SIG
 ```bash
 ./scripts/cctp-live-attester-read.sh
 ```
+
+## Signed-live Stellar → Sepolia proof (testnet)
+
+Public destination mint (2026-08-14):
+
+- Sepolia mint: [`0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6`](https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6)
+- Narrative + claims: [`signed-live-stellar-to-sepolia.md`](./signed-live-stellar-to-sepolia.md)
+- Evidence: `docs/readiness/evidence/cctp-signed-live-stellar-to-sepolia-2026-08-14.json`
+
+This proves attestation + destination mint on public testnets. It does **not** flip
+`CCTP_ENABLED` or claim mainnet / reverse-corridor readiness.
 
 ## Signed-live testnet harness key handling
 

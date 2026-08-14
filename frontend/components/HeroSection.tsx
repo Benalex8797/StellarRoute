@@ -363,6 +363,17 @@ export function HeroSection() {
               A wallet-signed run burned USDC on Stellar Testnet, received
               Circle&apos;s attestation, and minted USDC on Ethereum Sepolia.
             </p>
+            <p className="mt-4 font-mono text-xs leading-relaxed text-muted-foreground break-all">
+              Latest public mint:{' '}
+              <a
+                href="https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6"
+                className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6
+              </a>
+            </p>
             <div className="mt-8 flex items-start gap-3 border-l-2 border-signal pl-4">
               <Activity
                 className="mt-0.5 h-4 w-4 shrink-0 text-signal"

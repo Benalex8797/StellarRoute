@@ -34,7 +34,7 @@ StellarRoute addresses these challenges with open-source infrastructure that ben
 
 - **Stellar-native DEX aggregation**: Index and aggregate liquidity from SDEX orderbooks and Soroban AMM pools
 - **Live swap execution**: Server-authoritative prepare/submit flow with cryptographic signature verification (classic SDEX today; Soroban gated until audit-ready)
-- **Cross-chain foundation**: CAIP-style chain-aware assets, `/api/v2` seam, and wallet adapters for Stellar, EVM, Solana, Bitcoin, and TRON
+- **Cross-chain foundation**: CAIP-style chain-aware assets, `/api/v2` seam, wallet adapters for Stellar, EVM, Solana, Bitcoin, and TRON, plus a **signed-live** Circle CCTP Stellar → Sepolia USDC corridor on testnet (public API enablement still gated)
 - **Intelligent routing engine**: Multi-hop pathfinding with health, policy, and kill-switch controls
 - **Smart contracts**: Soroban-based router contracts for secure on-chain swap execution
 - **Developer SDKs**: JavaScript/TypeScript and Rust SDKs for integrations
@@ -51,6 +51,7 @@ StellarRoute addresses these challenges with open-source infrastructure that ben
 - ✅ **Best price discovery**: Automatically find the best execution price across all Stellar liquidity sources
 - ✅ **Multi-hop routing**: Support for complex multi-step trades (e.g., XLM → USDC → EURC)
 - ✅ **Cross-chain readiness**: Chain-aware asset model, multi-chain wallet adapters, and v2 API seam for bridge settlement rails
+- ✅ **CCTP testnet proof**: Signed-live Stellar → Sepolia USDC mint ([`0x713cc8b1…bed6`](https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6)); public enablement remains operator-gated
 - ✅ **Price impact analysis**: Real-time calculation of price impact and slippage
 - ✅ **Real-time indexing**: Continuous synchronization of SDEX and AMM pool states
 - ✅ **Developer-friendly**: Comprehensive SDKs and APIs for easy integration
@@ -153,8 +154,16 @@ graph TB
 ## 📊 Current Status & Contribution Opportunities
 
 **Milestone**: M1 - Prototype Indexer & API ✅ **COMPLETE**  
-**Current focus**: Live Stellar testnet swaps, cross-chain execution foundation, external Soroban audit  
-**Status**: 🎯 **Stellar classic swap path live** | **Cross-chain rails in foundation phase** | **Actively seeking contributors**
+**Current focus**: Live Stellar testnet swaps, CCTP cross-chain rails (Stellar → Sepolia proven), external Soroban audit  
+**Status**: 🎯 **Stellar classic swap path live** | **CCTP Stellar → Sepolia signed-live on testnet** | **Public CCTP still gated** | **Actively seeking contributors**
+
+### Cross-chain milestone (2026-08-14)
+
+First public Stellar Testnet → Ethereum Sepolia USDC mint via Circle CCTP:
+
+- Sepolia mint: [`0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6`](https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6) (25 USDC)
+- Write-up + evidence: [`docs/cctp/signed-live-stellar-to-sepolia.md`](docs/cctp/signed-live-stellar-to-sepolia.md)
+- Next: reverse corridor, staging enablement checklist, then mainnet gates after audit
 
 ### Why Contribute to StellarRoute?
 

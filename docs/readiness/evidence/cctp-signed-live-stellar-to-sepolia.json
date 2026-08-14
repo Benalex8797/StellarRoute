@@ -50,5 +50,13 @@
     "reverse_corridor_not_claimed": true,
     "mainnet_not_claimed": true
   },
+  "later_public_destination_mint": {
+    "timestamp": "2026-08-14T02:07:12Z",
+    "sepolia_mint": "0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6",
+    "sepolia_mint_block": 11484164,
+    "amount_usdc": "25",
+    "evidence": "docs/readiness/evidence/cctp-signed-live-stellar-to-sepolia-2026-08-14.json",
+    "narrative_doc": "docs/cctp/signed-live-stellar-to-sepolia.md"
+  },
   "secret_scan": "pass"
 }

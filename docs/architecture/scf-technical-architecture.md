@@ -27,7 +27,7 @@ On Stellar today, traders face **fragmented liquidity**: the classic **SDEX orde
 | **Classic transactions** | Live testnet execution via `PathPaymentStrictSend` (user signs in wallet) |
 | **Soroban contracts** | Testnet router deployed (`validate` / `quote` / `execute`); mainnet gated on audit |
 | **Wallets** | Freighter, xBull, Albedo, LOBSTR — user signs; API never holds secrets |
-| **USDC / CCTP (planned)** | Cross-chain corridor APIs exist; public execution off until readiness gates pass |
+| **USDC / CCTP (testnet proven)** | Signed-live Stellar → Sepolia USDC mint proven; public API execution still fail-closed (`CCTP_ENABLED=false` by default) until ops enablement |
 
 ### System in one picture
 
@@ -62,7 +62,7 @@ Funding is aimed at closing the gap between “best price **discovered**” and 
 1. **Soroban execution path** — prepare/submit (or equivalent) for AMM / multi-hop routes through the audited router, not only classic path-payment.
 2. **Full aggregation settlement** — execute the routes the optimizer already finds (multi-hop, AMM venues), with slippage and safety guards on-chain.
 3. **Security & mainnet** — external Soroban audit, remediation, gradual mainnet rollout (limited pairs → broader markets).
-4. **Cross-chain foundation (gated)** — enable Circle CCTP (and related rails) for USDC corridors only after attestation/readiness probes pass; still non-custodial.
+4. **Cross-chain foundation (gated)** — Circle CCTP Stellar → Sepolia USDC is **signed-live proven on testnet** (see `docs/cctp/signed-live-stellar-to-sepolia.md`); keep public enablement gated on attestation/readiness probes; still non-custodial.
 5. **Product hardening** — ops SLOs, load evidence, wallet UX, integrator docs so wallets/dApps can rely on the API.
 
 Longer horizon (beyond the immediate Build Award window): Stellar as the hub for swap → bridge → offramp in one non-custodial financial application — using **existing** settlement rails, not inventing a proprietary bridge.
@@ -85,7 +85,7 @@ StellarRoute is not only an app glued to one existing protocol. It introduces an
 
 - **Source of truth for live swap scope:** classic one-hop SDEX only unless code + readiness docs say otherwise. Do not claim AMM/multi-hop prepare is live.
 - **Mainnet:** blocked on external Soroban audit (`audit/external-audit.md`). Do not flip mainnet execution casually.
-- **CCTP:** `/api/v2/bridge/cctp/*` exists; default `CCTP_ENABLED=false`. Stellar burn is two-step (`approve` then `deposit_for_burn`); `submit-burn` must classify on-chain function (never treat approval txs as burns).
+- **CCTP:** `/api/v2/bridge/cctp/*` exists; default `CCTP_ENABLED=false`. **Testnet signed-live:** Stellar → Sepolia destination mint [`0x713cc8b1…bed6`](https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6) (2026-08-14, 25 USDC). Stellar burn is two-step (`approve` then `deposit_for_burn`); `submit-burn` must classify on-chain function (never treat approval txs as burns).
 - **Roadmap.md milestones M3–M5 are stale** relative to the tree; prefer this doc + readiness checklists + code.
 - **Order splitting across venues** is not a shipped product feature; “partial fills” in impact math means walking multiple SDEX book levels, not splitting one trade across AMMs.
 - Workspace layout: Rust workspace under `crates/*`, UI under `frontend/`, TS SDK under `sdk-js/`.
@@ -257,7 +257,7 @@ Agents implementing funded milestones should treat these as the **intended archi
 | Soroban settlement | Wire API execution_mode → router `execute` | `crates/api`, `crates/contracts`, wallet XDR/Soroban auth | E2E checklist sibling to classic checklist; `execution_mode` documents Soroban |
 | Security | External audit + fix | `crates/contracts`, `audit/` | Audit report + remediated findings; mainnet config reviewed |
 | Mainnet | Network flags, pool/token allowlists, gradual pairs | `config/*`, deploy, frontend network banner | Limited-pair mainnet swaps with monitoring/rollback |
-| CCTP enablement | Flip readiness after verifiers | `crates/api/src/cctp/*`, `frontend/lib/cctp/*` | `CCTP_ENABLED` with attestation proofs; burn≠approve classification enforced |
+| CCTP enablement | Flip public readiness after verifiers; signed-live Stellar→Sepolia already proven | `crates/api/src/cctp/*`, `frontend/lib/cctp/*` | Reverse corridor + operator `CCTP_ENABLED` with attestation proofs; burn≠approve classification enforced |
 | Integrator surface | Stable OpenAPI + SDK examples | `docs/api`, `sdk-js` | Integrator can quote→prepare→submit without reading internal runbooks |
 
 Suggested payment mapping (SCF four tranches ~10/20/30/40%): align budget narrative to the table above in the application form; keep each tranche’s deliverable **demoable on Stellar**.
@@ -275,6 +275,7 @@ Suggested payment mapping (SCF four tranches ~10/20/30/40%): align budget narrat
 - Pathfinder / optimizer baselines: `docs/baseline_report.json`, routing benches CI.
 - Contract gas budgets: `docs/contracts/gas-benchmarks.md`.
 - Classic live swap proof procedure: `docs/readiness/live-swap-testnet-checklist.md`.
+- CCTP signed-live Stellar → Sepolia: `docs/cctp/signed-live-stellar-to-sepolia.md`.
 
 ### 9. Quick commands (agent cheat sheet)
 
@@ -306,10 +307,11 @@ npm --prefix sdk-js run test
 | Classic live checklist | `docs/readiness/live-swap-testnet-checklist.md` |
 | Router interface | `docs/contracts/router-interface.md` |
 | CCTP API contract | `docs/api/cctp-v2-contract.md` |
+| CCTP signed-live proof | `docs/cctp/signed-live-stellar-to-sepolia.md` |
 | Oracle staging | `docs/deployment/oracle-always-free.md` |
 | Vercel frontend | `docs/deployment/vercel-frontend.md` |
 | Integrator guide | `docs/api/integrator-guide.md` |
 
 ---
 
-*Last aligned to codebase capability model used for SCF Open Track (testnet classic execution live; Soroban/CCTP/mainnet gated). Update this file when execution_mode scope expands.*
+*Last aligned to codebase capability model used for SCF Open Track (testnet classic execution live; CCTP Stellar→Sepolia signed-live proven on testnet; Soroban/public CCTP enablement/mainnet gated). Update this file when execution_mode scope expands.*

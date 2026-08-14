@@ -33,6 +33,7 @@ auditor selection, fieldwork, or the final report complete without evidence.
 | JS SDK | `prepareSwap` / `submitSwap` / `executeSwap` / `confirmSwap` |
 | Frontend Freighter path | `frontend/lib/swap/api-execution.ts` (`real_xdr`) |
 | Testnet evidence | `docs/readiness/live-swap-testnet-checklist.md` + `scripts/live-swap-api-smoke.mjs` |
+| CCTP Stellar → Sepolia signed-live | `docs/cctp/signed-live-stellar-to-sepolia.md` + `docs/readiness/evidence/cctp-signed-live-stellar-to-sepolia-2026-08-14.json` (mint `0x713cc8b1…bed6`) |
 
 ## Explicitly NOT complete
 
