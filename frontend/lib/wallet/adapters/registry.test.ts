@@ -11,6 +11,7 @@ import type { ChainWalletAdapter } from './types';
 const DEFAULT_ADAPTER_IDS = [
   'albedo',
   'evm-injected',
+  'evm-walletconnect',
   'freighter',
   'lobstr',
   'okx-bitcoin',
@@ -76,12 +77,20 @@ describe('wallet adapter registry', () => {
     const custom = stubAdapter('evm-injected', { label: 'Custom EVM' });
     registerAdapter(custom);
     ensureDefaultAdapters();
-    expect(listAdapters('evm')).toHaveLength(1);
-    expect(listAdapters('evm')[0]?.label).toBe('Custom EVM');
+    expect(listAdapters('evm').map((a) => a.id).sort()).toEqual([
+      'evm-injected',
+      'evm-walletconnect',
+    ]);
+    expect(listAdapters('evm').find((a) => a.id === 'evm-injected')?.label).toBe(
+      'Custom EVM'
+    );
   });
 
   it('filters adapters by chain family', () => {
-    expect(listAdapters('evm').map((a) => a.id)).toEqual(['evm-injected']);
+    expect(listAdapters('evm').map((a) => a.id).sort()).toEqual([
+      'evm-injected',
+      'evm-walletconnect',
+    ]);
     expect(listAdapters('solana').map((a) => a.id)).toEqual([
       'solana-injected',
     ]);
@@ -95,13 +104,23 @@ describe('wallet adapter registry', () => {
 
   it('lists availability without throwing when providers are absent', async () => {
     const wallets = await listAvailableChainWallets('evm');
-    expect(wallets).toEqual([
-      expect.objectContaining({
-        id: 'evm-injected',
-        chainFamily: 'evm',
-        installed: false,
-      }),
+    expect(wallets.map((w) => w.id).sort()).toEqual([
+      'evm-injected',
+      'evm-walletconnect',
     ]);
+    expect(
+      wallets.find((w) => w.id === 'evm-injected')
+    ).toMatchObject({
+      chainFamily: 'evm',
+      installed: false,
+    });
+    // WalletConnect availability depends on NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID.
+    expect(
+      wallets.find((w) => w.id === 'evm-walletconnect')
+    ).toMatchObject({
+      chainFamily: 'evm',
+      id: 'evm-walletconnect',
+    });
 
     const btc = await listAvailableChainWallets('bitcoin');
     expect(btc.map((w) => w.id).sort()).toEqual(['okx-bitcoin', 'unisat']);

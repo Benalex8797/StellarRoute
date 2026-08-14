@@ -1,4 +1,9 @@
 export { createInjectedEvmAdapter } from './injected';
+export { createWalletConnectEvmAdapter } from './walletconnect';
+export {
+  getWalletConnectProjectId,
+  isWalletConnectConfigured,
+} from './walletconnect-config';
 export {
   EVM_NETWORKS,
   caip2ToChainIdHex,

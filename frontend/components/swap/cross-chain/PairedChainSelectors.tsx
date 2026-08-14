@@ -1,5 +1,6 @@
 'use client';
 
+import { ArrowDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChainDisplayId } from '@/lib/cross-chain/types';
 import { CHAIN_DEFINITIONS } from '@/lib/cross-chain/corridors';
@@ -21,6 +22,23 @@ interface PairedChainSelectorsProps {
   destWalletHint?: string | null;
 }
 
+const SOURCE_CHAINS: ChainDisplayId[] = [
+  'stellar',
+  'ethereum-sepolia',
+  'solana',
+  'bitcoin',
+  'tron',
+];
+
+/** Destinations stay Stellar-centered; extras stay available for custom pairs. */
+const DEST_CHAINS: ChainDisplayId[] = [
+  'stellar',
+  'ethereum-sepolia',
+  'solana',
+  'bitcoin',
+  'tron',
+];
+
 export function PairedChainSelectors({
   sourceChainId,
   destChainId,
@@ -37,34 +55,42 @@ export function PairedChainSelectors({
   return (
     <section
       aria-label="Source and destination chains"
-      className="rounded-2xl border border-border/40 bg-card/50 p-4 sm:p-5 space-y-4"
+      className="overflow-hidden rounded-[1.5rem] border border-border/40 bg-card/40"
       data-testid="paired-chain-selectors"
     >
-      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-        Route legs
-      </p>
       {inputsLocked && (
         <p
-          className="text-xs text-muted-foreground"
+          className="border-b border-border/40 bg-muted/20 px-4 py-2.5 text-xs text-muted-foreground sm:px-5"
           role="status"
           data-testid="cctp-inputs-locked-banner"
         >
-          Transfer in progress — chain and amount inputs are locked. Wallets stay
-          connectable for signing. Use Start new transfer to abandon.
+          Transfer in progress — chains and amount are locked. Wallets stay
+          connectable for signing.
         </p>
       )}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <ChainLegColumn
+
+      <div className="space-y-0 p-4 sm:p-5">
+        <ChainLeg
           role="source"
           chainId={sourceChainId}
+          chains={SOURCE_CHAINS}
           onChange={onSourceChange}
           walletStoryState={sourceWalletState}
           walletBinding={sourceWalletBinding}
           inputsLocked={inputsLocked}
         />
-        <ChainLegColumn
+
+        <div className="relative flex items-center justify-center py-3" aria-hidden>
+          <span className="absolute inset-x-0 top-1/2 h-px bg-border/50" />
+          <span className="relative z-[1] flex size-9 items-center justify-center rounded-full border border-border/60 bg-background text-primary shadow-sm">
+            <ArrowDown className="size-4" />
+          </span>
+        </div>
+
+        <ChainLeg
           role="destination"
           chainId={destChainId}
+          chains={DEST_CHAINS}
           onChange={onDestChange}
           walletStoryState={destWalletState}
           walletBinding={destWalletBinding}
@@ -72,17 +98,18 @@ export function PairedChainSelectors({
           walletHint={destWalletHint}
         />
       </div>
+
       {mintSubmitterBinding && (
         <div
-          className="rounded-xl border border-border/40 bg-muted/10 p-3 space-y-2"
+          className="space-y-2 border-t border-border/40 bg-muted/10 px-4 py-3 sm:px-5"
           data-testid="stellar-mint-submitter-control"
         >
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">
-            Stellar mint submitter / fee payer
+          <p className="text-xs font-medium text-foreground">
+            Stellar mint fee payer
           </p>
           <p className="text-xs text-muted-foreground">
-            Muxed recipients cannot sign. Connect a Stellar G account to submit
-            the mint transaction.
+            Muxed recipients cannot sign — connect a Stellar G account to submit
+            the mint.
           </p>
           <ChainWalletChip binding={mintSubmitterBinding} />
         </div>
@@ -91,9 +118,10 @@ export function PairedChainSelectors({
   );
 }
 
-function ChainLegColumn({
+function ChainLeg({
   role,
   chainId,
+  chains,
   onChange,
   walletStoryState,
   walletBinding,
@@ -102,6 +130,7 @@ function ChainLegColumn({
 }: {
   role: 'source' | 'destination';
   chainId: ChainDisplayId;
+  chains: ChainDisplayId[];
   onChange: (id: ChainDisplayId) => void;
   walletStoryState?: CrossChainWalletStoryState;
   walletBinding?: WalletChipBinding | null;
@@ -109,34 +138,39 @@ function ChainLegColumn({
   walletHint?: string | null;
 }) {
   const chain = CHAIN_DEFINITIONS[chainId];
-  const legLabel = role === 'source' ? 'You send from' : 'You receive on';
+  const legLabel = role === 'source' ? 'From' : 'To';
 
   return (
     <div className="space-y-3" data-testid={`chain-leg-${role}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
             {legLabel}
           </p>
-          <p className="text-sm font-semibold text-foreground">{chain.label}</p>
+          <p className="truncate font-display text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+            {chain.shortLabel}
+          </p>
         </div>
         <ChainWalletChip
           binding={walletBinding}
           storyState={walletStoryState}
         />
       </div>
+
       {role === 'destination' && walletHint && (
         <p
-          className="text-xs text-muted-foreground"
+          className="text-xs leading-relaxed text-muted-foreground"
           role="status"
           data-testid="dest-wallet-setup-hint"
         >
           {walletHint}
         </p>
       )}
+
       <ChainSelector
         value={chainId}
         onChange={onChange}
+        chains={chains}
         label={`${role === 'source' ? 'Source' : 'Destination'} chain`}
         name={`cross-chain-${role}`}
         role={role}
@@ -146,17 +180,10 @@ function ChainLegColumn({
   );
 }
 
-const CHAIN_ORDER: ChainDisplayId[] = [
-  'stellar',
-  'ethereum-sepolia',
-  'solana',
-  'bitcoin',
-  'tron',
-];
-
 function ChainSelector({
   value,
   onChange,
+  chains,
   label,
   name,
   role,
@@ -164,33 +191,32 @@ function ChainSelector({
 }: {
   value: ChainDisplayId;
   onChange: (id: ChainDisplayId) => void;
+  chains: ChainDisplayId[];
   label: string;
   name: string;
   role: 'source' | 'destination';
   disabled?: boolean;
 }) {
   return (
-    <fieldset className="space-y-2" disabled={disabled}>
-      <legend className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-        {label}
-      </legend>
+    <fieldset className="space-y-0" disabled={disabled}>
+      <legend className="sr-only">{label}</legend>
       <div
         role="radiogroup"
         aria-label={label}
         className="flex flex-wrap gap-1.5"
       >
-        {CHAIN_ORDER.map((id) => {
+        {chains.map((id) => {
           const chain = CHAIN_DEFINITIONS[id];
           const selected = value === id;
           return (
             <label
               key={id}
               className={cn(
-                'relative inline-flex min-h-11 min-w-[4.5rem] cursor-pointer items-center rounded-xl border px-3 py-2 transition-colors',
+                'relative inline-flex min-h-11 cursor-pointer items-center rounded-full border px-3.5 py-2 transition-colors',
                 'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring',
                 selected
-                  ? 'border-primary/50 bg-primary/12 text-foreground'
-                  : 'border-border/50 bg-background/50 text-muted-foreground hover:bg-muted/40',
+                  ? 'border-primary/55 bg-primary/12 text-foreground'
+                  : 'border-border/40 bg-background/40 text-muted-foreground hover:border-border hover:text-foreground',
                 disabled && 'pointer-events-none opacity-60',
               )}
             >

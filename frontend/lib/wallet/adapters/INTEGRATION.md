@@ -14,7 +14,7 @@ Cross-chain **swap execution** stays `unsupported` / `no_backend_route` until ba
 | `adapters/live-state.ts` | Mutable connected / networkMatch / canSign snapshot for sync `getExecutionSupport` |
 | `adapters/errors.ts` / `detect.ts` | Normalized errors + SSR-safe injected-provider detection |
 | `adapters/stellar/legacy.ts` | Thin wrappers over Freighter/xBull/Albedo/LOBSTR |
-| `adapters/evm/*` | EIP-1193 injected wallet (`window.ethereum`) |
+| `adapters/evm/*` | EIP-1193 injected (`window.ethereum`) + WalletConnect QR/mobile |
 | `adapters/solana/*` | Injected Solana / Phantom |
 | `adapters/bitcoin/*` | UniSat + OKX Bitcoin (PSBT + message signing) |
 | `adapters/tron/*` | TronLink (account request, network detect, TronWeb sign) |
@@ -30,7 +30,7 @@ Cross-chain **swap execution** stays `unsupported` / `no_backend_route` until ba
 
 ## Default registry ids
 
-`albedo`, `freighter`, `lobstr`, `xbull`, `evm-injected`, `solana-injected`, `unisat`, `okx-bitcoin`, `tronlink`.
+`albedo`, `freighter`, `lobstr`, `xbull`, `evm-injected`, `evm-walletconnect`, `solana-injected`, `unisat`, `okx-bitcoin`, `tronlink`.
 
 `ensureDefaultAdapters()` is idempotent and does not clobber pre-registered adapters with the same id.
 
@@ -43,7 +43,7 @@ Cross-chain **swap execution** stays `unsupported` / `no_backend_route` until ba
 5. **Execution support is live** — `getExecutionSupport` / hook composition read connected, networkMatch, and canSign. Disconnected → `not_connected`; mismatch / missing caps → `degraded`; otherwise non-Stellar routes → `no_backend_route`.
 6. **Solana transactions** — require a wallet-compatible object with `serialize()`. Raw base64/bytes return `unsupported_capability` (no fake Transaction wrappers).
 7. **Signing gates** — `signMessage`, `signTransaction`, and `sendTransaction` all block on network mismatch (hook + adapters).
-8. **Dependency policy** — no new heavy SDKs (`wagmi`, `ethers`, `@solana/web3.js`, TronWeb npm). Use injected browser APIs only.
+8. **Dependency policy** — prefer injected browser APIs. Allowed exception: `@walletconnect/ethereum-provider` for the `evm-walletconnect` adapter (EIP-1193 via QR/mobile). Still avoid `wagmi`, `ethers`, `@solana/web3.js`, and TronWeb npm unless explicitly approved.
 
 ## Unsupported / degraded product states
 

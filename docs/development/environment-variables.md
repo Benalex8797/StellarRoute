@@ -274,6 +274,7 @@ Next.js public variables (prefixed with `NEXT_PUBLIC_` so they are exposed to th
 | `NEXT_PUBLIC_API_URL_TESTNET` | string (URL) | — | Recommended for testnet staging | Frontend | Per-network API URL; preferred when `NEXT_PUBLIC_STELLAR_NETWORK=testnet` |
 | `NEXT_PUBLIC_API_URL_MAINNET` | string (URL) | — | Required for mainnet UI | Frontend | Per-network API URL for mainnet |
 | `NEXT_PUBLIC_STELLAR_NETWORK` | `testnet` \| `mainnet` | `testnet` | Recommended | Frontend | App network for wallets, badges, and env-guard resolution |
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | string | — | Optional (required for WalletConnect) | Frontend | Reown Cloud project id enabling `evm-walletconnect` (QR / mobile EVM wallets). Create at https://cloud.reown.com |
 | `NEXT_PUBLIC_STELLAR_HORIZON_URL` | string (URL) | network default | Optional | Frontend | Override Horizon endpoint |
 | `STELLARROUTE_ENV` | string | — | Optional | Frontend | Set `production` to enforce the same API URL guard outside Vercel |
 | `NEXT_PUBLIC_FEATURE_ROUTES_BETA` | boolean | `false` | Optional | Frontend | Enable routes beta via `lib/feature-flags.ts` (`true`/`1`/`yes`/`on`) |

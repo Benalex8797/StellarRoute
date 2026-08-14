@@ -148,10 +148,10 @@ Focus here first when debugging behavior across crates.
 - If icon imports break frontend tests, check `frontend/__mocks__/lucide-react.tsx`.
 
 ## Learned User Preferences
-- Primary goal is a live non-custodial DEX with real users, expanding toward cross-chain bridge/aggregation and offramp; prioritize production deployability over docs-only or filler work.
+- Primary goal is a live non-custodial DEX with real users, expanding toward cross-chain bridge/aggregation and offramp; first offramp corridor is stablecoin→NGN (Naira) with direct Stellar USDC cash-out or bridge-then-offramp from other coins; prioritize production deployability over docs-only or filler work.
 - GitHub issues should be grounded in real codebase gaps (not placeholders), with hard/high-quality acceptance criteria and Wave-friendly labels.
 - Stale or unfresh orderbook/market data must not hard-block swaps; return a degraded quote and notify the user instead of failing the swap.
-- Frontend UI should feel unique and spacious; reject dense/jammed header and swap chrome, and polish wallet/error messaging rather than stacking warnings.
+- Frontend UI should feel unique and spacious; reject dense/jammed header, swap, and offramp chrome, and polish wallet/error messaging rather than stacking warnings.
 - When processing contributor/fork PRs, fix conflicts and CI and merge rather than closing; keep going until the open queue is empty unless a PR is explicitly unmergeable.
 - For fork PRs far behind `main`, cherry-pick feature commits onto current `main` instead of merging the stale branch wholesale.
 - Prefer lean CI that contributors can get green easily; remove or simplify unnecessary checks when CI is blocking merges.
@@ -159,7 +159,7 @@ Focus here first when debugging behavior across crates.
 - When closing multiple related issues, prefer one PR that closes them together.
 - Do not edit attached plan files during implementation.
 - Prefer free always-on Wave 0 staging (Oracle Always Free + Cloudflare Tunnel) over paid Render when cost matters; a public HTTPS API is required for Freighter/Vercel (localhost alone is not enough).
-- SCF application has advanced past the Interest Form to next-stage Q&A; materials should prefer Open Track and lead with non-custodial Stellar SDEX+AMM aggregation, with cross-chain bridge/swap/offramp as the longer-term vision.
+- SCF application has advanced past the Interest Form to next-stage Q&A; materials should prefer Open Track (not Integration Track) and lead with non-custodial Stellar SDEX+AMM aggregation, with cross-chain bridge/swap/offramp as the longer-term vision.
 
 ## Learned Workspace Facts
 - Canonical GitHub repo is `StellarRoute/StellarRoute`; local path is `/Users/daniel/Desktop/2026/StellarRoute`.
@@ -167,9 +167,9 @@ Focus here first when debugging behavior across crates.
 - Frontend production is on Vercel (`stellarroute.app` and `www.stellarroute.app`); GitHub-linked auto-deploy from `main` with root directory `frontend`; API CORS and env allowlists should include both hosts; wiring to a public testnet API/indexer is an explicit product goal.
 - Browser wallet support is Freighter, xBull, Albedo, and LOBSTR; Freighter detection should use `isConnected()`, not `isAllowed`.
 - Wave 0 public testnet API path is Oracle Always Free ARM VM + `deploy/docker-compose.prod.yml` + Cloudflare Tunnel; staging API hostname is `https://34.224.110.144.sslip.io` (sslip.io); staging deploys via GitHub Actions `deploy-ec2-staging.yml` on `push` to `main` for `crates/**` (not gated on CI green; manual `gh workflow run` is the fallback); runbook is `docs/deployment/oracle-always-free.md` (paid Render blueprint remains optional later).
-- Stellar CCTP source burn is two-step: USDC `approve`, then `deposit_for_burn`; `submit-burn` must classify on-chain function (never verify approval txs as burns). CCTP v2 API is under `/api/v2/bridge/cctp/`; quote TTL defaults to 5 minutes. Key paths: `crates/api/src/cctp/*`, `frontend/hooks/useCctpSaga.ts`, `frontend/lib/cctp/*`.
+- Stellar CCTP source burn is two-step: USDC `approve`, then `deposit_for_burn`; `submit-burn` must classify on-chain function (never verify approval txs as burns). Stellar→EVM also needs a separate EVM wallet (e.g. MetaMask on Sepolia) to submit/pay gas for the destination mint—Stellar wallets cannot sign that step. CCTP v2 API is under `/api/v2/bridge/cctp/`; quote TTL defaults to 5 minutes. Key paths: `crates/api/src/cctp/*`, `frontend/hooks/useCctpSaga.ts`, `frontend/lib/cctp/*`.
 - Cross-chain CCTP swap is fail-closed behind `CCTP_ENABLED` (defaults false); enabling `/cross-chain` in an environment also requires `CCTP_ACCESS_TOKEN_HMAC_KEY` and a Sepolia RPC URL.
-- Live swap execution today is classic one-hop SDEX `PathPaymentStrictSend`; multi-hop/AMM Soroban settlement and public CCTP remain gated milestones. SCF reviewer architecture SoT: `docs/architecture/scf-technical-architecture.md`.
+- Live swap execution today is classic one-hop SDEX `PathPaymentStrictSend`; multi-hop/AMM Soroban settlement and public CCTP remain gated milestones. Offramp UI is at `/offramp` (`frontend/app/offramp`, `frontend/lib/offramp`) for NGN preview flows. SCF reviewer architecture SoT: `docs/architecture/scf-technical-architecture.md`.
 - Related sibling work under `~/Desktop/2026/` (separate from this repo) includes StellarHydra, WaveFlow, route-visualizer, and swap-agrregrator — do not commit StellarRoute changes into those trees by mistake.
 - Frontend Vitest in CI is split by path (app/components/hooks/lib); flaky or heavy suites have been a recurring main-branch blocker.
 - `gh` is the expected interface for GitHub issues, PRs, labels, and CI log inspection on this repo.

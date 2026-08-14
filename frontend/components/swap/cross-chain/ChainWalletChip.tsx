@@ -127,8 +127,7 @@ function BoundWalletChip({
             )}
             {binding.availableWallets.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No browser wallet detected. Install a supported extension to
-                connect.
+                No wallet option available for this chain yet.
               </p>
             ) : (
               <ul className="space-y-2">
@@ -149,8 +148,9 @@ function BoundWalletChip({
                       {wallet.label}
                       {!wallet.installed && (
                         <span className="text-muted-foreground">
-                          {' '}
-                          (not installed)
+                          {wallet.id === 'evm-walletconnect'
+                            ? ' (not configured)'
+                            : ' (not installed)'}
                         </span>
                       )}
                     </Button>

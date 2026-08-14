@@ -204,7 +204,7 @@ Non-Stellar browser wallets live under `frontend/lib/wallet/adapters/` and do **
 
 | Family | Default adapters | Signing surface |
 |--------|------------------|-----------------|
-| EVM | `evm-injected` (`window.ethereum`) | EIP-1193 message / tx / send |
+| EVM | `evm-injected` (`window.ethereum`), `evm-walletconnect` (QR/mobile; needs `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`) | EIP-1193 message / tx / send |
 | Solana | `solana-injected` (Phantom / injected) | message; Transaction objects with `serialize()` only |
 | Bitcoin | `unisat`, `okx-bitcoin` | message / PSBT |
 | TRON | `tronlink` | TronWeb message / tx object |

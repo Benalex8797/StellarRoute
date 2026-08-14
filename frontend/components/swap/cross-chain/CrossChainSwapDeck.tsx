@@ -209,17 +209,19 @@ export function CrossChainSwapDeck({
 
   return (
     <div
-      className="cross-chain-deck w-full mx-auto space-y-5"
+      className="cross-chain-deck w-full mx-auto space-y-6"
       data-testid="cross-chain-swap-deck"
     >
-      <header className="space-y-2 px-1 sm:px-0">
-        <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-primary">
-          Cross-chain route
-        </p>
+      <header className="space-y-1.5 px-1 sm:px-0">
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <h2 className="brand-wordmark text-2xl text-foreground sm:text-3xl">
-            Stellar-centered routing
-          </h2>
+          <div className="space-y-1">
+            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-primary">
+              Cross-chain
+            </p>
+            <h2 className="brand-wordmark text-2xl text-foreground sm:text-3xl">
+              Pick a route
+            </h2>
+          </div>
           <span
             className={cn(
               'rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider',
@@ -232,10 +234,6 @@ export function CrossChainSwapDeck({
             {corridorStatusCopy(state.executable, state.isUncatalogued)}
           </span>
         </div>
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          Source and destination chains stay visible. Only executable corridors
-          reach review — previews explain protocol steps without fake quotes.
-        </p>
       </header>
 
       <CorridorTabs
@@ -259,7 +257,7 @@ export function CrossChainSwapDeck({
       />
 
       <div
-        className="cross-chain-deck-grid gap-5 lg:gap-6"
+        className="cross-chain-deck-grid gap-6 lg:gap-8"
         id={panelId}
         role="tabpanel"
         aria-labelledby={panelLabelId}

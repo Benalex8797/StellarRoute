@@ -14,7 +14,10 @@ import {
   createOkxBitcoinAdapter,
   createUnisatAdapter,
 } from './bitcoin';
-import { createInjectedEvmAdapter } from './evm';
+import {
+  createInjectedEvmAdapter,
+  createWalletConnectEvmAdapter,
+} from './evm';
 import { createInjectedSolanaAdapter } from './solana';
 import { createAllStellarAdapters } from './stellar/legacy';
 import { createTronLinkAdapter } from './tron';
@@ -64,6 +67,7 @@ export function ensureDefaultAdapters(): void {
     registerDefault(adapter);
   }
   registerDefault(createInjectedEvmAdapter());
+  registerDefault(createWalletConnectEvmAdapter());
   registerDefault(createInjectedSolanaAdapter());
   registerDefault(createUnisatAdapter());
   registerDefault(createOkxBitcoinAdapter());

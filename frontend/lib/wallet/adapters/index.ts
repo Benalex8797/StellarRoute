@@ -73,7 +73,13 @@ export {
 } from './session';
 export type { ChainWalletState } from './session';
 
-export { createInjectedEvmAdapter, EVM_NETWORKS, defaultEvmAppNetwork } from './evm';
+export {
+  createInjectedEvmAdapter,
+  createWalletConnectEvmAdapter,
+  EVM_NETWORKS,
+  defaultEvmAppNetwork,
+  isWalletConnectConfigured,
+} from './evm';
 export {
   createInjectedSolanaAdapter,
   SOLANA_NETWORKS,

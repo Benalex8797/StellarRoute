@@ -110,6 +110,7 @@ To point the frontend to a hosted testnet API and target the Stellar Testnet:
    - `NEXT_PUBLIC_API_URL`: Points to the hosted backend API (e.g., `https://api.testnet.stellarroute.com/api/v1`).
    - `NEXT_PUBLIC_STELLAR_NETWORK`: Defines the target network (`testnet` or `mainnet`). This drives default wallet connections, header/footer network badges, and network validation rules.
    - `NEXT_PUBLIC_STELLAR_HORIZON_URL`: Configures a custom Stellar Horizon endpoint (e.g., `https://horizon-testnet.stellar.org`).
+   - `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`: Optional Reown Cloud project id for EVM WalletConnect (QR / mobile) on cross-chain flows. Create at https://cloud.reown.com.
 
 ## Next Steps
 
