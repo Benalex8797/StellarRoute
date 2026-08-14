@@ -45,7 +45,7 @@ All API errors return a consistent JSON body:
 | `unsupported_route` | 422 | The classic route shape is not supported by this prepare build (currently single SDEX hop only; multi-hop is rejected). |
 | `cctp_not_enabled` | 503 | Circle CCTP bridge settlement is not enabled on this deployment. |
 | `unsupported_corridor` | 400 | The requested CCTP corridor or provider is unknown or unsupported. |
-| `invalid_finality` | 400 | CCTP finality mode is invalid for the source chain (Stellar outbound burns require `standard`). |
+| `invalid_finality` | 400 | CCTP finality mode is invalid or unsupported for this corridor. |
 | `invalid_recipient` | 400 | The CCTP recipient address failed validation. |
 | `fee_quote_unavailable` | 503 | A runtime CCTP fee quote could not be produced. |
 | `attestation_pending` | 422 | CCTP attestation is still pending for this transfer (saga guard). |

@@ -9,10 +9,10 @@ use chrono::Utc;
 use std::sync::Arc;
 
 use crate::cctp::builders::{
-    BuilderError, BurnPrepareStep, PreparedBurnBundle, PreparedMintBundle, StellarCctpBurnBuilder,
-    StellarCctpMintBuilder,
+    BuilderError, BurnPrepareStep, MintPrepareStep, PreparedBurnBundle, PreparedMintBundle,
+    StellarCctpBurnBuilder, StellarCctpMintBuilder,
 };
-use crate::cctp::config::{CctpConfig, STELLAR_TESTNET_PASSPHRASE};
+use crate::cctp::config::{corridor_min_finality, CctpConfig, STELLAR_TESTNET_PASSPHRASE};
 use crate::cctp::encoding::{
     cctp_subunits_to_stellar_subunits, decimal_to_cctp_subunits, evm_address_to_bytes32,
     stellar_outbound_cctp_amount_strict,
@@ -27,6 +27,10 @@ use crate::cctp::stellar_payload::{passphrase_for_config, payload_hash_from_enve
 use crate::cctp::stellar_readiness_probes::probe_stellar_contracts;
 use crate::cctp::stellar_rpc::StellarRpcClient;
 use crate::cctp::stellar_sequence::RpcAccountSequenceSource;
+use crate::cctp::stellar_trustline::{
+    build_unsigned_change_trust_xdr, default_change_trust_timeout_secs,
+    recipient_trustline_account, HorizonUsdcTrustlineProbe, UsdcTrustlineProbe,
+};
 use crate::cctp::store::CctpTransfer;
 use crate::models::v2_cctp::{CctpDirection, PreparedWalletPayload};
 use crate::swap::tx::{AccountSequenceSource, DEFAULT_BASE_FEE};
@@ -97,6 +101,7 @@ impl OfflineStellarXdrEncoder {
         mint_recipient: [u8; 32],
         burn_token: &str,
         max_fee: i128,
+        min_finality: u32,
         account_sequence: i64,
     ) -> Result<String, BuilderError> {
         encode_invoke_at_sequence(
@@ -110,6 +115,7 @@ impl OfflineStellarXdrEncoder {
                 mint_recipient,
                 burn_token,
                 max_fee,
+                min_finality,
             )?,
             account_sequence,
         )
@@ -135,6 +141,7 @@ pub struct ProductionStellarCctpBuilder {
     pub sequences: Arc<dyn AccountSequenceSource>,
     pub rpc: Arc<StellarRpcClient>,
     pub allowance: Arc<dyn StellarAllowanceChecker>,
+    pub trustline: Arc<dyn UsdcTrustlineProbe>,
     pub probe_ok: bool,
     pub base_fee: u32,
 }
@@ -159,10 +166,13 @@ impl ProductionStellarCctpBuilder {
                 _ => Arc::new(FixedAllowanceChecker { sufficient: false }),
             };
         let sequences = Arc::new(RpcAccountSequenceSource::new(config, rpc.clone()));
+        let trustline: Arc<dyn UsdcTrustlineProbe> =
+            Arc::new(HorizonUsdcTrustlineProbe::new(&config.stellar_horizon_url));
         Ok(Self {
             sequences,
             rpc,
             allowance,
+            trustline,
             probe_ok: probe,
             base_fee: DEFAULT_BASE_FEE,
         })
@@ -263,10 +273,15 @@ impl ProductionStellarCctpBuilder {
         simulate_and_assemble_invoke(&self.rpc, params).await
     }
 
-    fn stellar_payload(xdr: String, passphrase: &str) -> PreparedWalletPayload {
+    fn stellar_payload(
+        xdr: String,
+        passphrase: &str,
+        source: Option<String>,
+    ) -> PreparedWalletPayload {
         PreparedWalletPayload::StellarXdr {
             network_passphrase: passphrase.to_string(),
             xdr_envelope: xdr,
+            source,
         }
     }
 
@@ -408,7 +423,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
             return Ok(PreparedBurnBundle {
                 step: BurnPrepareStep::Approval,
                 approval_required: true,
-                primary: Self::stellar_payload(approve_xdr, &passphrase),
+                primary: Self::stellar_payload(approve_xdr, &passphrase, None),
                 required_approvals: vec![],
                 required_prior_payloads: vec![],
                 expires_at,
@@ -418,6 +433,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
 
         let mint_recipient = evm_address_to_bytes32(&transfer.recipient)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
+        let min_finality = corridor_min_finality(transfer.finality);
         let burn_xdr = self
             .build_simulated_invoke(
                 &transfer.sender,
@@ -430,6 +446,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
                     mint_recipient,
                     &config.contracts.stellar_usdc,
                     max_fee_stellar,
+                    min_finality,
                 )?,
                 config,
                 transfer,
@@ -439,7 +456,7 @@ impl StellarCctpBurnBuilder for ProductionStellarCctpBuilder {
         Ok(PreparedBurnBundle {
             step: BurnPrepareStep::Burn,
             approval_required: false,
-            primary: Self::stellar_payload(burn_xdr, &passphrase),
+            primary: Self::stellar_payload(burn_xdr, &passphrase, None),
             required_approvals: vec![],
             required_prior_payloads: vec![],
             expires_at,
@@ -488,6 +505,48 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
         Self::validate_g_sender(submitter)?;
         Self::validate_mint_message(transfer, config, message)?;
 
+        let passphrase = passphrase_for_config(config);
+        let quote_exp = transfer.quote_expires_at.timestamp();
+        let max_ttl = config.mint_payload_ttl_secs as i64;
+        let expires_at = quote_exp.min(Utc::now().timestamp() + max_ttl);
+
+        let trustline_account = recipient_trustline_account(&transfer.recipient)?;
+        let has_trustline = self
+            .trustline
+            .has_usdc_trustline(&trustline_account)
+            .await?;
+        if !has_trustline {
+            let current = self
+                .sequences
+                .current_sequence(&trustline_account)
+                .await
+                .map_err(|e| BuilderError::AccountLookup(e.to_string()))?;
+            let (xdr, _) = build_unsigned_change_trust_xdr(
+                &trustline_account,
+                current,
+                &passphrase,
+                self.base_fee,
+                default_change_trust_timeout_secs(),
+            )?;
+            let payload = Self::stellar_payload(
+                xdr.clone(),
+                &passphrase,
+                Some(trustline_account.clone()),
+            );
+            let payload_hash = {
+                use sha2::{Digest, Sha256};
+                let json = serde_json::to_string(&payload).unwrap_or_default();
+                hex::encode(Sha256::digest(json.as_bytes()))
+            };
+            return Ok(PreparedMintBundle {
+                step: MintPrepareStep::Trustline,
+                trustline_required: true,
+                primary: payload,
+                expires_at,
+                payload_hash,
+            });
+        }
+
         let xdr = self
             .build_simulated_invoke(
                 submitter,
@@ -499,14 +558,13 @@ impl StellarCctpMintBuilder for ProductionStellarCctpBuilder {
             )
             .await?;
 
-        let payload = Self::stellar_payload(xdr.clone(), &passphrase_for_config(config));
+        let payload = Self::stellar_payload(xdr.clone(), &passphrase, None);
         let payload_hash = payload_hash_from_envelope_xdr(&xdr, config)
             .map_err(|e| BuilderError::Encoding(e.to_string()))?;
-        let quote_exp = transfer.quote_expires_at.timestamp();
-        let max_ttl = config.mint_payload_ttl_secs as i64;
-        let expires_at = quote_exp.min(Utc::now().timestamp() + max_ttl);
 
         Ok(PreparedMintBundle {
+            step: MintPrepareStep::Mint,
+            trustline_required: false,
             primary: payload,
             expires_at,
             payload_hash,
@@ -549,6 +607,7 @@ mod tests {
     use super::encoder::envelope_sequence;
     use super::*;
     use crate::cctp::config::CctpConfig;
+    use crate::cctp::stellar_trustline::FixedUsdcTrustlineProbe;
     use crate::swap::tx::FixedAccountSequences;
     use chrono::Duration;
     use uuid::Uuid;
@@ -631,6 +690,7 @@ mod tests {
             [1u8; 32],
             &cfg.contracts.stellar_usdc,
             1,
+            crate::cctp::config::FINALITY_STANDARD,
             101,
         )
         .unwrap();
@@ -704,6 +764,7 @@ mod tests {
             sequences: Arc::new(FixedAccountSequences::new(100)),
             rpc,
             allowance: Arc::new(FixedAllowanceChecker { sufficient: true }),
+            trustline: Arc::new(FixedUsdcTrustlineProbe { present: true }),
             probe_ok: true,
             base_fee: DEFAULT_BASE_FEE,
         };
@@ -726,6 +787,7 @@ mod tests {
             sequences: Arc::new(FixedAccountSequences::new(100)),
             rpc,
             allowance: Arc::new(FixedAllowanceChecker { sufficient: false }),
+            trustline: Arc::new(FixedUsdcTrustlineProbe { present: true }),
             probe_ok: true,
             base_fee: DEFAULT_BASE_FEE,
         };
@@ -739,6 +801,7 @@ mod tests {
             sequences: Arc::new(FixedAccountSequences::new(100)),
             rpc: Arc::new(StellarRpcClient::new(&cfg).unwrap()),
             allowance: Arc::new(FixedAllowanceChecker { sufficient: true }),
+            trustline: Arc::new(FixedUsdcTrustlineProbe { present: true }),
             probe_ok: true,
             base_fee: DEFAULT_BASE_FEE,
         };
@@ -758,6 +821,7 @@ mod tests {
             sequences: Arc::new(FixedAccountSequences::new(1)),
             rpc,
             allowance: Arc::new(FixedAllowanceChecker { sufficient: true }),
+            trustline: Arc::new(FixedUsdcTrustlineProbe { present: true }),
             probe_ok: false,
             base_fee: DEFAULT_BASE_FEE,
         };

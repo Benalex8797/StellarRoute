@@ -7,8 +7,8 @@
 use thiserror::Error;
 
 use crate::cctp::config::{
-    CctpConfig, FINALITY_STANDARD, SEPOLIA_DOMAIN, SEPOLIA_TOKEN_MESSENGER, SEPOLIA_USDC,
-    STELLAR_CCTP_FORWARDER, STELLAR_MESSAGE_TRANSMITTER, STELLAR_TESTNET_DOMAIN,
+    corridor_min_finality, CctpConfig, SEPOLIA_DOMAIN, SEPOLIA_TOKEN_MESSENGER, SEPOLIA_USDC,
+    STELLAR_CCTP_FORWARDER, STELLAR_TESTNET_DOMAIN,
 };
 use crate::cctp::encoding::{
     build_forwarder_hook_data_recipient, decimal_to_cctp_subunits, evm_address_to_bytes32,
@@ -79,7 +79,7 @@ pub fn build_corridor_expectations(
                 mint_recipient,
                 destination_caller: ANY_DESTINATION_CALLER,
                 amount_cctp_subunits: amount_cctp,
-                min_finality: FINALITY_STANDARD,
+                min_finality: corridor_min_finality(transfer.finality),
                 body_message_sender: body_sender,
                 hook_data: None,
                 hook_data_required_empty: true,
@@ -96,15 +96,19 @@ pub fn build_corridor_expectations(
             Ok(CorridorMessageExpectations {
                 source_domain: SEPOLIA_DOMAIN,
                 destination_domain: STELLAR_TESTNET_DOMAIN,
-                header_recipient: stellar_contract_to_bytes32(STELLAR_MESSAGE_TRANSMITTER)
-                    .map_err(|e| ExpectationError::Encoding(e.to_string()))?,
+                // Circle inbound-to-Stellar: header recipient is TokenMessengerMinterV2
+                // (same role as SEPOLIA_TOKEN_MESSENGER on the reverse corridor).
+                header_recipient: stellar_contract_to_bytes32(
+                    &config.contracts.stellar_token_messenger,
+                )
+                .map_err(|e| ExpectationError::Encoding(e.to_string()))?,
                 header_sender: evm_address_to_bytes32(SEPOLIA_TOKEN_MESSENGER)
                     .map_err(|e| ExpectationError::Encoding(e.to_string()))?,
                 burn_token,
                 mint_recipient: forwarder,
                 destination_caller: forwarder,
                 amount_cctp_subunits: amount_cctp,
-                min_finality: FINALITY_STANDARD,
+                min_finality: corridor_min_finality(transfer.finality),
                 body_message_sender: body_sender,
                 hook_data: Some(hook),
                 hook_data_required_empty: false,
@@ -149,7 +153,7 @@ pub fn build_expected_burn_facts(
         burn_token_bytes32: expectations.burn_token,
         mint_recipient_bytes32: expectations.mint_recipient,
         destination_caller_bytes32: expectations.destination_caller,
-        min_finality_threshold: FINALITY_STANDARD,
+        min_finality_threshold: corridor_min_finality(transfer.finality),
         hook_data: expectations.hook_data,
         token_messenger_bytes32: token_messenger,
         block_or_ledger: None,
@@ -171,7 +175,7 @@ fn amount_cctp_subunits(transfer: &CctpTransfer) -> Result<u128, ExpectationErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cctp::config::{CctpConfig, STELLAR_CCTP_FORWARDER, STELLAR_USDC_CONTRACT};
+    use crate::cctp::config::{CctpConfig, STELLAR_CCTP_FORWARDER, STELLAR_TOKEN_MESSENGER, STELLAR_USDC_CONTRACT};
     use crate::cctp::store::CctpTransfer;
     use crate::models::v2_cctp::{CctpDirection, CctpFinality, CctpTransferStatus};
     use chrono::{Duration, Utc};
@@ -272,6 +276,10 @@ mod tests {
         assert_eq!(exp.mint_recipient, forwarder);
         assert_eq!(exp.destination_caller, forwarder);
         assert_eq!(
+            exp.header_recipient,
+            stellar_contract_to_bytes32(STELLAR_TOKEN_MESSENGER).unwrap()
+        );
+        assert_eq!(
             exp.hook_data,
             Some(build_forwarder_hook_data_recipient(G_RECIPIENT).unwrap())
         );
@@ -279,5 +287,55 @@ mod tests {
             exp.burn_token,
             evm_address_to_bytes32(SEPOLIA_USDC).unwrap()
         );
+        assert_eq!(
+            exp.min_finality,
+            corridor_min_finality(CctpFinality::Standard)
+        );
+    }
+
+    #[test]
+    fn evm_to_stellar_fast_uses_fast_finality_threshold() {
+        let cfg = CctpConfig::default_testnet();
+        let mut transfer = base_transfer(CctpDirection::EvmToStellar, G_RECIPIENT);
+        transfer.finality = CctpFinality::Fast;
+        let exp = build_corridor_expectations(&transfer, &cfg).unwrap();
+        assert_eq!(exp.min_finality, corridor_min_finality(CctpFinality::Fast));
+        let facts = build_expected_burn_facts(&transfer, &cfg, "0xabc").unwrap();
+        assert_eq!(
+            facts.min_finality_threshold,
+            corridor_min_finality(CctpFinality::Fast)
+        );
+    }
+
+    #[test]
+    fn stellar_to_evm_fast_uses_fast_finality_threshold() {
+        let cfg = CctpConfig::default_testnet();
+        let mut transfer = base_transfer(CctpDirection::StellarToEvm, EVM_RECIPIENT);
+        transfer.finality = CctpFinality::Fast;
+        let exp = build_corridor_expectations(&transfer, &cfg).unwrap();
+        assert_eq!(exp.min_finality, corridor_min_finality(CctpFinality::Fast));
+        let facts = build_expected_burn_facts(&transfer, &cfg, "0xabc").unwrap();
+        assert_eq!(
+            facts.min_finality_threshold,
+            corridor_min_finality(CctpFinality::Fast)
+        );
+    }
+
+    #[test]
+    fn live_iris_fast_sepolia_burn_validates_against_corridor() {
+        use crate::cctp::message::validate_message_for_corridor;
+
+        let cfg = CctpConfig::default_testnet();
+        let mut transfer = base_transfer(
+            CctpDirection::EvmToStellar,
+            "GBSTOZPBODWWNR4LIX56BH5IGGDHABGO43YGCZOSMVDVXMOZOHZIN5YI",
+        );
+        transfer.sender = "0xa632da1e4d5dd7fb236a0b798ff9331e3a9930df".into();
+        transfer.amount = "20".into();
+        transfer.destination_amount = "20".into();
+        transfer.finality = CctpFinality::Fast;
+        let exp = build_corridor_expectations(&transfer, &cfg).unwrap();
+        let msg = include_str!("testdata/iris_fast_bb03103d.message.hex").trim();
+        validate_message_for_corridor(msg, &exp).expect("corridor validation should pass");
     }
 }

@@ -415,7 +415,7 @@ pub async fn cctp_get_transfer(
     gate_for_direction(&state, transfer.direction).await?;
 
     let ctx = require_cctp(&state)?;
-    let polled = ctx
+    let polled = match ctx
         .service
         .poll_one_transfer_with_lease(
             transfer_id,
@@ -423,7 +423,24 @@ pub async fn cctp_get_transfer(
             ctx.config.poll_interval_secs as i64,
         )
         .await
-        .map_err(|e| map_service_error(e, Some(transfer_id)))?;
+    {
+        Ok(t) => t,
+        // Keep saga readable while Iris is still finalizing (or briefly unavailable).
+        Err(e @ crate::cctp::service::CctpServiceError::Iris(_))
+        | Err(e @ crate::cctp::service::CctpServiceError::MissingAttestation)
+        | Err(e @ crate::cctp::service::CctpServiceError::Attestation(_))
+        | Err(e @ crate::cctp::service::CctpServiceError::InvalidMessage(_))
+        | Err(e @ crate::cctp::service::CctpServiceError::IrisTxHashMismatch)
+        | Err(e @ crate::cctp::service::CctpServiceError::Verifier(_)) => {
+            tracing::warn!(
+                %transfer_id,
+                error = %e,
+                "CCTP status poll deferred; returning current transfer"
+            );
+            transfer
+        }
+        Err(e) => return Err(map_service_error(e, Some(transfer_id))),
+    };
 
     metrics::record_cctp_endpoint_outcome("get_transfer", "success");
     Ok(Json(ApiResponse::with_version(
@@ -461,6 +478,7 @@ pub async fn cctp_prepare_mint(
     gate_for_direction(&state, transfer.direction).await?;
 
     if transfer.status != CctpTransferStatus::AttestationReady
+        && transfer.status != CctpTransferStatus::MintPrepared
         && transfer.status != CctpTransferStatus::MintFailedRetryable
     {
         return Err(map_service_error(

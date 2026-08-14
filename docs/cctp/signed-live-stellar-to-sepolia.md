@@ -42,9 +42,10 @@ An earlier **scripted** signed-live harness also completed end-to-end (1 USDC) w
 **Does not prove**
 
 - Mainnet availability.
-- Sepolia → Stellar signed-live reverse corridor.
 - That staging/production APIs have `CCTP_ENABLED=true` for the public.
 - That every prepare/submit path is open without operator configuration.
+
+Reverse corridor (Sepolia → Stellar) is separately proven: [`signed-live-sepolia-to-stellar.md`](./signed-live-sepolia-to-stellar.md).
 
 ## Operator posture (unchanged)
 
@@ -54,10 +55,9 @@ An earlier **scripted** signed-live harness also completed end-to-end (1 USDC) w
 
 ## Next work (post-proof)
 
-1. Reverse corridor signed-live (Sepolia → Stellar).
-2. Harden public UI saga + explorer links against this mint evidence.
-3. Staging enablement checklist after attestation/verifier readiness stays green.
-4. Mainnet gates only after audit + explicit ops approval.
+1. Staging enablement checklist after attestation/verifier readiness stays green: [`../deployment/cctp-staging-enablement-checklist.md`](../deployment/cctp-staging-enablement-checklist.md).
+2. Harden public UI saga + explorer links against both-direction mint evidence.
+3. Mainnet gates only after audit + explicit ops approval.
 
 ## Related docs
 

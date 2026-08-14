@@ -51,11 +51,28 @@ pub struct PreparedBurnBundle {
     pub approval_expiration_ledger: Option<u32>,
 }
 
+/// Ordered mint prepare step — trustline (EVM→Stellar) before `mint_and_forward`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MintPrepareStep {
+    Trustline,
+    Mint,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedMintBundle {
+    #[serde(default = "default_mint_prepare_step")]
+    pub step: MintPrepareStep,
+    /// True when `step == Trustline` and wallet must submit ChangeTrust before mint.
+    #[serde(default)]
+    pub trustline_required: bool,
     pub primary: PreparedWalletPayload,
     pub expires_at: i64,
     pub payload_hash: String,
+}
+
+fn default_mint_prepare_step() -> MintPrepareStep {
+    MintPrepareStep::Mint
 }
 
 #[async_trait]

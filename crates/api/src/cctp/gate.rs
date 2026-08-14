@@ -377,8 +377,10 @@ pub fn map_service_error(err: CctpServiceError, transfer_id: Option<Uuid>) -> Ap
                     .into(),
             )
         }
+        CctpServiceError::InvalidMessage(reason) => {
+            ApiError::Validation(format!("CCTP message validation failed: {reason}"))
+        }
         CctpServiceError::Verifier(_)
-        | CctpServiceError::InvalidMessage
         | CctpServiceError::IrisTxHashMismatch
         | CctpServiceError::MintPayloadHashMismatch => {
             ApiError::Validation("On-chain verification failed for submitted transaction".into())
@@ -560,6 +562,8 @@ pub fn to_prepare_mint_response(
         status: transfer.status,
         payload: bundle.primary.clone(),
         expires_at: bundle.expires_at,
+        trustline_required: bundle.trustline_required
+            || bundle.step == crate::cctp::builders::MintPrepareStep::Trustline,
     }
 }
 
@@ -802,9 +806,12 @@ mod tests {
                 crate::cctp::builders::BuilderError,
             > {
                 Ok(crate::cctp::builders::PreparedMintBundle {
+                    step: crate::cctp::builders::MintPrepareStep::Mint,
+                    trustline_required: false,
                     primary: crate::models::v2_cctp::PreparedWalletPayload::StellarXdr {
                         network_passphrase: config.stellar_network_passphrase.clone(),
                         xdr_envelope: "AAAA".into(),
+                        source: None,
                     },
                     expires_at: transfer.quote_expires_at.timestamp(),
                     payload_hash: "test".into(),

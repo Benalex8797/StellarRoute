@@ -10,10 +10,11 @@
 import type { ChainFamily, ExecutionSupport } from './types';
 
 const CROSS_CHAIN_BACKEND_ROUTES: ReadonlySet<string> = new Set([
-  // Proven testnet CCTP direction (Stellar USDC burn → Sepolia mint).
+  // Proven testnet CCTP directions (Stellar ↔ Sepolia USDC).
   // Settlement still requires API readiness (`CCTP_ENABLED` + /api/v2).
   // Format: `${source}->${destination}`
   'stellar->evm',
+  'evm->stellar',
 ]);
 
 let cctpExecutableRoutes: ReadonlySet<string> = new Set();

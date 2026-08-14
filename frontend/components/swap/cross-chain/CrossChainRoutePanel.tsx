@@ -132,7 +132,7 @@ export function CrossChainRoutePanel({
               <dt className="text-muted-foreground">Fees &amp; finality</dt>
               <dd className="font-medium text-muted-foreground">
                 {quote
-                  ? `Standard · quote until ${new Date(quote.expires_at * 1000).toLocaleTimeString()}`
+                  ? `${quote.finality === 'fast' ? 'Fast' : 'Standard'} · quote until ${new Date(quote.expires_at * 1000).toLocaleTimeString()}`
                   : executable
                     ? 'Request a quote for fee estimate'
                     : 'Estimate unavailable — corridor not live'}

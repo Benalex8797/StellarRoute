@@ -201,7 +201,7 @@ async fn openapi_registers_all_seven_cctp_paths_and_tag() {
 }
 
 #[tokio::test]
-async fn cctp_quote_rejects_stellar_source_fast_finality_before_not_enabled() {
+async fn cctp_quote_accepts_stellar_source_fast_finality_then_fail_closed() {
     let router = setup_test_router().await;
     let (status, body) = post_json(
         &router,
@@ -210,8 +210,8 @@ async fn cctp_quote_rejects_stellar_source_fast_finality_before_not_enabled() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["data"]["error"], "invalid_finality");
+    // Fast is valid for Stellar→EVM; with CCTP disabled the gate is not_enabled.
+    assert_cctp_not_enabled(status, &body);
 }
 
 #[tokio::test]

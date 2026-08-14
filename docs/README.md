@@ -40,6 +40,8 @@ This directory is the documentation hub for StellarRoute. It organizes design, d
 ### Cross-chain / CCTP
 
 - [Signed-live Stellar → Sepolia proof](cctp/signed-live-stellar-to-sepolia.md) — testnet destination mint milestone (`0x713cc8b1…bed6`).
+- [Signed-live Sepolia → Stellar proof](cctp/signed-live-sepolia-to-stellar.md) — reverse corridor signed-live (MetaMask + Freighter; Fast).
+- [CCTP staging enablement checklist](deployment/cctp-staging-enablement-checklist.md) — flip `CCTP_ENABLED` after reverse proof.
 - [Attestation verification](cctp/attestation-verification.md) — Iris + on-chain attester trust model.
 - [Stellar verifier status](cctp/stellar-verifier-blockers.md) — burn/approval/mint verifier readiness.
 - [CCTP v2 API contract](api/cctp-v2-contract.md) — `/api/v2/bridge/cctp/*` HTTP contract.
@@ -70,7 +72,8 @@ This directory is the documentation hub for StellarRoute. It organizes design, d
 - [Kill switch runbook](RUNBOOK_KILL_SWITCH.md) — emergency kill-switch activation and recovery procedure.
 - [Swap submitting sender-lock recovery](runbooks/swap-submitting-sender-lock.md) — reconcile bound tx hash / guarded release after timebounds (classic PathPayment only; Soroban unsupported).
 - [Live swap testnet checklist](readiness/live-swap-testnet-checklist.md) — E2E classic prepare/sign/submit on testnet.
-- [CCTP signed-live evidence](cctp/signed-live-stellar-to-sepolia.md) — Stellar → Sepolia USDC mint proof + evidence JSON.
+- [CCTP signed-live evidence (forward)](cctp/signed-live-stellar-to-sepolia.md) — Stellar → Sepolia USDC mint proof + evidence JSON.
+- [CCTP signed-live evidence (reverse)](cctp/signed-live-sepolia-to-stellar.md) — Sepolia → Stellar burn/mint hashes + evidence JSON.
 - [Quote purger runbook](QUOTE_PURGER_RUNBOOK.md) — quote purger operation, scheduling, and troubleshooting.
 - [Routing canary](routing_canary.md) — canary routing configuration, promotion, and rollback.
 - [Indexer lag monitoring](indexer-lag-monitoring.md) — indexer lag alerting thresholds and remediation steps.

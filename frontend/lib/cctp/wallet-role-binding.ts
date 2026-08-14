@@ -60,8 +60,30 @@ export type WalletSigningIntent =
   | 'resume'
   | 'source_approval'
   | 'source_burn'
+  | 'stellar_trustline'
   | 'stellar_mint'
   | 'evm_mint';
+
+/** Underlying G-account for a Stellar G or M recipient (trustline signer). */
+export function stellarRecipientTrustlineAccount(
+  recipient: string,
+): string | null {
+  const trimmed = recipient.trim();
+  if (StrKey.isValidEd25519PublicKey(trimmed)) return trimmed;
+  if (StrKey.isValidMed25519PublicKey(trimmed)) {
+    try {
+      const raw = StrKey.decodeMed25519PublicKey(trimmed);
+      // Muxed: 8-byte id + 32-byte ed25519 (SDK layout) or 32+8 depending on version.
+      // stellar-base decodeMed25519PublicKey returns Buffer; encode the ed25519 key.
+      const ed25519 =
+        raw.length >= 40 ? raw.subarray(8, 40) : raw.subarray(0, 32);
+      return StrKey.encodeEd25519PublicKey(ed25519);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 export function normalizeEvmAddress(address: string): string | null {
   const trimmed = address.trim();
@@ -184,6 +206,7 @@ function validatePayloadAgainstBindings(input: {
     intent === 'source_approval' ||
     intent === 'source_burn';
   const needsStellarMint = intent === 'stellar_mint';
+  const needsStellarTrustline = intent === 'stellar_trustline';
   const needsEvmMint = intent === 'evm_mint';
 
   if (payload.type === 'stellar_xdr') {
@@ -206,6 +229,21 @@ function validatePayloadAgainstBindings(input: {
           'source_burn',
           'Connect the original Stellar source wallet to continue.',
           bindings.sourceBurn.address,
+          source,
+        );
+      }
+    }
+    if (needsStellarTrustline) {
+      const expected =
+        stellarRecipientTrustlineAccount(bindings.recipient.address) ??
+        bindings.recipient.address;
+      const source = payloadSourceAddress(payload);
+      if (source && !addressesEqualStellarG(source, expected)) {
+        return mismatch(
+          'stellar_mint_submitter_mismatch',
+          'stellar_trustline',
+          'Connect Freighter as the USDC recipient G-account to open the trustline.',
+          expected,
           source,
         );
       }
@@ -323,6 +361,7 @@ export function assessWalletRoleBindings(input: {
     intent === 'source_approval' ||
     intent === 'source_burn';
   const needsStellarMint = intent === 'stellar_mint';
+  const needsStellarTrustline = intent === 'stellar_trustline';
   const needsEvmMint = intent === 'evm_mint';
 
   if (needsSourceBurn) {
@@ -393,6 +432,35 @@ export function assessWalletRoleBindings(input: {
     }
   }
 
+  if (needsStellarTrustline) {
+    const expectedG =
+      stellarRecipientTrustlineAccount(bindings.recipient.address) ?? '';
+    if (!wallets.mintSubmitterStellarAdapterId && !wallets.sourceStellarAdapterId) {
+      return {
+        ok: false,
+        issue: mismatch(
+          'stellar_mint_adapter_missing',
+          'stellar_trustline',
+          'Connect Freighter as the USDC recipient G-account to open the trustline.',
+          expectedG || undefined,
+        ),
+      };
+    }
+    const connected = wallets.mintSubmitter ?? wallets.sourceAddress ?? '';
+    if (!expectedG || !connected || !addressesEqualStellarG(connected, expectedG)) {
+      return {
+        ok: false,
+        issue: mismatch(
+          'stellar_mint_submitter_mismatch',
+          'stellar_trustline',
+          'Connect Freighter as the USDC recipient G-account to open the trustline.',
+          expectedG || undefined,
+          connected || undefined,
+        ),
+      };
+    }
+  }
+
   if (needsStellarMint && bindings.stellarMintSubmitter) {
     if (!wallets.mintSubmitterStellarAdapterId && !wallets.sourceStellarAdapterId) {
       return {
@@ -459,6 +527,10 @@ export function signingIntentForBurnStep(
 
 export function signingIntentForMintPayload(
   payload: PreparedWalletPayload,
+  trustlineRequired?: boolean,
 ): WalletSigningIntent {
+  if (trustlineRequired && payload.type === 'stellar_xdr') {
+    return 'stellar_trustline';
+  }
   return payload.type === 'stellar_xdr' ? 'stellar_mint' : 'evm_mint';
 }

@@ -98,6 +98,8 @@ export type PreparedWalletPayload =
       type: 'stellar_xdr';
       network_passphrase: string;
       xdr_envelope: string;
+      /** Optional signing account (G) — set for trustline ChangeTrust payloads. */
+      source?: string;
     }
   | {
       type: 'evm_transaction';
@@ -200,6 +202,8 @@ export interface CctpPrepareMintResponse {
   status: CctpTransferStatus;
   payload: PreparedWalletPayload;
   expires_at: number;
+  /** True when wallet must submit USDC ChangeTrust before mint_and_forward. */
+  trustline_required?: boolean;
 }
 
 export interface CctpSubmitMintRequest {

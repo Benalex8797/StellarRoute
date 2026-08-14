@@ -26,7 +26,7 @@ function DeckStory({ presentation }: { presentation?: CrossChainDeckStoryPresent
 export const StellarNative: Story = () => <DeckStory />;
 StellarNative.storyName = 'Stellar native delegates SwapCard';
 
-export const EvmToStellarComingSoon: Story = () => (
+export const EvmToStellar: Story = () => (
   <DeckStory
     presentation={{
       initialSourceChainId: 'ethereum-sepolia',
@@ -34,7 +34,7 @@ export const EvmToStellarComingSoon: Story = () => (
     }}
   />
 );
-EvmToStellarComingSoon.storyName = 'EVM Sepolia to Stellar coming soon';
+EvmToStellar.storyName = 'EVM Sepolia to Stellar CCTP';
 
 export const WalletsPartial: Story = () => (
   <DeckStory

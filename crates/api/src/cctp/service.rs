@@ -68,8 +68,8 @@ pub enum CctpServiceError {
     Builder(BuilderError),
     #[error("verifiers not ready")]
     VerifiersNotReady,
-    #[error("message validation failed")]
-    InvalidMessage,
+    #[error("message validation failed: {0}")]
+    InvalidMessage(String),
     #[error("amount exceeds cap")]
     AmountExceedsCap,
     #[error("fast finality not supported")]
@@ -247,9 +247,15 @@ impl CctpService {
         let Some(payload) = active.prepared_payload else {
             return Ok(None);
         };
-        Ok(Some(
-            deserialize_mint_bundle(&payload).map_err(Self::map_payload_cache_error)?,
-        ))
+        let bundle =
+            deserialize_mint_bundle(&payload).map_err(Self::map_payload_cache_error)?;
+        // Never return a cached trustline step — re-probe Horizon each prepare.
+        if bundle.trustline_required
+            || bundle.step == crate::cctp::builders::MintPrepareStep::Trustline
+        {
+            return Ok(None);
+        }
+        Ok(Some(bundle))
     }
 
     fn burn_reservation(
@@ -352,9 +358,8 @@ impl CctpService {
         }
         request.validate().map_err(CctpServiceError::Validation)?;
 
-        if request.finality == CctpFinality::Fast {
-            return Err(CctpServiceError::FastNotSupported);
-        }
+        // Both corridor directions may quote Fast; Iris supplies the fee tier.
+        // (Builder encodes corridor_min_finality(transfer.finality) on the burn.)
 
         let cctp_amount = match request.direction {
             CctpDirection::StellarToEvm => stellar_outbound_cctp_amount_strict(&request.amount)
@@ -385,7 +390,13 @@ impl CctpService {
             .await
             .map_err(|e| CctpServiceError::Iris(e.to_string()))?;
 
-        let max_fee = fees.standard_fee.clone();
+        let max_fee = match request.finality {
+            CctpFinality::Standard => fees.standard_fee.clone(),
+            CctpFinality::Fast => fees
+                .fast_fee
+                .clone()
+                .ok_or(CctpServiceError::FastNotSupported)?,
+        };
         let now = Utc::now();
 
         let support_id = format!("cctp-{}", transfer_id);
@@ -418,7 +429,7 @@ impl CctpService {
             amount: request.amount.clone(),
             destination_amount,
             finality: request.finality,
-            runtime_fee_quote: Some(fees.standard_fee.clone()),
+            runtime_fee_quote: Some(max_fee.clone()),
             max_fee: Some(max_fee),
             fee_expires_at: Some(now + Duration::minutes(10)),
             quote_expires_at: now + Duration::seconds(self.config.quote_ttl_secs as i64),
@@ -725,7 +736,9 @@ impl CctpService {
         self.ensure_attestation_verifier_ready()?;
 
         if iris_msg.status != IrisMessageStatus::Complete {
-            return Err(CctpServiceError::InvalidMessage);
+            return Err(CctpServiceError::InvalidMessage(
+                "iris status is not complete".into(),
+            ));
         }
 
         let persisted = transfer
@@ -749,36 +762,53 @@ impl CctpService {
             return Err(CctpServiceError::MissingAttestation);
         }
 
-        let expectations = build_corridor_expectations(transfer, &self.config).map_err(|_| {
+        let expectations = build_corridor_expectations(transfer, &self.config).map_err(|e| {
             metrics::record_cctp_invalid_message();
-            CctpServiceError::InvalidMessage
+            CctpServiceError::InvalidMessage(format!("corridor expectations: {e}"))
         })?;
 
-        if validate_message_for_corridor(&iris_msg.message_hex, &expectations).is_err() {
+        if let Err(e) = validate_message_for_corridor(&iris_msg.message_hex, &expectations) {
             metrics::record_cctp_invalid_message();
-            return Err(CctpServiceError::InvalidMessage);
+            return Err(CctpServiceError::InvalidMessage(format!(
+                "corridor message: {e}"
+            )));
         }
 
-        let raw = decode_hex_message(&iris_msg.message_hex)
-            .map_err(|_| CctpServiceError::InvalidMessage)?;
+        let raw = decode_hex_message(&iris_msg.message_hex).map_err(|e| {
+            CctpServiceError::InvalidMessage(format!("message hex: {e}"))
+        })?;
         if check_byte_len("raw_message", &raw, MAX_RAW_MESSAGE_BYTES).is_err() {
-            return Err(CctpServiceError::InvalidMessage);
+            return Err(CctpServiceError::InvalidMessage(
+                "raw message exceeds bound".into(),
+            ));
         }
 
-        let attestation =
-            decode_hex_message(attestation_hex).map_err(|_| CctpServiceError::InvalidMessage)?;
+        let attestation = decode_hex_message(attestation_hex).map_err(|e| {
+            CctpServiceError::InvalidMessage(format!("attestation hex: {e}"))
+        })?;
         if check_byte_len("attestation", &attestation, MAX_ATTESTATION_BYTES).is_err() {
-            return Err(CctpServiceError::InvalidMessage);
+            return Err(CctpServiceError::InvalidMessage(
+                "attestation exceeds bound".into(),
+            ));
         }
 
         self.runtime
             .attestation_verifier
             .verify_attestation(&raw, &attestation)
             .await
-            .map_err(CctpServiceError::Attestation)?;
+            .map_err(|e| {
+                tracing::warn!(
+                    transfer_id = %transfer.transfer_id,
+                    error = %e,
+                    "CCTP attestation signature verification failed"
+                );
+                CctpServiceError::Attestation(e)
+            })?;
 
         if iris_msg.event_nonce.is_empty() {
-            return Err(CctpServiceError::InvalidMessage);
+            return Err(CctpServiceError::InvalidMessage(
+                "iris event nonce empty".into(),
+            ));
         }
 
         let updated = self
@@ -1106,7 +1136,9 @@ impl CctpService {
 
         let allowed = matches!(
             transfer.status,
-            CctpTransferStatus::AttestationReady | CctpTransferStatus::MintFailedRetryable
+            CctpTransferStatus::AttestationReady
+                | CctpTransferStatus::MintPrepared
+                | CctpTransferStatus::MintFailedRetryable
         );
         if !allowed {
             return Err(CctpServiceError::InvalidState);
@@ -1114,6 +1146,7 @@ impl CctpService {
 
         Self::ensure_quote_not_expired(&transfer)?;
 
+        // Idempotent re-prepare while mint_prepared: return the locked unsigned payload.
         if transfer.direction == CctpDirection::EvmToStellar {
             let submitter = transfer
                 .mint_submitter
@@ -1125,6 +1158,11 @@ impl CctpService {
             {
                 return Ok(cached);
             }
+        }
+        if transfer.status == CctpTransferStatus::MintPrepared {
+            // Lock expired/missing — rebuild is only allowed from attestation_ready /
+            // mint_failed_retryable so we do not silently rotate payload_hash mid-sign.
+            return Err(CctpServiceError::InvalidState);
         }
 
         let bundle = match transfer.direction {
@@ -1141,6 +1179,14 @@ impl CctpService {
                 .await
                 .map_err(CctpServiceError::Builder)?,
         };
+
+        // Trustline ChangeTrust is signed by the recipient G-account and submitted to Horizon
+        // by the wallet; do not lock or mark mint_prepared until the real mint payload.
+        if bundle.trustline_required
+            || bundle.step == crate::cctp::builders::MintPrepareStep::Trustline
+        {
+            return Ok(bundle);
+        }
 
         if transfer.direction == CctpDirection::EvmToStellar {
             let submitter = transfer

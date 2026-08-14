@@ -8,6 +8,8 @@ import { buildWalletRoleBindings } from '@/lib/cctp/wallet-role-binding';
 
 const prepareBurn = vi.fn();
 const submitBurn = vi.fn();
+const prepareMint = vi.fn();
+const submitMint = vi.fn();
 const getTransfer = vi.fn();
 const executePreparedPayload = vi.fn();
 const startPoll = vi.fn(() => ({ stop: vi.fn() }));
@@ -28,6 +30,8 @@ vi.mock('@/lib/cctp/client', () => ({
     }),
     prepareBurn,
     submitBurn,
+    prepareMint,
+    submitMint,
     getTransfer,
   }),
 }));
@@ -192,11 +196,7 @@ describe('useCctpSaga server-driven burn staging', () => {
     });
     expect(executePreparedPayload).toHaveBeenCalledTimes(1);
     expect(submitBurn).toHaveBeenCalledTimes(1);
-    expect(result.current.burnPrepareStep).toBe('unknown');
-
-    await act(async () => {
-      await result.current.prepareSourceBurn();
-    });
+    // signApprovalStep re-prepares the burn payload after approval submit.
     expect(result.current.burnPrepareStep).toBe('burn_ready');
     const burnFingerprint = fingerprintPreparedPayload(evmBurnPayload);
     expect(result.current.getLastPreparedFingerprint()).toBe(burnFingerprint);
@@ -430,7 +430,8 @@ describe('useCctpSaga reconcile stability', () => {
       await result.current.signApprovalStep();
     });
     expect(executePreparedPayload).toHaveBeenCalledTimes(1);
-    expect(prepareBurn).toHaveBeenCalledTimes(1);
+    // Initial prepare + post-approval re-prepare for the burn step.
+    expect(prepareBurn).toHaveBeenCalledTimes(2);
   });
 
   it('retries auto-reconcile after vault form inputs are restored', async () => {
@@ -541,5 +542,123 @@ describe('useCctpSaga reconcile stability', () => {
       await result.current.signApprovalStep();
     });
     expect(executePreparedPayload).not.toHaveBeenCalled();
+  });
+});
+
+describe('useCctpSaga reverse mint trustline', () => {
+  const trustlinePayload = {
+    type: 'stellar_xdr' as const,
+    network_passphrase: 'Test SDF Network ; September 2015',
+    xdr_envelope: 'AAAAtrustline',
+    source: STELLAR_G,
+  };
+  const mintPayload = {
+    type: 'stellar_xdr' as const,
+    network_passphrase: 'Test SDF Network ; September 2015',
+    xdr_envelope: 'AAAAmint',
+  };
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    prepareMint.mockReset();
+    submitMint.mockReset();
+    getTransfer.mockReset();
+    executePreparedPayload.mockReset();
+    startPoll.mockClear();
+    executePreparedPayload.mockResolvedValue({
+      txHash: 'stellar-hash',
+      submissionReady: true,
+    });
+    submitMint.mockResolvedValue({ status: 'mint_submitted' });
+    getTransfer.mockResolvedValue({
+      transfer_id: 't1',
+      corridor_id: 'c',
+      provider: 'circle-cctp',
+      direction: 'evm_to_stellar',
+      status: 'attestation_ready',
+      retryable: false,
+    });
+  });
+
+  it('opens trustline then mints without submitting ChangeTrust as mint', async () => {
+    prepareMint
+      .mockResolvedValueOnce({
+        transfer_id: 't1',
+        status: 'attestation_ready',
+        payload: trustlinePayload,
+        expires_at: 9999999999,
+        trustline_required: true,
+      })
+      .mockResolvedValueOnce({
+        transfer_id: 't1',
+        status: 'attestation_ready',
+        payload: mintPayload,
+        expires_at: 9999999999,
+        trustline_required: false,
+      });
+
+    const { result } = renderHook(() =>
+      useCctpSaga({
+        ...baseInput,
+        wallets: {
+          recipient: STELLAR_G,
+          sourceEvmAdapterId: 'evm:test',
+          sourceAddress: EVM_SOURCE,
+          mintSubmitter: STELLAR_G,
+          mintSubmitterStellarAdapterId: 'freighter',
+        },
+      }),
+    );
+    await act(async () => {
+      await result.current.requestQuote();
+    });
+    // Force attestation-ready path by calling mint step directly after quote.
+    await act(async () => {
+      await result.current.signPreparedMintStep();
+    });
+
+    expect(prepareMint).toHaveBeenCalledTimes(2);
+    expect(executePreparedPayload).toHaveBeenCalledTimes(2);
+    expect(executePreparedPayload.mock.calls[0][0].payload.xdr_envelope).toBe(
+      'AAAAtrustline',
+    );
+    expect(executePreparedPayload.mock.calls[1][0].payload.xdr_envelope).toBe(
+      'AAAAmint',
+    );
+    expect(submitMint).toHaveBeenCalledTimes(1);
+    expect(submitMint.mock.calls[0][1]).toEqual({ tx_hash: 'stellar-hash' });
+  });
+
+  it('single mint prepare when trustline already present', async () => {
+    prepareMint.mockResolvedValue({
+      transfer_id: 't1',
+      status: 'attestation_ready',
+      payload: mintPayload,
+      expires_at: 9999999999,
+      trustline_required: false,
+    });
+
+    const { result } = renderHook(() =>
+      useCctpSaga({
+        ...baseInput,
+        wallets: {
+          recipient: STELLAR_G,
+          sourceEvmAdapterId: 'evm:test',
+          sourceAddress: EVM_SOURCE,
+          mintSubmitter: STELLAR_G,
+          mintSubmitterStellarAdapterId: 'freighter',
+        },
+      }),
+    );
+    await act(async () => {
+      await result.current.requestQuote();
+    });
+    await act(async () => {
+      await result.current.signPreparedMintStep();
+    });
+
+    expect(prepareMint).toHaveBeenCalledTimes(1);
+    expect(executePreparedPayload).toHaveBeenCalledTimes(1);
+    expect(submitMint).toHaveBeenCalledTimes(1);
   });
 });

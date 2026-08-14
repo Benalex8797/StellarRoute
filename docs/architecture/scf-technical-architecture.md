@@ -62,7 +62,7 @@ Funding is aimed at closing the gap between “best price **discovered**” and 
 1. **Soroban execution path** — prepare/submit (or equivalent) for AMM / multi-hop routes through the audited router, not only classic path-payment.
 2. **Full aggregation settlement** — execute the routes the optimizer already finds (multi-hop, AMM venues), with slippage and safety guards on-chain.
 3. **Security & mainnet** — external Soroban audit, remediation, gradual mainnet rollout (limited pairs → broader markets).
-4. **Cross-chain foundation (gated)** — Circle CCTP Stellar → Sepolia USDC is **signed-live proven on testnet** (see `docs/cctp/signed-live-stellar-to-sepolia.md`); keep public enablement gated on attestation/readiness probes; still non-custodial.
+4. **Cross-chain foundation (gated)** — Circle CCTP Stellar ↔ Sepolia USDC is **signed-live proven on testnet in both directions** (see `docs/cctp/signed-live-stellar-to-sepolia.md` and `docs/cctp/signed-live-sepolia-to-stellar.md`); keep public enablement gated on attestation/readiness probes; still non-custodial.
 5. **Product hardening** — ops SLOs, load evidence, wallet UX, integrator docs so wallets/dApps can rely on the API.
 
 Longer horizon (beyond the immediate Build Award window): Stellar as the hub for swap → bridge → offramp in one non-custodial financial application — using **existing** settlement rails, not inventing a proprietary bridge.
@@ -257,7 +257,7 @@ Agents implementing funded milestones should treat these as the **intended archi
 | Soroban settlement | Wire API execution_mode → router `execute` | `crates/api`, `crates/contracts`, wallet XDR/Soroban auth | E2E checklist sibling to classic checklist; `execution_mode` documents Soroban |
 | Security | External audit + fix | `crates/contracts`, `audit/` | Audit report + remediated findings; mainnet config reviewed |
 | Mainnet | Network flags, pool/token allowlists, gradual pairs | `config/*`, deploy, frontend network banner | Limited-pair mainnet swaps with monitoring/rollback |
-| CCTP enablement | Flip public readiness after verifiers; signed-live Stellar→Sepolia already proven | `crates/api/src/cctp/*`, `frontend/lib/cctp/*` | Reverse corridor + operator `CCTP_ENABLED` with attestation proofs; burn≠approve classification enforced |
+| CCTP enablement | Flip public readiness after verifiers; signed-live Stellar↔Sepolia proven both ways; staging checklist ready | `crates/api/src/cctp/*`, `frontend/lib/cctp/*`, `docs/deployment/cctp-staging-enablement-checklist.md` | Operator `CCTP_ENABLED` with attestation proofs; burn≠approve classification enforced |
 | Integrator surface | Stable OpenAPI + SDK examples | `docs/api`, `sdk-js` | Integrator can quote→prepare→submit without reading internal runbooks |
 
 Suggested payment mapping (SCF four tranches ~10/20/30/40%): align budget narrative to the table above in the application form; keep each tranche’s deliverable **demoable on Stellar**.
@@ -276,6 +276,8 @@ Suggested payment mapping (SCF four tranches ~10/20/30/40%): align budget narrat
 - Contract gas budgets: `docs/contracts/gas-benchmarks.md`.
 - Classic live swap proof procedure: `docs/readiness/live-swap-testnet-checklist.md`.
 - CCTP signed-live Stellar → Sepolia: `docs/cctp/signed-live-stellar-to-sepolia.md`.
+- CCTP reverse Sepolia → Stellar (signed-live): `docs/cctp/signed-live-sepolia-to-stellar.md`.
+- CCTP staging enablement: `docs/deployment/cctp-staging-enablement-checklist.md`.
 
 ### 9. Quick commands (agent cheat sheet)
 
@@ -307,7 +309,8 @@ npm --prefix sdk-js run test
 | Classic live checklist | `docs/readiness/live-swap-testnet-checklist.md` |
 | Router interface | `docs/contracts/router-interface.md` |
 | CCTP API contract | `docs/api/cctp-v2-contract.md` |
-| CCTP signed-live proof | `docs/cctp/signed-live-stellar-to-sepolia.md` |
+| CCTP signed-live proof (forward) | `docs/cctp/signed-live-stellar-to-sepolia.md` |
+| CCTP signed-live proof (reverse) | `docs/cctp/signed-live-sepolia-to-stellar.md` |
 | Oracle staging | `docs/deployment/oracle-always-free.md` |
 | Vercel frontend | `docs/deployment/vercel-frontend.md` |
 | Integrator guide | `docs/api/integrator-guide.md` |

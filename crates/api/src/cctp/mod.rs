@@ -43,6 +43,7 @@ pub mod stellar_payload;
 pub mod stellar_readiness_probes;
 pub mod stellar_rpc;
 pub mod stellar_sequence;
+pub mod stellar_trustline;
 pub mod stellar_tx;
 pub mod store;
 pub mod transitions;

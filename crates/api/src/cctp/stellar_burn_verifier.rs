@@ -308,6 +308,7 @@ mod tests {
             mint,
             &cfg.contracts.stellar_usdc,
             1,
+            FINALITY_STANDARD,
         )
         .unwrap();
         let xdr = encode_invoke_at_sequence(

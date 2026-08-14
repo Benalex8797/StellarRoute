@@ -13,11 +13,15 @@ describe('corridor catalog', () => {
     expect(catalogMatchesBackendRoutes()).toBe(true);
   });
 
-  it('marks stellar-native and stellar→Sepolia CCTP as executable', () => {
+  it('marks stellar-native and both Sepolia↔Stellar CCTP corridors as executable', () => {
     const executable = CORRIDOR_CATALOG.filter((c) => isCorridorExecutable(c)).map(
       (c) => c.id
     );
-    expect(executable).toEqual(['stellar-native', 'stellar-to-evm']);
+    expect(executable).toEqual([
+      'stellar-native',
+      'evm-to-stellar',
+      'stellar-to-evm',
+    ]);
   });
 
   it('reflects backend route registration per corridor leg', () => {

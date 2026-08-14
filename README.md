@@ -154,16 +154,17 @@ graph TB
 ## 📊 Current Status & Contribution Opportunities
 
 **Milestone**: M1 - Prototype Indexer & API ✅ **COMPLETE**  
-**Current focus**: Live Stellar testnet swaps, CCTP cross-chain rails (Stellar → Sepolia proven), external Soroban audit  
-**Status**: 🎯 **Stellar classic swap path live** | **CCTP Stellar → Sepolia signed-live on testnet** | **Public CCTP still gated** | **Actively seeking contributors**
+**Current focus**: Live Stellar testnet swaps, CCTP cross-chain rails (both Sepolia ↔ Stellar directions proven), external Soroban audit  
+**Status**: 🎯 **Stellar classic swap path live** | **CCTP Sepolia ↔ Stellar signed-live on testnet** | **Public CCTP still gated** | **Actively seeking contributors**
 
 ### Cross-chain milestone (2026-08-14)
 
-First public Stellar Testnet → Ethereum Sepolia USDC mint via Circle CCTP:
+Public testnet USDC mints via Circle CCTP (both directions):
 
-- Sepolia mint: [`0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6`](https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6) (25 USDC)
-- Write-up + evidence: [`docs/cctp/signed-live-stellar-to-sepolia.md`](docs/cctp/signed-live-stellar-to-sepolia.md)
-- Next: reverse corridor, staging enablement checklist, then mainnet gates after audit
+- Stellar → Sepolia mint: [`0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6`](https://sepolia.etherscan.io/tx/0x713cc8b174d775bf7a3a97f33c53a37f698c93bc66b378dfa55ccfcc7f1cbed6) (25 USDC) — [`docs/cctp/signed-live-stellar-to-sepolia.md`](docs/cctp/signed-live-stellar-to-sepolia.md)
+- Sepolia → Stellar burn / mint: [`0x339b96cc…`](https://sepolia.etherscan.io/tx/0x339b96ccb6c3bcc0eb4c37d70fb5b8e6f3ee4c6fd1e7c032e93827faab6a5e73) / [`13d2025d…`](https://stellar.expert/explorer/testnet/tx/13d2025db39b461756954e1266864ea39c126cada55ddf24db9ec364138d16f2) (5 USDC Fast) — [`docs/cctp/signed-live-sepolia-to-stellar.md`](docs/cctp/signed-live-sepolia-to-stellar.md)
+- Staging enablement: [`docs/deployment/cctp-staging-enablement-checklist.md`](docs/deployment/cctp-staging-enablement-checklist.md)
+- Next: staging enablement, then mainnet gates after audit
 
 ### Why Contribute to StellarRoute?
 
